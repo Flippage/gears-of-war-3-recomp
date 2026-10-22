@@ -8,6 +8,9 @@
 #include <filesystem>
 #include <fstream>
 
+#include <string>
+
+#include <rex/filesystem.h>
 #include <rex/rex_app.h>
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
@@ -53,9 +56,50 @@ class Gow3App : public rex::ReXApp {
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
   // CreateAchievementNotificationDialog() override;
   // void OnShutdown() override {}
+
+  // A game folder holds default.xex and GearGame\.
+  static bool IsGameFolder(const std::filesystem::path& dir) {
+    std::error_code ec;
+    return !dir.empty() && std::filesystem::exists(dir / "default.xex", ec) &&
+           std::filesystem::is_directory(dir / "GearGame", ec);
+  }
+
+  // The folder itself or one of its subfolders.
+  static std::filesystem::path FindGameFolderIn(const std::filesystem::path& dir) {
+    if (IsGameFolder(dir)) return dir;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(
+             dir, std::filesystem::directory_options::skip_permission_denied, ec);
+         !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
+      if (IsGameFolder(it->path())) return it->path();
+    }
+    return {};
+  }
+
+  // Lets a double-click boot without --game_data_root, in this order: the folder given on the
+  // command line, the first line of gow3_game_path.txt next to the exe, then the exe's folder and
+  // up to four parent folders (each with its direct subfolders). Same idea as the Gears of War 2
+  // port's ResolveContentRoot.
+  static std::filesystem::path ResolveGameFolder(const std::filesystem::path& given) {
+    if (IsGameFolder(given)) return given;
+    const std::filesystem::path home = rex::filesystem::GetExecutablePath().parent_path();
+    if (std::ifstream in(home / "gow3_game_path.txt"); in) {
+      std::string line;
+      std::getline(in, line);
+      while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+      if (auto hit = FindGameFolderIn(std::filesystem::u8path(line)); !hit.empty()) return hit;
+    }
+    std::filesystem::path dir = home;
+    for (int depth = 0; depth <= 4 && !dir.empty(); ++depth, dir = dir.parent_path()) {
+      if (auto hit = FindGameFolderIn(dir); !hit.empty()) return hit;
+      if (dir == dir.parent_path()) break;
+    }
+    return given;
+  }
   // Saves, profile and shader cache in %LOCALAPPDATA%\GearsOfWar3PC (as the Gears of War 2 port
   // does with GearsOfWar2PC); without a user data root the save devices are never mounted.
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    paths.game_data_root = ResolveGameFolder(paths.game_data_root);
     paths.update_data_root = paths.game_data_root / "$SystemUpdate";
     if (const char* local = std::getenv("LOCALAPPDATA"); local && *local) {
       const std::filesystem::path base = std::filesystem::path(local) / "GearsOfWar3PC";
