@@ -1,0 +1,25 @@
+Gears of War 3: the upscaler's scene depth is picked by guest address, and streaming can reuse a
+depth resolve address for an ordinary texture; an R32_FLOAT view of that removed the device
+(DXGI_ERROR_INVALID_CALL) a few minutes into play. Only a single 2D R32 texture is taken now; the
+first rejects are logged.
+
+--- a/src/graphics/d3d12/gow2_upscale.cpp
++++ b/src/graphics/d3d12/gow2_upscale.cpp
+@@ -516,6 +516,17 @@
+ void NoteDepthTexture(ID3D12Resource* depth) {
+   if (!depth) return;
+   const D3D12_RESOURCE_DESC d = depth->GetDesc();
++  // The candidate is found by guest address only, and streaming can reuse a depth resolve address for
++  // an ordinary texture. The motion vector pass views it as a single 2D R32_FLOAT texture, and an
++  // invalid view of any other kind removes the device (DXGI_ERROR_INVALID_CALL), so take only that.
++  const bool r32 = d.Format == DXGI_FORMAT_R32_FLOAT || d.Format == DXGI_FORMAT_R32_TYPELESS;
++  if (d.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || d.DepthOrArraySize != 1 || !r32) {
++    static int rejected = 0;
++    if (rejected++ < 8)
++      REXGPU_WARN("GOW2 upscale: ignoring a depth candidate {}x{} dxgi={} dim={} layers={} (not a 2D R32 texture)",
++                  uint32_t(d.Width), d.Height, uint32_t(d.Format), uint32_t(d.Dimension), d.DepthOrArraySize);
++    return;
++  }
+   const uint64_t area = d.Width * uint64_t(d.Height);
+   if (!g.depth_tex || area >= g.depth_area) {
+     g.depth_tex = depth;

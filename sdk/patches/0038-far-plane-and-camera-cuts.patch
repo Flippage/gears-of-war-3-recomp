@@ -1,0 +1,62 @@
+Gears of War 3: with plain z, cleared depth and sky sit at or past the far plane, where the motion
+vector shader divided by ~0 (blocky white flashes in DLSS, mostly in cutscenes). Such pixels are
+now points at infinity moved by the rotation only, and NaN/inf vectors become 0. The history is
+also reset on a camera cut: a turn of more than ~20 degrees, a 5% lens change or a 300 unit jump
+in one frame.
+
+--- a/src/graphics/d3d12/gow2_upscale.cpp
++++ b/src/graphics/d3d12/gow2_upscale.cpp
+@@ -63,14 +63,21 @@
+   float z = reversed > 0.5 ? 1.0 - d : d;
+   float2 ndc = float2((id.x + 0.5) / size.x * 2.0 - 1.0, 1.0 - (id.y + 0.5) / size.y * 2.0);
+   float4 q = mul(float4(ndc, z, 1.0), invVP);
+-  float3 p = q.xyz / q.w;
+-  float4 cp = mul(float4(p + tdelta, 1.0), prevVP);
++  float4 cp;
++  if (q.w <= 1e-6 * max(length(q.xyz), 1e-20)) {
++    // At or past the far plane (cleared depth, sky): a point at infinity in direction q.xyz, which
++    // only the camera rotation moves. Dividing by q.w here gave garbage vectors.
++    cp = mul(float4(q.xyz, 0.0), prevVP);
++  } else {
++    cp = mul(float4(q.xyz / q.w + tdelta, 1.0), prevVP);
++  }
+   float2 mv = float2(0.0, 0.0);
+   if (cp.w > 1e-4) {
+     float2 pn = cp.xy / cp.w;
+     float2 ppx = float2((pn.x * 0.5 + 0.5) * size.x, (0.5 - pn.y * 0.5) * size.y);
+     mv = ppx - (float2(id.xy) + 0.5);
+   }
++  if (any(isnan(mv)) || any(isinf(mv))) mv = float2(0.0, 0.0);
+   mvOut[id.xy] = mv;
+ }
+ )";
+@@ -727,6 +734,29 @@
+   float td = std::sqrt(job->tdelta[0] * job->tdelta[0] + job->tdelta[1] * job->tdelta[1] +
+                        job->tdelta[2] * job->tdelta[2]);
+   if (td > 5000.0f) job->reset = true;  // teleport / camera cut
++  {
++    // Cutscene cuts often move the camera little but turn it or change the lens: compare the view
++    // direction (the clip.w column) and the y scale between the frames, and start the history over.
++    float cw[3], pw[3], cy = 0.0f, py = 0.0f, cn = 0.0f, pn = 0.0f, dot = 0.0f;
++    for (int r = 0; r < 3; ++r) {
++      cw[r] = cam.c[r][3];
++      pw[r] = prev.c[r][3];
++      cn += cw[r] * cw[r];
++      pn += pw[r] * pw[r];
++      dot += cw[r] * pw[r];
++      cy += cam.c[r][1] * cam.c[r][1];
++      py += prev.c[r][1] * prev.c[r][1];
++    }
++    const bool turned = cn > 1e-12f && pn > 1e-12f && dot / std::sqrt(cn * pn) < 0.94f;  // > ~20 degrees
++    const bool zoomed = py > 1e-12f && std::fabs(std::sqrt(cy / py) - 1.0f) > 0.05f;
++    if (turned || zoomed || td > 300.0f) {
++      static int cuts = 0;
++      if (!job->reset && cuts++ < 10)
++        REXGPU_WARN("GOW2 upscale: camera cut (turned={} zoomed={} moved {:.0f}), history reset", turned,
++                    zoomed, td);
++      job->reset = true;
++    }
++  }
+ 
+   // Descriptors (this job's slice of the ring).
+   uint32_t slice = (g.slice++) % kSlices;
