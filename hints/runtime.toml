@@ -1,0 +1,3 @@
+# Found by booting the game (FATAL: call to unregistered function).
+[functions]
+0x82B21F30 = {}  # boot run 1

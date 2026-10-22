@@ -21,4 +21,4 @@ else()
     add_executable(gow3 ${GOW3_SOURCES})
 endif()
 
-rexglue_setup_target(gow3)
+rexglue_setup_target(gow3 GPU_PLUGINS xenos)

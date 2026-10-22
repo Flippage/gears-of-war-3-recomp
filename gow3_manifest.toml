@@ -8,4 +8,9 @@ game_root = "game"
 [entrypoint]
 file_path = "game/default.xex"
 out_directory_path = "generated/default"
-includes = []
+includes = ["hints/harvested.toml", "hints/runtime.toml"]  # tools/harvest_hints.py output, runtime FATAL addresses
+
+# Function entry hints: addresses automatic function discovery misses.
+[entrypoint.functions]
+0x82DCE010 = {}   # tail-call target of `b` at 0x82DD2B34 (codegen pass 1)
+0x82DB80F0 = {}   # tail-call target of `b` at 0x82DB825C (codegen pass 1)

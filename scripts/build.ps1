@@ -1,0 +1,75 @@
+<#
+.SYNOPSIS
+  Builds gow3 (Gears of War 3, PC) from your own game\default.xex.
+  Modelled on santiquiroz/gears-of-war-2-pc-port scripts\build.ps1.
+
+.PARAMETER Sdk
+  ReXGlue SDK folder (contains bin\rexglue.exe). Or set REXGLUE_SDK.
+.PARAMETER SkipCodegen
+  Reuse the existing generated\ output.
+#>
+param(
+    [string]$Sdk = $(if ($env:REXGLUE_SDK) { $env:REXGLUE_SDK } else { 'C:\Users\flipp\GearsRecomps\tools\rexglue-sdk\win-amd64' }),
+    [ValidateSet('Release', 'RelWithDebInfo', 'Debug')][string]$Config = 'Release',
+    [switch]$SkipCodegen
+)
+
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+Set-Location $root
+
+function Fail($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
+function Step($msg) { Write-Host "`n== $msg" -ForegroundColor Cyan }
+
+$rexglue = Join-Path $Sdk 'bin\rexglue.exe'
+if (-not (Test-Path $rexglue)) { Fail "rexglue.exe not found in $Sdk\bin." }
+if (-not (Test-Path 'game\default.xex')) { Fail 'game\default.xex is missing.' }
+
+$env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('PATH', 'User')
+foreach ($tool in 'cmake', 'ninja') {
+    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { Fail "$tool was not found on PATH." }
+}
+
+Step 'Locating the C++ toolchain'
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+$vsPath = & $vswhere -all -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath |
+    Where-Object { Get-ChildItem (Join-Path $_ 'VC\Tools\MSVC\*\include\excpt.h') -ErrorAction SilentlyContinue } |
+    Select-Object -First 1
+if (-not $vsPath) { Fail 'No Visual Studio install with a complete MSVC toolset (excpt.h) was found.' }
+cmd /c "`"$vsPath\VC\Auxiliary\Build\vcvars64.bat`" >nul 2>nul && set" | ForEach-Object {
+    if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
+}
+$llvm = Join-Path $env:ProgramFiles 'LLVM\bin'
+if (-not (Test-Path "$llvm\clang++.exe")) { Fail 'clang++ was not found (install LLVM).' }
+$env:PATH = "$llvm;$env:PATH"
+New-Item -ItemType Directory -Force 'out\logs' | Out-Null
+
+if (-not $SkipCodegen) {
+    Step 'Generating C++ from default.xex'
+    & $rexglue --log-file out\logs\codegen.log codegen gow3_manifest.toml
+    if ($LASTEXITCODE -ne 0) { Fail 'rexglue codegen failed (see out\logs\codegen.log).' }
+}
+
+# Codegen gives up on under-counted jump tables with __builtin_trap(); dispatch through ctr instead.
+# Idempotent, so it also runs with -SkipCodegen.
+Step 'Patching switch traps in generated code'
+python -I tools\patch_switch_traps.py 'generated/default/*.cpp'
+if ($LASTEXITCODE -ne 0) { Fail 'tools\patch_switch_traps.py failed.' }
+
+$build = Join-Path $root "out\build\$($Config.ToLower())"
+Step "Configuring ($Config)"
+cmake -S . -B $build -G Ninja "-DCMAKE_BUILD_TYPE=$Config" `
+    "-DCMAKE_C_COMPILER=$llvm\clang.exe" "-DCMAKE_CXX_COMPILER=$llvm\clang++.exe" `
+    "-DCMAKE_LINKER=$llvm\lld-link.exe" "-DCMAKE_PREFIX_PATH=$Sdk" | Out-File out\logs\configure.txt -Encoding utf8
+if ($LASTEXITCODE -ne 0) { Fail 'CMake configure failed (see out\logs\configure.txt).' }
+
+Step 'Building'
+cmake --build $build --target gow3
+if ($LASTEXITCODE -ne 0) { Fail 'Build failed.' }
+
+# The runtime DLLs the exe loads (rexgpu-xenos.dll is loaded by name as the GPU plugin).
+foreach ($dll in 'rexruntime.dll', 'rexgpu-xenos.dll', 'TracyClient.dll') {
+    $src = Join-Path $Sdk "bin\$dll"
+    if (Test-Path $src) { Copy-Item $src $build -Force }
+}
+Write-Host "`nDone: $build\gow3.exe" -ForegroundColor Green
