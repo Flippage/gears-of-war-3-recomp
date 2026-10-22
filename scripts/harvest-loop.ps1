@@ -22,6 +22,8 @@ Set-Location $root
 $out = Join-Path $root 'out\build\release'
 $hints = Join-Path $root 'hints\runtime.toml'
 $history = Join-Path $root 'out\logs\harvest-loop.txt'
+# Test boots use their own saves/profile, never the player's (%LOCALAPPDATA%\GearsOfWar3PC).
+$testUser = Join-Path $root 'out\test-user'
 New-Item -ItemType Directory -Force (Split-Path $history) | Out-Null
 
 function Log($msg) { $line = "[$(Get-Date -Format HH:mm:ss)] $msg"; Write-Host $line; Add-Content $history $line }
@@ -30,7 +32,7 @@ for ($run = 1; $run -le $MaxRuns; $run++) {
     $log = Join-Path $out 'run.log'
     Remove-Item $log -ErrorAction SilentlyContinue
     $p = Start-Process (Join-Path $out 'gow3.exe') -WorkingDirectory $out -PassThru `
-        -ArgumentList "--game_data_root=$GameData", '--fullscreen=false', '--log_file=run.log'
+        -ArgumentList "--game_data_root=$GameData", "--user_data_root=$testUser", '--fullscreen=false', '--log_file=run.log'
     $t = 0
     while (-not $p.HasExited -and $t -lt $Seconds) { Start-Sleep 1; $t++ }
     if (-not $p.HasExited) {

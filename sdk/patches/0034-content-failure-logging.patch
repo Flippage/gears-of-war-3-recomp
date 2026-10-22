@@ -1,0 +1,44 @@
+Diagnostics for Gears of War 3 saves: log every failed XamContentCreate (root, flags,
+disposition, result) and why ContentManager::DeleteContent refused, so a save the game
+silently skips (CREATE_ALWAYS on PlayerStorage.dat) shows its cause in the log.
+
+--- a/src/kernel/xam/xam_content.cpp
++++ b/src/kernel/xam/xam_content.cpp
+@@ -219,6 +219,10 @@
+       *disposition_ptr = static_cast<uint32_t>(disposition);
+     }
+ 
++    if (result != X_ERROR_SUCCESS) {
++      REXKRNL_WARN("XamContentCreate '{}' flags={:#x} disposition={} failed: {:#x}", root_name,
++                   uint32_t(flags), uint32_t(disposition), uint32_t(result));
++    }
+     extended_error = X_HRESULT_FROM_WIN32(result);
+     length = static_cast<uint32_t>(disposition);
+     return result;
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -17,6 +17,7 @@
+ #include <fmt/format.h>
+ 
+ #include <rex/filesystem.h>
++#include <rex/logging.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/stfs_container_device.h>
+ #include <rex/string.h>
+@@ -369,6 +370,7 @@
+ 
+   if (IsContentOpen(data)) {
+     // TODO(Gliniak): Get real error code for this case.
++    REXKRNL_WARN("DeleteContent '{}': still open", data.file_name());
+     return X_ERROR_ACCESS_DENIED;
+   }
+ 
+@@ -377,6 +379,8 @@
+   auto dir_removed = std::filesystem::remove_all(package_path, ec);
+   if (ec ||
+       std::filesystem::status(package_path, ec).type() != std::filesystem::file_type::not_found) {
++    REXKRNL_WARN("DeleteContent '{}': could not remove {} ({})", data.file_name(),
++                 package_path.string(), ec ? ec.message() : std::string("still exists"));
+     return X_ERROR_ACCESS_DENIED;
+   }
+ 
