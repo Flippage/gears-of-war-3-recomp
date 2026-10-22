@@ -52,3 +52,11 @@ gow3_texture_pool_mb = 196
 gow3_shadow_perf_b = true
 # No dynamic shadows at all (test switch: if the black patches go away with this, they are shadow artifacts).
 gow3_disable_dynamic_shadows = false
+
+# ---------- Matching the Xenia setup that renders faces cleanly ----------
+# Texture/vertex fetches from fetch constants the runtime considers invalid. Off (the runtime's
+# default), such a fetch returns 0 - black - which fits the black blotches on skin and the very dark
+# character shadows in in-engine cutscenes. Xenia canary defaults it to true, and your Xenia uses it.
+gpu_allow_invalid_fetch_constants = true
+# Re-uploading every CPU-written page each frame; Xenia setups for this game turn it off (bandwidth).
+clear_memory_page_state = false
