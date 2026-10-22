@@ -32,6 +32,8 @@ CPU code (ReXGlue codegen) or the GPU runtime (ReXGlue's Xenia-derived Xenos ren
 | Shader cache staleness | caches cleared and rebuilt |
 | Stale CPU-written data (facial animation vertices) | `clear_memory_page_state = true` (re-upload every CPU-written page each frame) |
 | Lighting and post-processing patches | AO, bloom, lens flares, all post-processing and Option B off at once |
+| Out-of-bounds vertex fetch reads, negative constant addresses | `sdk/patches/0041` (Xenia `9e9d3cdd3f`), `0042` (Xenia `674870d881`) |
+| Xenos `0 * x = 0` rule in mul/mad/dp | already matches Xenia's translator |
 
 ### What the frame traces show
 

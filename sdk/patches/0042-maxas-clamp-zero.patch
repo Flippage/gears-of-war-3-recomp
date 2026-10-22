@@ -1,0 +1,34 @@
+Xenia canary 674870d881 (Apr 2025): the address register written by the scalar maxas/maxasf is
+clamped to 0 and above, not -256. A negative address indexed constants out of range. Suspected for
+the black blotches on animated faces in Gears of War 3 cutscenes. gpu_maxas_clamp_zero (default
+true) turns it off for comparison.
+
+--- a/src/graphics/pipeline/shader/dxbc_translator_alu.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_alu.cpp
+@@ -13,8 +13,13 @@
+ #include <cmath>
+ 
+ #include <rex/assert.h>
++#include <rex/cvar.h>
+ #include <rex/graphics/pipeline/shader/dxbc_translator.h>
+ #include <rex/math.h>
++
++REXCVAR_DEFINE_BOOL(gpu_maxas_clamp_zero, true, "GPU",
++                    "Clamp the address register from maxas/maxasf to 0 and above (Xenia 674870d881); "
++                    "false keeps the old -256 lower bound");
+ 
+ namespace rex::graphics {
+ using namespace ucode;
+@@ -780,8 +785,11 @@
+         a_.OpRoundNI(dxbc::Dest::R(system_temp_ps_pc_p0_a0_, 0b1000),
+                      dxbc::Src::R(system_temp_ps_pc_p0_a0_, dxbc::Src::kWWWW));
+       }
++      // Xenia 674870d881: a negative address from maxas indexed constants out of range (device
++      // loss on AMD, zeros on other GPUs); the lower bound is 0 there.
+       a_.OpMax(dxbc::Dest::R(system_temp_ps_pc_p0_a0_, 0b1000),
+-               dxbc::Src::R(system_temp_ps_pc_p0_a0_, dxbc::Src::kWWWW), dxbc::Src::LF(-256.0f));
++               dxbc::Src::R(system_temp_ps_pc_p0_a0_, dxbc::Src::kWWWW),
++               dxbc::Src::LF(REXCVAR_GET(gpu_maxas_clamp_zero) ? 0.0f : -256.0f));
+       a_.OpMin(dxbc::Dest::R(system_temp_ps_pc_p0_a0_, 0b1000),
+                dxbc::Src::R(system_temp_ps_pc_p0_a0_, dxbc::Src::kWWWW), dxbc::Src::LF(255.0f));
+       a_.OpFToI(dxbc::Dest::R(system_temp_ps_pc_p0_a0_, 0b1000),

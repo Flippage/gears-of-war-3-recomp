@@ -1,0 +1,70 @@
+Gears of War 3 diagnostics: debug_constant_nan checks every float shader constant as it is copied
+for a draw. 1 logs each NaN or infinite (stage, shader, register) once (CONSTNAN lines, up to 300),
+2 also replaces those values with 0. For the black blotches on animated faces in cutscenes.
+
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -17,7 +17,9 @@
+ #include <chrono>
+ #include <cstdarg>
+ #include <cstring>
++#include <cmath>
+ #include <sstream>
++#include <unordered_set>
+ #include <utility>
+ 
+ #include <rex/assert.h>
+@@ -51,6 +53,35 @@
+                       "Comma-separated 16-digit pixel shader hashes (as in the DRAW trace lines) whose "
+                       "draws are skipped. A diagnostic: empty by default.")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
++REXCVAR_DEFINE_INT32(debug_constant_nan, 0, "GPU/Debug",
++                     "Diagnostic for float shader constants that are NaN or infinite: 1 = log each "
++                     "(stage, shader, register) once, 2 = also replace those values with 0.")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
++namespace {
++// debug_constant_nan: looks at one float4 constant as it is copied for a draw.
++void CheckFloatConstant(float* c, char stage, uint64_t shader_hash, uint32_t reg) {
++  const int mode = REXCVAR_GET(debug_constant_nan);
++  if (!mode) return;
++  bool bad = false;
++  for (int k = 0; k < 4; ++k) bad |= !std::isfinite(c[k]) || std::fabs(c[k]) > 1e8f;  // logged; only
++  // non-finite values are replaced
++  if (!bad) return;
++  static std::unordered_set<uint64_t> seen;
++  static uint32_t logged = 0;
++  const uint64_t key = shader_hash ^ (uint64_t(reg) << 48) ^ (uint64_t(stage) << 40);
++  if (logged < 300 && seen.insert(key).second) {
++    ++logged;
++    REXGPU_WARN("CONSTNAN {}S {:016X} c{} = ({}, {}, {}, {})", stage, shader_hash, reg, c[0], c[1],
++                c[2], c[3]);
++  }
++  if (mode >= 2) {
++    for (int k = 0; k < 4; ++k)
++      if (!std::isfinite(c[k])) c[k] = 0.0f;
++  }
++}
++}  // namespace
+ 
+ REXCVAR_DEFINE_BOOL(d3d12_readback_memexport, false, "GPU/D3D12",
+                     "Read data written by memory export in shaders on the CPU")
+@@ -4309,6 +4339,8 @@
+             float_constants,
+             &regs[XE_GPU_REG_SHADER_CONSTANT_000_X + (i << 8) + (float_constant_index << 2)],
+             4 * sizeof(float));
++        CheckFloatConstant(reinterpret_cast<float*>(float_constants), 'V',
++                           vertex_shader->ucode_data_hash(), (i << 6) + float_constant_index);
+         float_constants += 4 * sizeof(float);
+       }
+     }
+@@ -4335,6 +4367,8 @@
+               float_constants,
+               &regs[XE_GPU_REG_SHADER_CONSTANT_256_X + (i << 8) + (float_constant_index << 2)],
+               4 * sizeof(float));
++          CheckFloatConstant(reinterpret_cast<float*>(float_constants), 'P',
++                             pixel_shader->ucode_data_hash(), (i << 6) + float_constant_index);
+           float_constants += 4 * sizeof(float);
+         }
+       }
