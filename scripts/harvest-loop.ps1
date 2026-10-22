@@ -52,8 +52,12 @@ for ($run = 1; $run -le $MaxRuns; $run++) {
     $n = (Select-String $hints -Pattern '^0x').Count + 1
     Add-Content $hints "$addr = {}  # boot run $n"
     Log "run ${run}: ${t}s, $code, added $addr; rebuilding"
+    # Windows PowerShell turns a native command's stderr into errors under 'Stop'; the exit code decides.
+    $ErrorActionPreference = 'Continue'
     powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build.ps1') *>&1 |
         Out-File (Join-Path $root 'out\logs\harvest-build.txt') -Encoding utf8
-    if ($LASTEXITCODE -ne 0) { Log "build failed after adding $addr (out\logs\harvest-build.txt)"; exit 1 }
+    $buildExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($buildExit -ne 0) { Log "build failed after adding $addr (out\logs\harvest-build.txt)"; exit 1 }
 }
 Log "stopped after $MaxRuns runs"

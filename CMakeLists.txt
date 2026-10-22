@@ -13,6 +13,8 @@ include(generated/rexglue.cmake)
 # Sources
 set(GOW3_SOURCES
     src/main.cpp
+    src/gow3_utf8_guard.cpp
+    src/gow3_xam_input_guard.cpp
 )
 
 if(WIN32)

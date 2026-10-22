@@ -12,6 +12,9 @@
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
 
+#include "gow3_utf8_guard.h"
+#include "gow3_xam_input_guard.h"
+
 class Gow3App : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -26,6 +29,11 @@ class Gow3App : public rex::ReXApp {
   // void OnPostInitLogging() override {}
   void OnPreSetup(rex::RuntimeConfig& config) override {
     config.gpu_plugin = "xenos";
+    // Guest content names are raw bytes; the runtime's UTF-8 decoder throws on a bad lead byte.
+    rex::glue::InstallUtf8Guard();
+    // The guest polls XamInput* from several threads; the runtime's device list has no lock.
+    rex::glue::InstallXamInputGuard();
+    rex::glue::InstallDiscErrorSilencer();
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
   // Dev tool: GOW3_DUMP_IMAGE=<dir> writes the loaded (decrypted, decompressed) image to
@@ -45,5 +53,17 @@ class Gow3App : public rex::ReXApp {
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
   // CreateAchievementNotificationDialog() override;
   // void OnShutdown() override {}
-  // void OnConfigurePaths(rex::PathConfig& paths) override {}
+  // Saves, profile and shader cache in %LOCALAPPDATA%\GearsOfWar3PC (as the Gears of War 2 port
+  // does with GearsOfWar2PC); without a user data root the save devices are never mounted.
+  void OnConfigurePaths(rex::PathConfig& paths) override {
+    paths.update_data_root = paths.game_data_root / "$SystemUpdate";
+    if (const char* local = std::getenv("LOCALAPPDATA"); local && *local) {
+      const std::filesystem::path base = std::filesystem::path(local) / "GearsOfWar3PC";
+      paths.user_data_root = base / "user";
+      paths.cache_root = base / "cache";
+      std::error_code ec;
+      std::filesystem::create_directories(paths.user_data_root, ec);
+      std::filesystem::create_directories(paths.cache_root, ec);
+    }
+  }
 };

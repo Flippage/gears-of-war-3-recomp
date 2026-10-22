@@ -1,3 +1,11 @@
 # Found by booting the game (FATAL: call to unregistered function).
 [functions]
 0x82B21F30 = {}  # boot run 1
+0x82FDD3E4 = {}  # boot run 2
+0x82FDCE58 = {}  # boot run 3
+0x82FDD564 = {}  # boot run 4
+0x82FDD6E4 = {}  # boot run 5
+0x82FDD864 = {}  # boot run 6
+0x82FDD9E4 = {}  # boot run 7
+0x82FDDBB0 = {}  # boot run 8
+0x82FDDD7C = {}  # boot run 9
