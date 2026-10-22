@@ -8,12 +8,24 @@
 # With DLSS, 1 upscales 720p to the screen (DLSS Performance at 1440p); 2 at 1440p is DLAA.
 # resolution_scale = 1
 
+# ---------- GPU ----------
+# CPU readback of shader memory exports. On (the runtime default), the CPU waits for the GPU at
+# every memexport: measured 28 s of waiting in one 5 s window of a level load and 0.5-1.6 s per
+# 5 s in play (D3D12STATS memexport_wait_us). Xenia setups for Gears of War 3 turn it off too.
+readback_memexport = false
+# Render target path. Unset = ROV on NVIDIA/Intel (patched runtime): exact EDRAM/MSAA emulation,
+# meant to fix the black patches on faces. "rtv" = host render targets (the stock runtime's
+# choice on NVIDIA, and the Xenia setting) - try it if a surface turns the screen white.
+# render_target_path_d3d12 = "rtv"
+
 # ---------- Upscaling (patched SDK DLLs in out\sdk; the gow2_ names come from the Gears 2 port) ----------
 # Temporal upscaling: "dlss" (NVIDIA RTX), "fsr4" (Radeon RX 7000/9000), "fsr3", or "off".
-gow2_temporal = true
-gow2_upscaler = "dlss"
+# Off until it is calibrated for Gears 3: its camera/motion-vector capture was measured on
+# Gears of War 2 and Judgment, and on Gears 3 it smears the picture while turning.
+gow2_temporal = false
+gow2_upscaler = "off"
 
 # ---------- Diagnostics ----------
 # One D3D12STATS line every five seconds in the log: draws skipped while a pipeline compiles
-# (draws_pipeline_pending), shaders translated on the draw thread (shaders_sync), and so on.
+# (draws_pipeline_pending), shaders translated on the draw thread (shaders_sync), memexport waits.
 d3d12_stats_log = true
