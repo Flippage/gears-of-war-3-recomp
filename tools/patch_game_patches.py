@@ -48,8 +48,16 @@ Sources
       second half (RHIGetTextureMemoryStats returning early, FudgeFactor locked at 1.0) has no
       counterpart found in Gears 3 and is not ported.
 
-  Not ported yet: the Performance patches (Option A edits a code byte whose effect needs a closer
-  look; Option B adds a code cave), Show FPS (data bytes) and 21:9.
+  12  Performance Option B: Optimized     827D0878   addi r11,r16,1        -> code cave in C++: at most 20
+      Settings (Smart Shadow Cuts)                                           per-object shadow depth draws a frame
+      (gow3_shadow_perf_b)                 827CACC4   mr r21,r19            -> li r21,1 (no pre-allocated shadow
+                                                                             caching, "blows up NVIDIA")
+                                           829A138C   lwz r3,108(r10)       -> li r3,0 (OneFrameRenderLag = FALSE)
+  13  No dynamic shadows (from Option A)   827CE810   lwz r11,1044(r21)     -> li r11,0
+      (gow3_disable_dynamic_shadows)
+
+  Not ported: Option A's byte at 8236C98C (0x00 there would turn lwz r10,196(r11) into an
+  invalid instruction on this disc), Show FPS (data bytes) and 21:9.
 
     python tools/patch_game_patches.py
 
@@ -73,6 +81,7 @@ GEN = "generated/default"
 #   ("nop",)           the instruction is skipped
 #   ("store0",)        a store writes 0 instead of the register
 #   ("value", "r26")   the register gets Gow3GamePatch(id) when that is above 0, else the original
+#   ("code", "...")    the instruction's C++ is replaced by the given C++ (which tests the switch)
 SITES = [
     (0x82960B84, "stw r11,-29808(r6)", ("store0",), 1),
     (0x8253D9B0, "lfs f1,1224(r3)", ("nop",), 2),
@@ -92,6 +101,17 @@ SITES = [
     (0x82593DC4, "lwz r11,64(r11)", ("li", "r11", 0), 9),
     (0x82593DC0, "lwz r10,72(r11)", ("li", "r10", 0), 10),
     (0x82967858, "lwz r26,80(r1)", ("value", "r26"), 11),
+    # Performance Option B: at most 20 per-object shadow depth draws a frame (whole-scene and
+    # preshadows, flags 0x06000000 in 1248(r30), always kept); the cave reloads r10 from the
+    # flags word the following rlwimi/stw use anyway, and r9/cr6 are overwritten before use.
+    (0x827D0878, "addi r11,r16,1", ("code",
+        "if (Gow3GamePatch(12)) { ctx.r10.u64 = REX_LOAD_U32(ctx.r30.u32 + 1248); "
+        "ctx.r9.u64 = ctx.r10.u32 & 0x06000000u; "
+        "if (ctx.r9.u32 == 0 && ctx.r16.s32 >= 20) goto loc_827D08D4; } "
+        "ctx.r11.s64 = ctx.r16.s64 + 1;"), 12),
+    (0x827CACC4, "mr r21,r19", ("li", "r21", 1), 12),
+    (0x829A138C, "lwz r3,108(r10)", ("li", "r3", 0), 12),
+    (0x827CE810, "lwz r11,1044(r21)", ("li", "r11", 0), 13),
 ]
 
 
@@ -139,6 +159,8 @@ def patched_code(form, code: list[str], sid: int, indent: str) -> list[str]:
         return [f"{indent}if ({cond}) {{ ctx.{form[1]}.s64 = {form[2]}; }} else {{ {orig} }}  // {MARK} {sid}"]
     if form[0] == "nop":
         return [f"{indent}if (!{cond}) {{ {orig} }}  // {MARK} {sid}"]
+    if form[0] == "code":
+        return [f"{indent}{form[1]}  // {MARK} {sid}"]
     if form[0] == "value":
         return [f"{indent}if (const int v = {cond}; v > 0) {{ ctx.{form[1]}.u64 = uint32_t(v); }} else {{ {orig} }}  // {MARK} {sid}"]
     if form[0] == "store0":

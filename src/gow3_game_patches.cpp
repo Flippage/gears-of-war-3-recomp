@@ -29,6 +29,13 @@ REXCVAR_DEFINE_INT32(gow3_texture_pool_mb, 196, "GameFixes",
                      "pool evicts and reloads fewer textures while moving through a level; the "
                      "Gears of War 2 port uses 196.");
 
+REXCVAR_DEFINE_BOOL(gow3_shadow_perf_b, true, "GameFixes",
+                    "Performance Patch Option B (Smart Shadow Cuts): at most 20 per-object shadow "
+                    "depth draws a frame, no pre-allocated shadow caching (which breaks on NVIDIA), "
+                    "OneFrameRenderLag off.");
+REXCVAR_DEFINE_BOOL(gow3_disable_dynamic_shadows, false, "GameFixes",
+                    "No dynamic shadows at all (Performance Patch Option A without its broken byte).");
+
 extern "C" int Gow3GamePatch(int id) {
   switch (id) {
     case 1: return REXCVAR_GET(gow3_black_shading_fix);
@@ -42,6 +49,8 @@ extern "C" int Gow3GamePatch(int id) {
     case 9: return REXCVAR_GET(gow3_disable_dof);
     case 10: return REXCVAR_GET(gow3_disable_bloom);
     case 11: return REXCVAR_GET(gow3_texture_pool_mb);
+    case 12: return REXCVAR_GET(gow3_shadow_perf_b);
+    case 13: return REXCVAR_GET(gow3_disable_dynamic_shadows);
     default: return 0;
   }
 }

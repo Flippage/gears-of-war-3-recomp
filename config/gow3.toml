@@ -47,3 +47,8 @@ gow3_occlusion_query_fix = false    # Occlusion Query Fix (less geometry popping
 # Texture streaming pool in MB (the game's own is 145, 0 keeps it; the Gears 2 port uses 196).
 # Bigger = fewer textures evicted and reloaded while moving through a level.
 gow3_texture_pool_mb = 196
+# Performance Patch Option B (Smart Shadow Cuts; your Xenia choice): caps per-object shadow draws and
+# skips the pre-allocated shadow caching that misbehaves on NVIDIA. Try it against the black skin patches.
+gow3_shadow_perf_b = true
+# No dynamic shadows at all (test switch: if the black patches go away with this, they are shadow artifacts).
+gow3_disable_dynamic_shadows = false
