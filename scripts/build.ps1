@@ -68,8 +68,20 @@ cmake --build $build --target gow3
 if ($LASTEXITCODE -ne 0) { Fail 'Build failed.' }
 
 # The runtime DLLs the exe loads (rexgpu-xenos.dll is loaded by name as the GPU plugin).
-foreach ($dll in 'rexruntime.dll', 'rexgpu-xenos.dll', 'TracyClient.dll') {
+# out\sdk\ holds patched SDK DLLs when present (the Gears of War 2 port's sdk\patches series, built
+# by its scripts\build-sdk.ps1: ROV on NVIDIA, no pipeline stalls, pipeline library, DLSS/FSR);
+# the exe is compiled against the stock SDK headers either way, as the Gears 2 port does.
+foreach ($dll in 'TracyClient.dll', 'rexruntime.dll', 'rexgpu-xenos.dll') {
     $src = Join-Path $Sdk "bin\$dll"
     if (Test-Path $src) { Copy-Item $src $build -Force }
+}
+$patched = Join-Path $root 'out\sdk'
+if (Test-Path (Join-Path $patched 'rexruntime.dll')) {
+    Copy-Item (Join-Path $patched '*.dll') $build -Force
+    Write-Host "Patched SDK DLLs from $patched"
+}
+if (-not (Test-Path (Join-Path $build 'gow3.toml'))) {
+    Copy-Item (Join-Path $root 'config\gow3.toml') $build
+    Write-Host "Default settings: $build\gow3.toml"
 }
 Write-Host "`nDone: $build\gow3.exe" -ForegroundColor Green

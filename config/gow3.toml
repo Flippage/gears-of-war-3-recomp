@@ -1,0 +1,19 @@
+# gow3 settings. scripts\build.ps1 copies this next to gow3.exe only when no gow3.toml is there,
+# so edits to the copy next to the exe are kept. Every setting also works on the command line
+# (--name=value).
+
+# ---------- Display ----------
+# fullscreen = true
+# Internal render resolution as a multiple of 1280x720: 1 = 720p, 2 = 1440p, 3 = 4K.
+# With DLSS, 1 upscales 720p to the screen (DLSS Performance at 1440p); 2 at 1440p is DLAA.
+# resolution_scale = 1
+
+# ---------- Upscaling (patched SDK DLLs in out\sdk; the gow2_ names come from the Gears 2 port) ----------
+# Temporal upscaling: "dlss" (NVIDIA RTX), "fsr4" (Radeon RX 7000/9000), "fsr3", or "off".
+gow2_temporal = true
+gow2_upscaler = "dlss"
+
+# ---------- Diagnostics ----------
+# One D3D12STATS line every five seconds in the log: draws skipped while a pipeline compiles
+# (draws_pipeline_pending), shaders translated on the draw thread (shaders_sync), and so on.
+d3d12_stats_log = true

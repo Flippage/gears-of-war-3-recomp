@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <windows.h>
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -43,6 +45,20 @@ class Gow3App : public rex::ReXApp {
     // so the trace wraps the fixed call).
     rex::glue::InstallContentFix();
     rex::glue::InstallXamTrace();  // dev tool, GOW3_XAM_TRACE=1
+    SetUpscaleTarget();
+  }
+
+  // The patched runtime's temporal upscalers (DLSS/FSR, gow2_temporal + gow2_upscaler) scale the
+  // finished frame to the screen and skip every frame while its size is unknown. Same as the
+  // Gears of War 2 port's SetUpscaleTarget; GOW2_TARGET_W/H set by the player win.
+  static void SetUpscaleTarget() {
+    DEVMODEW dm{};
+    dm.dmSize = sizeof(dm);
+    const bool have = EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm) && dm.dmPelsHeight;
+    if (!std::getenv("GOW2_TARGET_W"))
+      _putenv_s("GOW2_TARGET_W", std::to_string(have ? dm.dmPelsWidth : 1920).c_str());
+    if (!std::getenv("GOW2_TARGET_H"))
+      _putenv_s("GOW2_TARGET_H", std::to_string(have ? dm.dmPelsHeight : 1080).c_str());
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
   void OnPostLoadXexImage() override {
