@@ -15,8 +15,10 @@
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
 
+#include "gow3_content_fix.h"
 #include "gow3_utf8_guard.h"
 #include "gow3_xam_input_guard.h"
+#include "gow3_xam_trace.h"
 
 class Gow3App : public rex::ReXApp {
  public:
@@ -37,11 +39,16 @@ class Gow3App : public rex::ReXApp {
     // The guest polls XamInput* from several threads; the runtime's device list has no lock.
     rex::glue::InstallXamInputGuard();
     rex::glue::InstallDiscErrorSilencer();
+    // Save devices: keep the async XamContentCreateEx/Close root names alive (before the trace,
+    // so the trace wraps the fixed call).
+    rex::glue::InstallContentFix();
+    rex::glue::InstallXamTrace();  // dev tool, GOW3_XAM_TRACE=1
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
-  // Dev tool: GOW3_DUMP_IMAGE=<dir> writes the loaded (decrypted, decompressed) image to
-  // <dir>/image.bin for tools/make_image_blocks.py and the hint harvester.
   void OnPostLoadXexImage() override {
+    rex::glue::AllocateContentFixRing();
+    // Dev tool: GOW3_DUMP_IMAGE=<dir> writes the loaded (decrypted, decompressed) image to
+    // <dir>/image.bin for tools/make_image_blocks.py and the hint harvester.
     const char* dir = std::getenv("GOW3_DUMP_IMAGE");
     if (!dir || !*dir) return;
     constexpr uint32_t kBase = 0x82000000, kEnd = 0x835B0000;
