@@ -1,0 +1,228 @@
+diff --git a/src/filesystem/devices/host_path_device.cpp b/src/filesystem/devices/host_path_device.cpp
+index f68b79a..2c4e247 100644
+--- a/src/filesystem/devices/host_path_device.cpp
++++ b/src/filesystem/devices/host_path_device.cpp
+@@ -12,6 +12,11 @@
+ #include <rex/filesystem/devices/host_path_entry.h>
+ 
+ #include <algorithm>
++#include <cctype>
++#include <cstdlib>
++#include <string>
++#include <system_error>
++#include <unordered_map>
+ 
+ #include <rex/filesystem.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+@@ -21,6 +26,58 @@
+ 
+ namespace rex::filesystem {
+ 
++namespace {
++
++// Lower-cases and turns '\' into '/' so guest paths compare the same no
++// matter how the host or the environment spelled them.
++std::string NormalizeOverrideKey(std::string_view path) {
++  std::string out;
++  out.reserve(path.size());
++  for (char c : path) {
++    if (c == '\\') {
++      out.push_back('/');
++    } else {
++      out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
++    }
++  }
++  return out;
++}
++
++// GOW2_VFS_OVERRIDES="guest/relative/path=C:\host\file;other/path=D:\x\y".
++// Parsed once; later edits of the variable do not re-read it.
++const std::unordered_map<std::string, std::string>& GetVfsOverrides() {
++  static const std::unordered_map<std::string, std::string> overrides = [] {
++    std::unordered_map<std::string, std::string> table;
++    const char* raw = std::getenv("GOW2_VFS_OVERRIDES");
++    if (!raw || !*raw) {
++      return table;
++    }
++    std::string_view rest(raw);
++    while (!rest.empty()) {
++      size_t semi = rest.find(';');
++      std::string_view item = rest.substr(0, semi);
++      rest = (semi == std::string_view::npos) ? std::string_view() : rest.substr(semi + 1);
++      if (item.empty()) {
++        continue;
++      }
++      size_t eq = item.find('=');
++      if (eq == std::string_view::npos) {
++        continue;
++      }
++      std::string key = NormalizeOverrideKey(item.substr(0, eq));
++      std::string value(item.substr(eq + 1));
++      if (key.empty() || value.empty()) {
++        continue;
++      }
++      table[key] = value;
++    }
++    return table;
++  }();
++  return overrides;
++}
++
++}  // namespace
++
+ HostPathDevice::HostPathDevice(const std::string_view mount_path,
+                                const std::filesystem::path& host_path, bool read_only,
+                                bool allow_share_delete)
+@@ -115,9 +172,31 @@ Entry* HostPathDevice::ResolvePath(const std::string_view path) {
+ 
+ void HostPathDevice::PopulateEntry(HostPathEntry* parent_entry) {
+   auto child_infos = rex::filesystem::ListFiles(parent_entry->host_path());
++  const auto& overrides = GetVfsOverrides();
++  const bool allow_overrides = read_only_ && !overrides.empty();
+   for (auto& child_info : child_infos) {
+-    auto child = HostPathEntry::Create(this, parent_entry,
+-                                       parent_entry->host_path() / child_info.name, child_info);
++    std::filesystem::path child_host_path = parent_entry->host_path() / child_info.name;
++    rex::filesystem::FileInfo effective_info = child_info;
++    if (allow_overrides && child_info.type != rex::filesystem::FileInfo::Type::kDirectory) {
++      std::error_code ec;
++      std::filesystem::path relative =
++          std::filesystem::relative(child_host_path, host_path_, ec);
++      if (!ec) {
++        auto it = overrides.find(NormalizeOverrideKey(rex::path_to_utf8(relative)));
++        if (it != overrides.end()) {
++          std::filesystem::path override_host_path = rex::to_path(it->second);
++          rex::filesystem::FileInfo override_info;
++          if (rex::filesystem::GetInfo(override_host_path, &override_info)) {
++            // Keep the original child name so the game still sees its file.
++            override_info.name = child_info.name;
++            effective_info = override_info;
++            child_host_path = override_host_path;
++            REXLOG_INFO("vfs override: {} -> {}", rex::path_to_utf8(relative), it->second);
++          }
++        }
++      }
++    }
++    auto child = HostPathEntry::Create(this, parent_entry, child_host_path, effective_info);
+     parent_entry->children_.push_back(std::unique_ptr<Entry>(child));
+ 
+     if (child_info.type == rex::filesystem::FileInfo::Type::kDirectory) {
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index 813bb1c..71f9080 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -28,6 +28,10 @@ REXCVAR_DEFINE_STRING(input_backend, "sdl", "Input", "Input backend: sdl, xinput
+     .allowed({"sdl", "xinput"});
+ 
+ REXCVAR_DEFINE_BOOL(guide_button, false, "Input", "Enable guide button pass-through");
++REXCVAR_DEFINE_DOUBLE(pad_right_stick_deadzone, 0.0, "Input",
++                      "Radial dead zone for the right stick of physical controllers, 0 to 0.9. "
++                      "Set by games that turn off their own look dead zone so stick noise does "
++                      "not move the camera.");
+ namespace rex::input {
+ 
+ namespace {
+diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
+index c7c440d..f2dab7e 100644
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -9,6 +9,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include "../stick_deadzone.h"
++
+ #include <array>
+ #include <filesystem>
+ 
+@@ -221,6 +223,11 @@ X_RESULT SDLInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+     // pressed buttons aren't lost and will be visible again.
+     std::memset(&out_state->gamepad, 0, sizeof(out_state->gamepad));
+   }
++  auto [dead_rx, dead_ry] = ApplyRightStickDeadzone(
++      static_cast<int16_t>(out_state->gamepad.thumb_rx),
++      static_cast<int16_t>(out_state->gamepad.thumb_ry), REXCVAR_GET(pad_right_stick_deadzone));
++  out_state->gamepad.thumb_rx = dead_rx;
++  out_state->gamepad.thumb_ry = dead_ry;
+   return X_ERROR_SUCCESS;
+ }
+ 
+diff --git a/src/input/stick_deadzone.h b/src/input/stick_deadzone.h
+new file mode 100644
+index 0000000..7d6b1c4
+--- /dev/null
++++ b/src/input/stick_deadzone.h
+@@ -0,0 +1,47 @@
++/**
++ * @file        input/stick_deadzone.h
++ * @brief       Radial dead zone for physical controller right sticks.
++ *
++ * @copyright   Copyright (c) 2026 The gow2-recomp authors
++ *              All rights reserved.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <utility>
++
++#include <rex/cvar.h>
++
++REXCVAR_DECLARE(double, pad_right_stick_deadzone);
++
++namespace rex::input {
++
++// Applies a radial dead zone to a right thumbstick sample, rescaling the
++// surviving deflection back to full range. Only physical pads (SDL, XInput)
++// call this, on the state they return before states are merged. The
++// keyboard/mouse driver never calls it.
++inline std::pair<int16_t, int16_t> ApplyRightStickDeadzone(int16_t rx, int16_t ry,
++                                                           double deadzone) {
++  double dz = std::clamp(deadzone, 0.0, 0.9);
++  if (dz == 0.0) {
++    return {rx, ry};
++  }
++  double x = static_cast<double>(rx);
++  double y = static_cast<double>(ry);
++  double m = std::sqrt(x * x + y * y) / 32767.0;
++  if (m < dz) {
++    return {0, 0};
++  }
++  double scale = ((m - dz) / (1.0 - dz)) / m;
++  auto clamp16 = [](double v) {
++    return static_cast<int16_t>(std::clamp(std::lround(v), -32768L, 32767L));
++  };
++  return {clamp16(x * scale), clamp16(y * scale)};
++}
++
++}  // namespace rex::input
+diff --git a/src/input/xinput/xinput_input_driver.cpp b/src/input/xinput/xinput_input_driver.cpp
+index a6a1da9..d934eaa 100644
+--- a/src/input/xinput/xinput_input_driver.cpp
++++ b/src/input/xinput/xinput_input_driver.cpp
+@@ -9,6 +9,8 @@
+  * @modified    Sanjay Govind, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include "../stick_deadzone.h"
++
+ #include <array>
+ #include <filesystem>
+ 
+@@ -224,6 +226,12 @@ X_RESULT XinputInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state
+   out_state->gamepad.thumb_rx = native_state.state.Gamepad.sThumbRX;
+   out_state->gamepad.thumb_ry = native_state.state.Gamepad.sThumbRY;
+ 
++  auto [dead_rx, dead_ry] = ApplyRightStickDeadzone(
++      static_cast<int16_t>(out_state->gamepad.thumb_rx),
++      static_cast<int16_t>(out_state->gamepad.thumb_ry), REXCVAR_GET(pad_right_stick_deadzone));
++  out_state->gamepad.thumb_rx = dead_rx;
++  out_state->gamepad.thumb_ry = dead_ry;
++
+   return result;
+ }
+ 

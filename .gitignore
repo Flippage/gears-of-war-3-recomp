@@ -4,3 +4,6 @@ generated/
 out/
 *.xex
 *.log
+
+# Downloaded/compiled SDK trees (scripts\build-sdk.ps1)
+out/sdk-build/

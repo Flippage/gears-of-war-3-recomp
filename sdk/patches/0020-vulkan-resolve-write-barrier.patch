@@ -1,0 +1,15 @@
+diff --git a/src/graphics/vulkan/shared_memory.cpp b/src/graphics/vulkan/shared_memory.cpp
+index 0e86b6f..97711c8 100644
+--- a/src/graphics/vulkan/shared_memory.cpp
++++ b/src/graphics/vulkan/shared_memory.cpp
+@@ -385,7 +385,9 @@ void VulkanSharedMemory::GetUsageMasks(Usage usage, VkPipelineStageFlags& stage_
+   switch (usage) {
+     case Usage::kComputeWrite:
+       stage_mask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+-      access_mask = VK_ACCESS_SHADER_READ_BIT;
++      // Resolves write guest memory from compute: without the write bit the barrier before a
++      // later read did not cover those writes (D3D12 issues a UAV barrier there).
++      access_mask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+       return;
+     case Usage::kTransferDestination:
+       stage_mask = VK_PIPELINE_STAGE_TRANSFER_BIT;

@@ -1,0 +1,1713 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index da8e432..299de8c 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -115,6 +115,9 @@ class CommandProcessor {
+   virtual void InitializeShaderStorage(const std::filesystem::path& cache_root, uint32_t title_id,
+                                        bool blocking);
+ 
++  virtual void InitializeTextureReplacement(const std::filesystem::path& cache_root,
++                                            uint32_t title_id) {}
++
+   void InitializeRingBuffer(uint32_t ptr, uint32_t size_log2);
+   void EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2);
+ 
+diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
+index 8e7d40d..2fac5a4 100644
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -56,6 +56,9 @@ class D3D12CommandProcessor : public CommandProcessor {
+   void InitializeShaderStorage(const std::filesystem::path& cache_root, uint32_t title_id,
+                                bool blocking) override;
+ 
++  void InitializeTextureReplacement(const std::filesystem::path& cache_root,
++                                    uint32_t title_id) override;
++
+   ui::d3d12::D3D12Provider& GetD3D12Provider() const {
+     return *static_cast<ui::d3d12::D3D12Provider*>(graphics_system_->provider());
+   }
+diff --git a/include/rex/graphics/d3d12/texture_cache.h b/include/rex/graphics/d3d12/texture_cache.h
+index fae1448..1b7a787 100644
+--- a/include/rex/graphics/d3d12/texture_cache.h
++++ b/include/rex/graphics/d3d12/texture_cache.h
+@@ -12,9 +12,12 @@
+ #pragma once
+ 
+ #include <array>
++#include <deque>
++#include <filesystem>
+ #include <functional>
+ #include <memory>
+ #include <unordered_map>
++#include <unordered_set>
+ #include <utility>
+ #include <vector>
+ 
+@@ -31,6 +34,8 @@
+ namespace rex::graphics::d3d12 {
+ 
+ class D3D12CommandProcessor;
++struct GuestTextureDesc;
++class TextureReplacementManager;
+ 
+ class D3D12TextureCache final : public TextureCache {
+  public:
+@@ -40,6 +45,10 @@ class D3D12TextureCache final : public TextureCache {
+     TextureKey key;
+     uint32_t host_swizzle;
+     uint8_t swizzled_signs;
++    // Sum of descriptor_generation() of the unsigned and the signed textures.
++    // Generations only grow, so this changes whenever either texture switches
++    // its backing resource (texture pack replacement on/off).
++    uint32_t descriptor_generation;
+   };
+ 
+   // Sampler parameters that can be directly converted to a host sampler or used
+@@ -86,10 +95,15 @@ class D3D12TextureCache final : public TextureCache {
+ 
+   void ClearCache() override;
+ 
++  void CompletedSubmissionUpdated(uint64_t completed_submission_index) override;
+   void BeginSubmission(uint64_t new_submission_index) override;
+   void BeginFrame() override;
+   void EndFrame();
+ 
++  // Creates the texture pack (dump/replace) manager. No-op unless dumping or
++  // replacement is enabled; every use tolerates a null manager (zero cost).
++  void InitializeTextureReplacement(const std::filesystem::path& cache_root, uint32_t title_id);
++
+   // Must be called within a submission - creates and untiles textures needed by
+   // shaders and puts them in the SRV state. This may bind compute pipelines
+   // (notifying the command processor about that), so this must be called before
+@@ -256,6 +270,29 @@ class D3D12TextureCache final : public TextureCache {
+     ~D3D12Texture();
+ 
+     ID3D12Resource* resource() const { return resource_.Get(); }
++    ID3D12Resource* replacement_resource() const { return replacement_resource_.Get(); }
++    DXGI_FORMAT replacement_format() const { return replacement_format_; }
++    uint32_t replacement_mip_levels() const { return replacement_mip_levels_; }
++    uint64_t replacement_hash() const { return replacement_hash_; }
++    bool has_replacement() const { return replacement_resource_ != nullptr; }
++    uint32_t descriptor_generation() const { return descriptor_generation_; }
++
++    // Content that changes on almost every load (video planes, CPU-animated textures) is
++    // not a static asset: after this many changes it is no longer hashed, dumped or replaced.
++    static constexpr uint32_t kDynamicContentChanges = 2;
++    bool is_dynamic_content() const { return content_changes_ >= kDynamicContentChanges; }
++    // Records the content hash of a load; false once the texture counts as dynamic.
++    bool NoteContentHash(uint64_t hash);
++
++    // Switches sampling to an already uploaded replacement resource, retiring
++    // the current descriptors and the previous replacement resource for
++    // deferred release (command lists in flight may still reference them).
++    void SetReplacement(ID3D12Resource* resource, DXGI_FORMAT format, uint32_t mip_levels,
++                        uint64_t hash);
++    // Switches sampling back to the guest resource, retiring the current
++    // descriptors and the replacement resource the same way. No-op when no
++    // replacement is active.
++    void ClearReplacement();
+ 
+     D3D12_RESOURCE_STATES SetResourceState(D3D12_RESOURCE_STATES new_state) {
+       D3D12_RESOURCE_STATES old_state = resource_state_;
+@@ -276,6 +313,18 @@ class D3D12TextureCache final : public TextureCache {
+     Microsoft::WRL::ComPtr<ID3D12Resource> resource_;
+     D3D12_RESOURCE_STATES resource_state_;
+     std::unique_ptr<D3D12Texture> texture_3d_as_2d_;
++    // Texture pack replacement ("4K packs"). Owned by the guest texture so its
++    // lifetime follows the TextureKey, LRU and invalidation. Always in
++    // NON_PIXEL_SHADER_RESOURCE | PIXEL_SHADER_RESOURCE state once uploaded.
++    Microsoft::WRL::ComPtr<ID3D12Resource> replacement_resource_;
++    DXGI_FORMAT replacement_format_ = DXGI_FORMAT_UNKNOWN;
++    uint32_t replacement_mip_levels_ = 0;
++    uint64_t replacement_hash_ = 0;
++    // Bumped every time the backing resource for views changes, so stale
++    // externally cached descriptor indices are rewritten (TextureSRVKey).
++    uint32_t descriptor_generation_ = 0;
++    uint64_t last_content_hash_ = 0;
++    uint32_t content_changes_ = 0;
+ 
+     // For bindful - indices in the non-shader-visible descriptor cache for
+     // copying to the shader-visible heap (much faster than recreating, which,
+@@ -407,6 +456,15 @@ class D3D12TextureCache final : public TextureCache {
+   uint32_t FindOrCreateTextureDescriptor(D3D12Texture& texture, xenos::DataDimension dimension,
+                                          bool is_signed, uint32_t host_swizzle);
+   void ReleaseTextureDescriptor(uint32_t descriptor_index);
++  // Retires a descriptor index or a resource replaced on a texture for release
++  // once the submission that may still reference it completes.
++  void DeferTextureDescriptorRelease(uint32_t descriptor_index, uint64_t submission);
++  void DeferTextureResourceRelease(Microsoft::WRL::ComPtr<ID3D12Resource> resource,
++                                   uint64_t submission);
++  // Hashes the freshly loaded guest texture and swaps in a pack replacement
++  // when one matches. Never fails the guest load.
++  void MaybeUpdateReplacement(D3D12Texture& texture);
++  void LogReplacementFailureOnce(uint64_t hash, const char* reason);
+   D3D12_CPU_DESCRIPTOR_HANDLE GetTextureDescriptorCPUHandle(uint32_t descriptor_index) const;
+ 
+   size_t GetScaledResolveBufferCount() const {
+@@ -461,6 +519,17 @@ class D3D12TextureCache final : public TextureCache {
+   D3D12CommandProcessor& command_processor_;
+   bool bindless_resources_used_;
+ 
++  // Texture pack (dump/replace) manager. Null when both texture_dump and
++  // texture_replace are off - the feature is then entirely free.
++  std::unique_ptr<TextureReplacementManager> texture_replacement_;
++  // Descriptor indices and resources retired by SetReplacement/ClearReplacement
++  // while command lists in flight may still reference them, tagged with the
++  // submission index at the time of the change.
++  std::deque<std::pair<uint64_t, uint32_t>> retired_srv_descriptors_;
++  std::deque<std::pair<uint64_t, Microsoft::WRL::ComPtr<ID3D12Resource>>> retired_resources_;
++  // Replacement upload/creation failures already logged (once per hash).
++  std::unordered_set<uint64_t> replacement_failure_hashes_;
++
+   Microsoft::WRL::ComPtr<ID3D12RootSignature> load_root_signature_;
+   std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, kLoadShaderCount> load_pipelines_;
+   // Load pipelines for resolution-scaled resolve targets.
+diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
+index 2cf24c4..68a61a6 100644
+--- a/include/rex/graphics/flags.h
++++ b/include/rex/graphics/flags.h
+@@ -45,6 +45,10 @@ REXCVAR_DECLARE(bool, mrt_edram_used_range_clamp_to_min);
+ REXCVAR_DECLARE(bool, direct_host_resolve);
+ 
+ // GPU Textures
++REXCVAR_DECLARE(bool, texture_dump);
++REXCVAR_DECLARE(std::string, texture_pack_dir);
++REXCVAR_DECLARE(bool, texture_replace);
++REXCVAR_DECLARE(bool, texture_replace_allow_larger);
+ REXCVAR_DECLARE(bool, gpu_allow_invalid_fetch_constants);
+ REXCVAR_DECLARE(bool, gpu_3d_to_2d_texture);
+ REXCVAR_DECLARE(int32_t, anisotropic_override);
+diff --git a/include/rex/graphics/shared_memory.h b/include/rex/graphics/shared_memory.h
+index 4d85a2b..1ffd071 100644
+--- a/include/rex/graphics/shared_memory.h
++++ b/include/rex/graphics/shared_memory.h
+@@ -79,6 +79,11 @@ class SharedMemory {
+   bool RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, size_t count);
+   bool RequestRange(uint32_t start, uint32_t length);
+ 
++  memory::Memory& guest_memory() const { return memory_; }
++  // Returns whether any page in the range holds GPU-written data (resolves,
++  // memexports) rather than CPU-uploaded bytes.
++  bool IsRangeGpuWritten(uint32_t start, uint32_t length);
++
+   // Marks the range and, if not exact_range, potentially its surroundings
+   // (to up to the first GPU-written page, as an access violation exception
+   // count optimization) as modified by the CPU, also invalidating GPU-written
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index 60c0298..2b052c5 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -80,6 +80,7 @@ if(REXGLUE_USE_D3D12)
+         d3d12/shader.cpp
+         d3d12/shared_memory.cpp
+         d3d12/texture_cache.cpp
++        d3d12/texture_replacement.cpp
+         d3d12/deferred_command_list.cpp
+         d3d12/pipeline_cache.cpp
+         d3d12/gow2_temporal.cpp
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 74869af..0400411 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -153,6 +153,13 @@ void D3D12CommandProcessor::InitializeShaderStorage(const std::filesystem::path&
+   pipeline_cache_->InitializeShaderStorage(cache_root, title_id, blocking);
+ }
+ 
++void D3D12CommandProcessor::InitializeTextureReplacement(const std::filesystem::path& cache_root,
++                                                         uint32_t title_id) {
++  if (texture_cache_) {
++    texture_cache_->InitializeTextureReplacement(cache_root, title_id);
++  }
++}
++
+ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
+                                                                uint32_t packet, uint32_t count) {
+   if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_) {
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 7c8b752..8ab1c24 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -22,6 +22,8 @@
+ #include <rex/graphics/d3d12/command_processor.h>
+ #include <rex/graphics/d3d12/shared_memory.h>
+ #include <rex/graphics/d3d12/texture_cache.h>
++
++#include "texture_replacement.h"
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/pipeline/texture/info.h>
+ #include <rex/graphics/pipeline/texture/util.h>
+@@ -648,12 +650,71 @@ bool D3D12TextureCache::Initialize() {
+ void D3D12TextureCache::ClearCache() {
+   TextureCache::ClearCache();
+ 
++  // Nothing in flight can be referenced after a full clear - release retired
++  // replacement descriptors and resources now, before the descriptor cache they
++  // may return to (bindful) is reset below.
++  for (const auto& retired_descriptor : retired_srv_descriptors_) {
++    ReleaseTextureDescriptor(retired_descriptor.second);
++  }
++  retired_srv_descriptors_.clear();
++  retired_resources_.clear();
++  if (texture_replacement_) {
++    texture_replacement_->ClearCache();
++  }
++
+   // Clear texture descriptor cache.
+   srv_descriptor_cache_free_.clear();
+   srv_descriptor_cache_allocated_ = 0;
+   srv_descriptor_cache_.clear();
+ }
+ 
++void D3D12TextureCache::InitializeTextureReplacement(const std::filesystem::path& cache_root,
++                                                     uint32_t title_id) {
++  if (!REXCVAR_GET(texture_dump) && !REXCVAR_GET(texture_replace)) {
++    texture_replacement_.reset();
++    return;
++  }
++  auto replacement_manager = std::make_unique<TextureReplacementManager>();
++  replacement_manager->Initialize(cache_root, title_id, command_processor_.GetD3D12Provider());
++  texture_replacement_ = std::move(replacement_manager);
++}
++
++void D3D12TextureCache::CompletedSubmissionUpdated(uint64_t completed_submission_index) {
++  while (!retired_srv_descriptors_.empty() &&
++         retired_srv_descriptors_.front().first <= completed_submission_index) {
++    ReleaseTextureDescriptor(retired_srv_descriptors_.front().second);
++    retired_srv_descriptors_.pop_front();
++  }
++  // ComPtr destruction on erase releases the underlying resources.
++  for (auto it = retired_resources_.begin(); it != retired_resources_.end();) {
++    if (it->first <= completed_submission_index) {
++      it = retired_resources_.erase(it);
++    } else {
++      ++it;
++    }
++  }
++  if (texture_replacement_) {
++    texture_replacement_->Reclaim(completed_submission_index);
++  }
++  TextureCache::CompletedSubmissionUpdated(completed_submission_index);
++}
++
++void D3D12TextureCache::DeferTextureDescriptorRelease(uint32_t descriptor_index,
++                                                      uint64_t submission) {
++  retired_srv_descriptors_.emplace_back(submission, descriptor_index);
++}
++
++void D3D12TextureCache::DeferTextureResourceRelease(
++    Microsoft::WRL::ComPtr<ID3D12Resource> resource, uint64_t submission) {
++  retired_resources_.emplace_back(submission, std::move(resource));
++}
++
++void D3D12TextureCache::LogReplacementFailureOnce(uint64_t hash, const char* reason) {
++  if (replacement_failure_hashes_.insert(hash).second) {
++    REXGPU_ERROR("D3D12TextureCache: Texture replacement {:016X} not applied: {}", hash, reason);
++  }
++}
++
+ void D3D12TextureCache::BeginSubmission(uint64_t new_submission_index) {
+   TextureCache::BeginSubmission(new_submission_index);
+ 
+@@ -782,6 +843,18 @@ bool D3D12TextureCache::AreActiveTextureSRVKeysUpToDate(
+         key.swizzled_signs != binding->swizzled_signs) {
+       return false;
+     }
++    uint32_t descriptor_generation = 0;
++    if (binding->texture) {
++      descriptor_generation +=
++          static_cast<D3D12Texture*>(binding->texture)->descriptor_generation();
++    }
++    if (binding->texture_signed) {
++      descriptor_generation +=
++          static_cast<D3D12Texture*>(binding->texture_signed)->descriptor_generation();
++    }
++    if (key.descriptor_generation != descriptor_generation) {
++      return false;
++    }
+   }
+   return true;
+ }
+@@ -796,11 +869,21 @@ void D3D12TextureCache::WriteActiveTextureSRVKeys(
+       key.key.MakeInvalid();
+       key.host_swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_0000;
+       key.swizzled_signs = kSwizzledSignsUnsigned;
++      key.descriptor_generation = 0;
+       continue;
+     }
+     key.key = binding->key;
+     key.host_swizzle = binding->host_swizzle;
+     key.swizzled_signs = binding->swizzled_signs;
++    key.descriptor_generation = 0;
++    if (binding->texture) {
++      key.descriptor_generation +=
++          static_cast<D3D12Texture*>(binding->texture)->descriptor_generation();
++    }
++    if (binding->texture_signed) {
++      key.descriptor_generation +=
++          static_cast<D3D12Texture*>(binding->texture_signed)->descriptor_generation();
++    }
+   }
+ }
+ 
+@@ -1443,6 +1526,61 @@ D3D12TextureCache::D3D12Texture::~D3D12Texture() {
+   }
+ }
+ 
++void D3D12TextureCache::D3D12Texture::SetReplacement(ID3D12Resource* resource, DXGI_FORMAT format,
++                                                     uint32_t mip_levels, uint64_t hash) {
++  auto& d3d12_texture_cache = static_cast<D3D12TextureCache&>(texture_cache());
++  uint64_t submission = d3d12_texture_cache.command_processor_.GetCurrentSubmission();
++  for (const auto& descriptor_pair : srv_descriptors_) {
++    d3d12_texture_cache.DeferTextureDescriptorRelease(descriptor_pair.second, submission);
++  }
++  srv_descriptors_.clear();
++  if (replacement_resource_) {
++    d3d12_texture_cache.DeferTextureResourceRelease(replacement_resource_, submission);
++    replacement_resource_.Reset();
++  }
++  replacement_resource_ = resource;
++  replacement_format_ = format;
++  replacement_mip_levels_ = mip_levels;
++  replacement_hash_ = hash;
++  ++descriptor_generation_;
++  ID3D12Device* device =
++      d3d12_texture_cache.command_processor_.GetD3D12Provider().GetDevice();
++  D3D12_RESOURCE_DESC guest_desc = resource_->GetDesc();
++  D3D12_RESOURCE_DESC replacement_desc = replacement_resource_->GetDesc();
++  SetHostMemoryUsage(device->GetResourceAllocationInfo(0, 1, &guest_desc).SizeInBytes +
++                     device->GetResourceAllocationInfo(0, 1, &replacement_desc).SizeInBytes);
++}
++
++void D3D12TextureCache::D3D12Texture::ClearReplacement() {
++  if (!replacement_resource_) {
++    return;
++  }
++  auto& d3d12_texture_cache = static_cast<D3D12TextureCache&>(texture_cache());
++  uint64_t submission = d3d12_texture_cache.command_processor_.GetCurrentSubmission();
++  for (const auto& descriptor_pair : srv_descriptors_) {
++    d3d12_texture_cache.DeferTextureDescriptorRelease(descriptor_pair.second, submission);
++  }
++  srv_descriptors_.clear();
++  d3d12_texture_cache.DeferTextureResourceRelease(replacement_resource_, submission);
++  replacement_resource_.Reset();
++  replacement_format_ = DXGI_FORMAT_UNKNOWN;
++  replacement_mip_levels_ = 0;
++  replacement_hash_ = 0;
++  ++descriptor_generation_;
++  ID3D12Device* device =
++      d3d12_texture_cache.command_processor_.GetD3D12Provider().GetDevice();
++  D3D12_RESOURCE_DESC guest_desc = resource_->GetDesc();
++  SetHostMemoryUsage(device->GetResourceAllocationInfo(0, 1, &guest_desc).SizeInBytes);
++}
++
++bool D3D12TextureCache::D3D12Texture::NoteContentHash(uint64_t hash) {
++  if (last_content_hash_ != 0 && hash != last_content_hash_) {
++    ++content_changes_;
++  }
++  last_content_hash_ = hash;
++  return !is_dynamic_content();
++}
++
+ bool D3D12TextureCache::IsDecompressionNeeded(xenos::TextureFormat format, uint32_t width,
+                                               uint32_t height) const {
+   DXGI_FORMAT dxgi_format_uncompressed = host_formats_[uint32_t(format)].dxgi_format_uncompressed;
+@@ -1577,6 +1715,125 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
+   return std::unique_ptr<Texture>(new D3D12Texture(*this, key, resource.Get(), resource_state));
+ }
+ 
++void D3D12TextureCache::MaybeUpdateReplacement(D3D12Texture& texture) {
++  if (!texture_replacement_) {
++    return;
++  }
++  const TextureKey& key = texture.key();
++  // Upload-time policy mirroring HashGuest: never hash, dump or replace
++  // scaled resolves, GPU-written ranges, non-2D textures and arrays,
++  // signed-separate formats or the 3D-as-2D wrapper.
++  if (key.scaled_resolve || texture.force_load_3d_tiling()) {
++    return;
++  }
++  if (key.dimension != xenos::DataDimension::k2DOrStacked || key.GetDepthOrArraySize() != 1) {
++    return;
++  }
++  if (IsSignedVersionSeparateForFormat(key) || texture.is_dynamic_content()) {
++    return;
++  }
++  uint32_t base_size = texture.GetGuestBaseSize();
++  uint32_t mips_size = texture.GetGuestMipsSize();
++  uint32_t base_address = key.base_page << 12;
++  uint32_t mips_address = key.mip_page << 12;
++  bool gpu_written = false;
++  if (base_size != 0) {
++    gpu_written = shared_memory().IsRangeGpuWritten(base_address, base_size);
++  }
++  if (!gpu_written && mips_size != 0) {
++    gpu_written = shared_memory().IsRangeGpuWritten(mips_address, mips_size);
++  }
++  GuestTextureDesc desc;
++  desc.format = key.format;
++  desc.dimension = key.dimension;
++  desc.endianness = key.endianness;
++  desc.width = key.GetWidth();
++  desc.height = key.GetHeight();
++  desc.depth_or_array = key.GetDepthOrArraySize();
++  desc.pitch = key.pitch;
++  desc.tiled = key.tiled != 0;
++  desc.packed_mips = key.packed_mips != 0;
++  desc.mip_max_level = key.mip_max_level;
++  desc.scaled_resolve = key.scaled_resolve != 0;
++  desc.signed_separate_format = IsSignedVersionSeparateForFormat(key);
++  desc.force_3d_tiling = texture.force_load_3d_tiling();
++  desc.base_page = key.base_page;
++  desc.mip_page = key.mip_page;
++  desc.base_size = base_size;
++  desc.mips_size = mips_size;
++  const uint8_t* base_bytes =
++      base_size != 0
++          ? shared_memory().guest_memory().TranslatePhysical<const uint8_t*>(base_address)
++          : nullptr;
++  const uint8_t* mips_bytes =
++      mips_size != 0
++          ? shared_memory().guest_memory().TranslatePhysical<const uint8_t*>(mips_address)
++          : nullptr;
++  uint64_t hash = 0;
++  if (!texture_replacement_->HashGuest(desc, base_bytes, mips_bytes, gpu_written, &hash)) {
++    if (texture.has_replacement()) {
++      texture.ClearReplacement();
++    }
++    return;
++  }
++  if (!texture.NoteContentHash(hash)) {
++    if (texture.has_replacement()) {
++      texture.ClearReplacement();
++    }
++    return;
++  }
++  texture_replacement_->MaybeDump(desc, base_bytes, texture.guest_layout().base.row_pitch_bytes,
++                                  hash);
++  if (texture.replacement_hash() == hash) {
++    return;
++  }
++  const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
++  const ReplacementImage* image = nullptr;
++  if (!texture_replacement_->FindReplacement(hash, desc,
++                                             GetMaxHostTextureWidthHeight(key.dimension),
++                                             provider.AreUnalignedBlockTexturesSupported(),
++                                             &image)) {
++    if (texture.has_replacement()) {
++      texture.ClearReplacement();
++    }
++    return;
++  }
++  assert_not_null(image);
++  // The mip-count rule (design 2.2) is enforced by FindReplacement already.
++  ID3D12Device* device = provider.GetDevice();
++  D3D12_RESOURCE_DESC replacement_desc = {};
++  replacement_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++  replacement_desc.Alignment = 0;
++  replacement_desc.Width = image->width;
++  replacement_desc.Height = image->height;
++  replacement_desc.DepthOrArraySize = 1;
++  replacement_desc.MipLevels = static_cast<UINT16>(image->mip_levels);
++  replacement_desc.Format = TypelessResourceFormatForReplacement(image->format);
++  replacement_desc.SampleDesc.Count = 1;
++  replacement_desc.SampleDesc.Quality = 0;
++  replacement_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
++  replacement_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
++  Microsoft::WRL::ComPtr<ID3D12Resource> replacement_resource;
++  if (FAILED(device->CreateCommittedResource(&ui::d3d12::util::kHeapPropertiesDefault,
++                                             provider.GetHeapFlagCreateNotZeroed(),
++                                             &replacement_desc, D3D12_RESOURCE_STATE_COPY_DEST,
++                                             nullptr, IID_PPV_ARGS(&replacement_resource)))) {
++    LogReplacementFailureOnce(hash, "failed to create the replacement resource");
++    return;
++  }
++  if (!texture_replacement_->UploadReplacement(command_processor_, replacement_resource.Get(),
++                                               *image)) {
++    LogReplacementFailureOnce(hash, "failed to upload the replacement image");
++    return;
++  }
++  command_processor_.PushTransitionBarrier(
++      replacement_resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
++      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
++          D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
++  command_processor_.SubmitBarriers();
++  texture.SetReplacement(replacement_resource.Get(), image->format, image->mip_levels, hash);
++}
++
+ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base,
+                                                               bool load_mips) {
+   D3D12Texture& d3d12_texture = static_cast<D3D12Texture&>(texture);
+@@ -1952,6 +2209,10 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+ 
+   command_processor_.ReleaseScratchGPUBuffer(copy_buffer, copy_buffer_state);
+ 
++  // The guest resource and its normal load are untouched - a pack replacement
++  // is an extra resource chosen from the content hash.
++  MaybeUpdateReplacement(d3d12_texture);
++
+   return true;
+ }
+ 
+@@ -2125,6 +2386,19 @@ uint32_t D3D12TextureCache::FindOrCreateTextureDescriptor(D3D12Texture& texture,
+         desc.Texture2DArray.ArraySize = 1;
+         desc.Texture2DArray.PlaneSlice = 0;
+         desc.Texture2DArray.ResourceMinLODClamp = 0.0f;
++      } else if (texture.replacement_resource() != nullptr) {
++        // Texture pack replacement: the replacement resource with its own format and mip
++        // count, still a one-slice 2D array view like the guest one - shaders declare 2D
++        // fetches as Texture2DArray.
++        resource_for_view = texture.replacement_resource();
++        desc.Format = is_signed ? TexpackSignedViewFormat(texture.replacement_format())
++                                : texture.replacement_format();
++        desc.Texture2DArray.MostDetailedMip = 0;
++        desc.Texture2DArray.MipLevels = texture.replacement_mip_levels();
++        desc.Texture2DArray.FirstArraySlice = 0;
++        desc.Texture2DArray.ArraySize = 1;
++        desc.Texture2DArray.PlaneSlice = 0;
++        desc.Texture2DArray.ResourceMinLODClamp = 0.0f;
+       } else {
+         desc.Texture2DArray.MostDetailedMip = 0;
+         desc.Texture2DArray.MipLevels = mip_levels;
+diff --git a/src/graphics/d3d12/texture_replacement.cpp b/src/graphics/d3d12/texture_replacement.cpp
+new file mode 100644
+index 0000000..007699c
+--- /dev/null
++++ b/src/graphics/d3d12/texture_replacement.cpp
+@@ -0,0 +1,966 @@
++#include "texture_replacement.h"
++
++#include <algorithm>
++#include <cctype>
++#include <charconv>
++#include <cstdio>
++#include <cstring>
++
++#include <rex/cvar.h>
++#include <rex/filesystem.h>
++#include <rex/graphics/d3d12/command_processor.h>
++#include <rex/graphics/flags.h>
++#include <rex/graphics/pipeline/texture/conversion.h>
++#include <rex/graphics/pipeline/texture/info.h>
++#include <rex/graphics/pipeline/texture/util.h>
++#include <rex/hash.h>
++#include <rex/logging.h>
++#include <rex/math.h>
++#include <rex/ui/d3d12/d3d12_provider.h>
++#include <rex/ui/d3d12/d3d12_upload_buffer_pool.h>
++
++REXCVAR_DEFINE_BOOL(texture_dump, false, "GPU/Textures",
++                    "Write each unique decoded guest texture to the pack dump folder (DDS)");
++REXCVAR_DEFINE_STRING(texture_pack_dir, "", "GPU/Textures",
++                      "Texture pack root. Empty means the \"textures\" folder next to the "
++                      "executable; packs go in <root>/<TITLEID>/replace, dumps in "
++                      "<root>/<TITLEID>/dump")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++REXCVAR_DEFINE_BOOL(texture_replace, false, "GPU/Textures",
++                    "Substitute pack DDS files for matching guest textures. Applies to "
++                    "newly created textures; clear caches or restart to apply everywhere");
++REXCVAR_DEFINE_BOOL(texture_replace_allow_larger, true, "GPU/Textures",
++                    "Allow replacements larger than the guest texture. Same-size packs "
++                    "are always safe; larger ones are sharper but can break shaders "
++                    "doing texel math (see comment)");
++
++namespace rex::graphics::d3d12 {
++
++namespace {
++
++// Larger replacements break getTextureWeights bilinear reconstruction and
++// explicit texel-offset kernels, which compute in guest texels at LOD 0
++// (design section 2.4). Usage is a per-shader tfetch property, invisible at
++// texture creation time, so this stays a user-visible cvar instead of an
++// automatic check. Same-size replacements are exact under every sampling mode.
++constexpr size_t kTexpackUploadPageSize = size_t(64) << 20;
++constexpr uint64_t kMaxRefusalLogs = 50;
++constexpr uint32_t kMaxDdsDimension = 16384;
++constexpr uint32_t kMaxDdsMips = 16;
++
++constexpr uint32_t kDdsMagic = 0x20534444;
++constexpr uint32_t kFourCC_DX10 = 0x30315844;
++constexpr uint32_t kFourCC_DXT1 = 0x31545844;
++constexpr uint32_t kFourCC_DXT3 = 0x33545844;
++constexpr uint32_t kFourCC_DXT5 = 0x35545844;
++constexpr uint32_t kFourCC_ATI1 = 0x31495441;
++constexpr uint32_t kFourCC_ATI2 = 0x32495441;
++constexpr uint32_t kFourCC_BC4U = 0x55344342;
++constexpr uint32_t kFourCC_BC5U = 0x55354342;
++
++constexpr uint32_t kDdsCapsTexture = 0x1000;
++constexpr uint32_t kDdsCaps2Cubemap = 0x200;
++constexpr uint32_t kDdsCaps2Volume = 0x200000;
++
++struct DdsPixelFormat {
++  uint32_t size;
++  uint32_t flags;
++  uint32_t four_cc;
++  uint32_t rgb_bit_count;
++  uint32_t r_mask;
++  uint32_t g_mask;
++  uint32_t b_mask;
++  uint32_t a_mask;
++};
++static_assert(sizeof(DdsPixelFormat) == 32);
++
++struct DdsHeader {
++  uint32_t size;
++  uint32_t flags;
++  uint32_t height;
++  uint32_t width;
++  uint32_t pitch_or_linear_size;
++  uint32_t depth;
++  uint32_t mip_map_count;
++  uint32_t reserved1[11];
++  DdsPixelFormat pixel_format;
++  uint32_t caps;
++  uint32_t caps2;
++  uint32_t caps3;
++  uint32_t caps4;
++  uint32_t reserved2;
++};
++static_assert(sizeof(DdsHeader) == 124);
++
++struct DdsHeaderDXT10 {
++  uint32_t dxgi_format;
++  uint32_t resource_dimension;
++  uint32_t misc_flag;
++  uint32_t array_size;
++  uint32_t misc_flags2;
++};
++static_assert(sizeof(DdsHeaderDXT10) == 20);
++
++bool IsBlockDxgi(DXGI_FORMAT format) {
++  switch (format) {
++    case DXGI_FORMAT_BC1_UNORM:
++    case DXGI_FORMAT_BC2_UNORM:
++    case DXGI_FORMAT_BC3_UNORM:
++    case DXGI_FORMAT_BC4_UNORM:
++    case DXGI_FORMAT_BC5_UNORM:
++    case DXGI_FORMAT_BC6H_UF16:
++    case DXGI_FORMAT_BC6H_SF16:
++    case DXGI_FORMAT_BC7_UNORM:
++      return true;
++    default:
++      return false;
++  }
++}
++
++uint32_t DxgiBlockBytes(DXGI_FORMAT format) {
++  switch (format) {
++    case DXGI_FORMAT_BC1_UNORM:
++    case DXGI_FORMAT_BC4_UNORM:
++      return 8;
++    case DXGI_FORMAT_BC2_UNORM:
++    case DXGI_FORMAT_BC3_UNORM:
++    case DXGI_FORMAT_BC5_UNORM:
++    case DXGI_FORMAT_BC6H_UF16:
++    case DXGI_FORMAT_BC6H_SF16:
++    case DXGI_FORMAT_BC7_UNORM:
++      return 16;
++    default:
++      return 0;
++  }
++}
++
++uint32_t DxgiTexelBytes(DXGI_FORMAT format) {
++  switch (format) {
++    case DXGI_FORMAT_R8G8B8A8_UNORM:
++    case DXGI_FORMAT_B8G8R8A8_UNORM:
++      return 4;
++    case DXGI_FORMAT_R8G8_UNORM:
++      return 2;
++    case DXGI_FORMAT_R8_UNORM:
++      return 1;
++    default:
++      return 0;
++  }
++}
++
++DXGI_FORMAT MapDxgiForReplace(uint32_t dxgi) {
++  switch (dxgi) {
++    case DXGI_FORMAT_BC1_UNORM:
++    case DXGI_FORMAT_BC1_UNORM_SRGB:
++      return DXGI_FORMAT_BC1_UNORM;
++    case DXGI_FORMAT_BC2_UNORM:
++    case DXGI_FORMAT_BC2_UNORM_SRGB:
++      return DXGI_FORMAT_BC2_UNORM;
++    case DXGI_FORMAT_BC3_UNORM:
++    case DXGI_FORMAT_BC3_UNORM_SRGB:
++      return DXGI_FORMAT_BC3_UNORM;
++    case DXGI_FORMAT_BC4_UNORM:
++      return DXGI_FORMAT_BC4_UNORM;
++    case DXGI_FORMAT_BC5_UNORM:
++      return DXGI_FORMAT_BC5_UNORM;
++    case DXGI_FORMAT_BC6H_UF16:
++      return DXGI_FORMAT_BC6H_UF16;
++    case DXGI_FORMAT_BC6H_SF16:
++      return DXGI_FORMAT_BC6H_SF16;
++    case DXGI_FORMAT_BC7_UNORM:
++    case DXGI_FORMAT_BC7_UNORM_SRGB:
++      return DXGI_FORMAT_BC7_UNORM;
++    case DXGI_FORMAT_R8G8B8A8_UNORM:
++    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
++      return DXGI_FORMAT_R8G8B8A8_UNORM;
++    case DXGI_FORMAT_B8G8R8A8_UNORM:
++    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
++      return DXGI_FORMAT_B8G8R8A8_UNORM;
++    case DXGI_FORMAT_R8_UNORM:
++      return DXGI_FORMAT_R8_UNORM;
++    case DXGI_FORMAT_R8G8_UNORM:
++      return DXGI_FORMAT_R8G8_UNORM;
++    default:
++      return DXGI_FORMAT_UNKNOWN;
++  }
++}
++
++DXGI_FORMAT DumpDxgiForGuest(xenos::TextureFormat format) {
++  switch (format) {
++    case xenos::TextureFormat::k_DXT1:
++      return DXGI_FORMAT_BC1_UNORM;
++    case xenos::TextureFormat::k_DXT2_3:
++      return DXGI_FORMAT_BC2_UNORM;
++    case xenos::TextureFormat::k_DXT4_5:
++      return DXGI_FORMAT_BC3_UNORM;
++    case xenos::TextureFormat::k_DXT5A:
++      return DXGI_FORMAT_BC4_UNORM;
++    case xenos::TextureFormat::k_DXN:
++      return DXGI_FORMAT_BC5_UNORM;
++    case xenos::TextureFormat::k_8_8_8_8:
++      return DXGI_FORMAT_R8G8B8A8_UNORM;
++    case xenos::TextureFormat::k_8:
++    case xenos::TextureFormat::k_8_A:
++      return DXGI_FORMAT_R8_UNORM;
++    case xenos::TextureFormat::k_8_8:
++      return DXGI_FORMAT_R8G8_UNORM;
++    default:
++      return DXGI_FORMAT_UNKNOWN;
++  }
++}
++
++const char* DumpFormatTag(DXGI_FORMAT format) {
++  switch (format) {
++    case DXGI_FORMAT_BC1_UNORM:
++      return "bc1";
++    case DXGI_FORMAT_BC2_UNORM:
++      return "bc2";
++    case DXGI_FORMAT_BC3_UNORM:
++      return "bc3";
++    case DXGI_FORMAT_BC4_UNORM:
++      return "bc4";
++    case DXGI_FORMAT_BC5_UNORM:
++      return "bc5";
++    case DXGI_FORMAT_R8G8B8A8_UNORM:
++      return "rgba8";
++    case DXGI_FORMAT_R8_UNORM:
++      return "r8";
++    case DXGI_FORMAT_R8G8_UNORM:
++      return "rg8";
++    default:
++      return "raw";
++  }
++}
++
++bool IsDumpableGuest(xenos::TextureFormat format) {
++  return DumpDxgiForGuest(format) != DXGI_FORMAT_UNKNOWN;
++}
++
++// Conservative guest allowlist for replacement. Depth, YUV/video, MPEG,
++// interlaced, EDRAM and integer/expand families sample differently enough
++// from plain color data that a static DDS would corrupt them.
++bool IsReplaceableGuest(xenos::TextureFormat format) {
++  switch (format) {
++    case xenos::TextureFormat::k_8:
++    case xenos::TextureFormat::k_8_A:
++    case xenos::TextureFormat::k_8_8:
++    case xenos::TextureFormat::k_8_8_8_8:
++    case xenos::TextureFormat::k_8_8_8_8_A:
++    case xenos::TextureFormat::k_1_5_5_5:
++    case xenos::TextureFormat::k_5_6_5:
++    case xenos::TextureFormat::k_6_5_5:
++    case xenos::TextureFormat::k_4_4_4_4:
++    case xenos::TextureFormat::k_2_10_10_10:
++    case xenos::TextureFormat::k_16:
++    case xenos::TextureFormat::k_16_16:
++    case xenos::TextureFormat::k_16_16_16_16:
++    case xenos::TextureFormat::k_16_FLOAT:
++    case xenos::TextureFormat::k_16_16_FLOAT:
++    case xenos::TextureFormat::k_16_16_16_16_FLOAT:
++    case xenos::TextureFormat::k_32_FLOAT:
++    case xenos::TextureFormat::k_32_32_FLOAT:
++    case xenos::TextureFormat::k_32_32_32_32_FLOAT:
++    case xenos::TextureFormat::k_DXT1:
++    case xenos::TextureFormat::k_DXT2_3:
++    case xenos::TextureFormat::k_DXT4_5:
++    case xenos::TextureFormat::k_DXN:
++    case xenos::TextureFormat::k_DXT5A:
++    case xenos::TextureFormat::k_DXT3A:
++    case xenos::TextureFormat::k_CTX1:
++      return true;
++    default:
++      return false;
++  }
++}
++
++uint32_t Log2Pow2(uint32_t value) {
++  switch (value) {
++    case 1:
++      return 0;
++    case 2:
++      return 1;
++    case 4:
++      return 2;
++    case 8:
++      return 3;
++    default:
++      return 4;
++  }
++}
++
++}  // namespace
++
++DXGI_FORMAT TypelessResourceFormatForReplacement(DXGI_FORMAT view_format) {
++  switch (view_format) {
++    case DXGI_FORMAT_BC1_UNORM:
++      return DXGI_FORMAT_BC1_TYPELESS;
++    case DXGI_FORMAT_BC2_UNORM:
++      return DXGI_FORMAT_BC2_TYPELESS;
++    case DXGI_FORMAT_BC3_UNORM:
++      return DXGI_FORMAT_BC3_TYPELESS;
++    case DXGI_FORMAT_BC4_UNORM:
++      return DXGI_FORMAT_BC4_TYPELESS;
++    case DXGI_FORMAT_BC5_UNORM:
++      return DXGI_FORMAT_BC5_TYPELESS;
++    case DXGI_FORMAT_BC6H_UF16:
++    case DXGI_FORMAT_BC6H_SF16:
++      return DXGI_FORMAT_BC6H_TYPELESS;
++    case DXGI_FORMAT_BC7_UNORM:
++      return DXGI_FORMAT_BC7_TYPELESS;
++    case DXGI_FORMAT_R8G8B8A8_UNORM:
++      return DXGI_FORMAT_R8G8B8A8_TYPELESS;
++    case DXGI_FORMAT_B8G8R8A8_UNORM:
++      return DXGI_FORMAT_B8G8R8A8_TYPELESS;
++    case DXGI_FORMAT_R8_UNORM:
++      return DXGI_FORMAT_R8_TYPELESS;
++    case DXGI_FORMAT_R8G8_UNORM:
++      return DXGI_FORMAT_R8G8_TYPELESS;
++    default:
++      return view_format;
++  }
++}
++
++DXGI_FORMAT TexpackSignedViewFormat(DXGI_FORMAT view_format) {
++  switch (view_format) {
++    case DXGI_FORMAT_R8G8B8A8_UNORM:
++      return DXGI_FORMAT_R8G8B8A8_SNORM;
++    case DXGI_FORMAT_R8_UNORM:
++      return DXGI_FORMAT_R8_SNORM;
++    case DXGI_FORMAT_R8G8_UNORM:
++      return DXGI_FORMAT_R8G8_SNORM;
++    case DXGI_FORMAT_BC4_UNORM:
++      return DXGI_FORMAT_BC4_SNORM;
++    case DXGI_FORMAT_BC5_UNORM:
++      return DXGI_FORMAT_BC5_SNORM;
++    default:
++      return view_format;
++  }
++}
++
++TextureReplacementManager::TextureReplacementManager() = default;
++TextureReplacementManager::~TextureReplacementManager() = default;
++
++void TextureReplacementManager::Initialize(const std::filesystem::path& cache_root,
++                                           uint32_t title_id,
++                                           const ui::d3d12::D3D12Provider& provider) {
++  title_id_ = title_id;
++  if (!upload_pool_) {
++    upload_pool_ = std::make_unique<ui::d3d12::D3D12UploadBufferPool>(provider,
++                                                                     kTexpackUploadPageSize);
++  }
++  replace_paths_.clear();
++  replace_images_.clear();
++  dumped_.clear();
++  replaced_.clear();
++  refused_.clear();
++  dumped_count_ = 0;
++  refusal_logs_ = 0;
++  ResolveDirs();
++  ScanReplaceDir();
++  REXLOG_INFO("[texpack] pack dir: {} ({} replace files)", rex::path_to_utf8(pack_dir_),
++              replace_paths_.size());
++}
++
++void TextureReplacementManager::Reclaim(uint64_t completed_submission) {
++  if (upload_pool_) {
++    upload_pool_->Reclaim(completed_submission);
++  }
++}
++
++void TextureReplacementManager::ClearCache() {
++  if (upload_pool_) {
++    upload_pool_->ClearCache();
++  }
++}
++
++void TextureReplacementManager::ResolveDirs() {
++  std::string override = REXCVAR_GET(texture_pack_dir);
++  // Next to the executable by default: that is where players look for mods.
++  if (!override.empty()) {
++    pack_dir_ = std::filesystem::path(override);
++  } else {
++    pack_dir_ = rex::filesystem::GetExecutableFolder() / "textures";
++  }
++  char title[9];
++  if (title_id_ != 0) {
++    std::snprintf(title, sizeof(title), "%08X", title_id_);
++  } else {
++    std::snprintf(title, sizeof(title), "dump");
++  }
++  dump_dir_ = pack_dir_ / title / "dump";
++  replace_dir_ = pack_dir_ / title / "replace";
++}
++
++void TextureReplacementManager::ScanReplaceDir() {
++  std::error_code ec;
++  if (!std::filesystem::exists(replace_dir_, ec) || ec) {
++    return;
++  }
++  std::filesystem::directory_iterator it(replace_dir_, ec);
++  std::filesystem::directory_iterator end;
++  while (!ec && it != end) {
++    const std::filesystem::directory_entry entry = *it;  // a copy: increment() below replaces what the iterator holds
++    it.increment(ec);
++    if (ec) {
++      break;
++    }
++    if (!entry.is_regular_file(ec) || ec) {
++      continue;
++    }
++    std::string ext = entry.path().extension().string();
++    for (char& c : ext) {
++      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++    }
++    if (ext != ".dds") {
++      continue;
++    }
++    std::string stem = entry.path().stem().string();
++    // Dumps are named <hash>_<format>_<WxH>; both that name and the bare <hash> work.
++    if (stem.size() < 16 || (stem.size() > 16 && stem[16] != '_')) {
++      continue;
++    }
++    uint64_t hash = 0;
++    const char* first = stem.data();
++    const char* last = first + 16;
++    auto result = std::from_chars(first, last, hash, 16);
++    if (result.ec != std::errc() || result.ptr != last) {
++      continue;
++    }
++    replace_paths_.emplace(hash, entry.path());
++  }
++}
++
++bool TextureReplacementManager::HashGuest(const GuestTextureDesc& desc, const uint8_t* base_bytes,
++                                          const uint8_t* mips_bytes, bool gpu_written,
++                                          uint64_t* out_hash) const {
++  bool want_dump = REXCVAR_GET(texture_dump);
++  bool want_replace = REXCVAR_GET(texture_replace);
++  if (!want_dump && !want_replace) {
++    return false;
++  }
++  if (desc.scaled_resolve || gpu_written || desc.force_3d_tiling) {
++    return false;
++  }
++  if (desc.dimension != xenos::DataDimension::k2DOrStacked || desc.depth_or_array != 1) {
++    return false;
++  }
++  if (desc.signed_separate_format || !IsReplaceableGuest(desc.format)) {
++    return false;
++  }
++  if (!want_replace && !IsDumpableGuest(desc.format)) {
++    return false;
++  }
++  const uint8_t* data = nullptr;
++  uint32_t size = 0;
++  uint32_t level_tag = 0;
++  if (desc.base_size != 0 && base_bytes != nullptr) {
++    data = base_bytes;
++    size = desc.base_size;
++    level_tag = 0;
++  } else if (desc.mips_size != 0 && mips_bytes != nullptr) {
++    data = mips_bytes;
++    size = desc.mips_size;
++    level_tag = 1;
++  } else {
++    return false;
++  }
++  // Raw guest bytes (still tiled and big-endian) hash stably across runs;
++  // key fields disambiguate different views of the same bytes.
++  uint64_t content = XXH3_64bits(data, size);
++  uint64_t words[6];
++  words[0] = content;
++  words[1] = uint64_t(desc.width) | (uint64_t(desc.height) << 32);
++  words[2] = uint64_t(desc.depth_or_array) | (uint64_t(desc.pitch) << 32);
++  words[3] = uint64_t(desc.format) | (uint64_t(desc.endianness) << 32);
++  words[4] = uint64_t(desc.dimension) | (uint64_t(desc.tiled) << 32) |
++             (uint64_t(desc.packed_mips) << 33) | (uint64_t(desc.mip_max_level) << 34) |
++             (uint64_t(level_tag) << 40);
++  words[5] = uint64_t(desc.base_size) | (uint64_t(desc.mips_size) << 32);
++  *out_hash = XXH3_64bits(words, sizeof(words));
++  return true;
++}
++
++namespace {
++
++bool DecodeGuestBase(const GuestTextureDesc& desc, const uint8_t* base_bytes,
++                     uint32_t base_row_pitch_bytes, DXGI_FORMAT* out_format,
++                     std::vector<uint8_t>* out_linear) {
++  DXGI_FORMAT dxgi = DumpDxgiForGuest(desc.format);
++  if (dxgi == DXGI_FORMAT_UNKNOWN || base_bytes == nullptr || desc.base_size == 0) {
++    return false;
++  }
++  const FormatInfo* info = FormatInfo::Get(desc.format);
++  uint32_t block_w = info->block_width;
++  uint32_t block_h = info->block_height;
++  uint32_t bytes_per_block = info->bytes_per_block();
++  if (!block_w || !block_h || !bytes_per_block) {
++    return false;
++  }
++  if (IsBlockDxgi(dxgi) && ((desc.width & 3) != 0 || (desc.height & 3) != 0)) {
++    return false;
++  }
++  uint32_t width_blocks = (desc.width + block_w - 1) / block_w;
++  uint32_t height_blocks = (desc.height + block_h - 1) / block_h;
++  if (!width_blocks || !height_blocks) {
++    return false;
++  }
++  size_t total = size_t(width_blocks) * height_blocks * bytes_per_block;
++  out_linear->resize(total);
++  uint8_t* dst = out_linear->data();
++  const uint8_t* end = base_bytes + desc.base_size;
++  uint32_t row_bytes = width_blocks * bytes_per_block;
++  if (!desc.tiled) {
++    if (base_row_pitch_bytes < row_bytes) {
++      return false;
++    }
++    for (uint32_t y = 0; y < height_blocks; ++y) {
++      const uint8_t* src = base_bytes + size_t(y) * base_row_pitch_bytes;
++      if (src < base_bytes || src + row_bytes > end) {
++        return false;
++      }
++      std::memcpy(dst + size_t(y) * row_bytes, src, row_bytes);
++    }
++  } else {
++    if (base_row_pitch_bytes == 0 || base_row_pitch_bytes % bytes_per_block != 0) {
++      return false;
++    }
++    uint32_t pitch_blocks = base_row_pitch_bytes / bytes_per_block;
++    uint32_t log2_bpb = Log2Pow2(bytes_per_block);
++    for (uint32_t y = 0; y < height_blocks; ++y) {
++      for (uint32_t x = 0; x < width_blocks; ++x) {
++        int32_t offset =
++            texture_util::GetTiledOffset2D(int32_t(x), int32_t(y), pitch_blocks, log2_bpb);
++        if (offset < 0 || uint64_t(offset) + bytes_per_block > desc.base_size) {
++          return false;
++        }
++        std::memcpy(dst + (size_t(y) * width_blocks + x) * bytes_per_block,
++                    base_bytes + offset, bytes_per_block);
++      }
++    }
++  }
++  if (desc.endianness != xenos::Endian::kNone) {
++    texture_conversion::CopySwapBlock(desc.endianness, dst, dst, total);
++  }
++  *out_format = dxgi;
++  return true;
++}
++
++bool WriteDdsFile(const std::filesystem::path& path, DXGI_FORMAT format, uint32_t width,
++                  uint32_t height, const std::vector<uint8_t>& bytes) {
++  FILE* file = rex::filesystem::OpenFile(path, "wb");
++  if (!file) {
++    return false;
++  }
++  bool ok = false;
++  do {
++    uint32_t magic = kDdsMagic;
++    DdsHeader header = {};
++    header.size = sizeof(header);
++    header.flags = 0x1 | 0x2 | 0x4 | 0x1000;
++    header.height = height;
++    header.width = width;
++    header.depth = 1;
++    header.mip_map_count = 1;
++    header.pixel_format.size = sizeof(header.pixel_format);
++    header.pixel_format.flags = 0x4;
++    header.pixel_format.four_cc = kFourCC_DX10;
++    header.caps = kDdsCapsTexture;
++    DdsHeaderDXT10 dx10 = {};
++    dx10.dxgi_format = uint32_t(format);
++    dx10.resource_dimension = 3;
++    dx10.array_size = 1;
++    if (std::fwrite(&magic, sizeof(magic), 1, file) != 1 ||
++        std::fwrite(&header, sizeof(header), 1, file) != 1 ||
++        std::fwrite(&dx10, sizeof(dx10), 1, file) != 1) {
++      break;
++    }
++    if (!bytes.empty() && std::fwrite(bytes.data(), 1, bytes.size(), file) != bytes.size()) {
++      break;
++    }
++    ok = true;
++  } while (false);
++  std::fclose(file);
++  return ok;
++}
++
++}  // namespace
++
++void TextureReplacementManager::MaybeDump(const GuestTextureDesc& desc, const uint8_t* base_bytes,
++                                          uint32_t base_row_pitch_bytes, uint64_t hash) {
++  if (!REXCVAR_GET(texture_dump) || base_bytes == nullptr || desc.base_size == 0) {
++    return;
++  }
++  if (dumped_.find(hash) != dumped_.end()) {
++    return;
++  }
++  if (dump_dir_.empty()) {
++    ResolveDirs();
++  }
++  DXGI_FORMAT dxgi = DumpDxgiForGuest(desc.format);
++  if (dxgi == DXGI_FORMAT_UNKNOWN) {
++    return;
++  }
++  char name[64];
++  std::snprintf(name, sizeof(name), "%016llx_%s_%ux%u.dds",
++                static_cast<unsigned long long>(hash), DumpFormatTag(dxgi), desc.width,
++                desc.height);
++  std::filesystem::path path = dump_dir_ / name;
++  std::error_code ec;
++  if (std::filesystem::exists(path, ec) && !ec) {
++    dumped_.insert(hash);
++    return;
++  }
++  // CPU untile plus endian swap yields bytes identical to host mip 0 for the
++  // supported formats, without stalling the GPU for a readback.
++  std::vector<uint8_t> linear;
++  DXGI_FORMAT decoded = DXGI_FORMAT_UNKNOWN;
++  if (!DecodeGuestBase(desc, base_bytes, base_row_pitch_bytes, &decoded, &linear)) {
++    return;
++  }
++  std::filesystem::create_directories(dump_dir_, ec);
++  if (!WriteDdsFile(path, decoded, desc.width, desc.height, linear)) {
++    REXGPU_ERROR("[texpack] failed to write {}", rex::path_to_utf8(path));
++    return;
++  }
++  dumped_.insert(hash);
++  ++dumped_count_;
++  REXLOG_INFO("[texpack] dumped {:016x} {} {}x{} (#{})", hash, DumpFormatTag(decoded),
++              desc.width, desc.height, dumped_count_);
++}
++
++namespace {
++
++bool ReadDdsFile(const std::filesystem::path& path, ReplacementImage* out, std::string* out_error) {
++  FILE* file = rex::filesystem::OpenFile(path, "rb");
++  if (!file) {
++    *out_error = "open failed";
++    return false;
++  }
++  if (!rex::filesystem::Seek(file, 0, SEEK_END)) {
++    std::fclose(file);
++    *out_error = "seek failed";
++    return false;
++  }
++  int64_t file_size = rex::filesystem::Tell(file);
++  if (file_size < int64_t(4 + sizeof(DdsHeader)) ||
++      !rex::filesystem::Seek(file, 0, SEEK_SET)) {
++    std::fclose(file);
++    *out_error = "truncated header";
++    return false;
++  }
++  uint32_t magic = 0;
++  DdsHeader header = {};
++  bool ok = false;
++  do {
++    if (std::fread(&magic, sizeof(magic), 1, file) != 1 ||
++        std::fread(&header, sizeof(header), 1, file) != 1) {
++      *out_error = "truncated header";
++      break;
++    }
++    if (magic != kDdsMagic || header.size != sizeof(header) ||
++        header.pixel_format.size != sizeof(header.pixel_format)) {
++      *out_error = "bad magic";
++      break;
++    }
++    if ((header.caps2 & (kDdsCaps2Cubemap | kDdsCaps2Volume)) != 0) {
++      *out_error = "cube/volume not supported";
++      break;
++    }
++    if (header.width == 0 || header.height == 0 || header.width > kMaxDdsDimension ||
++        header.height > kMaxDdsDimension) {
++      *out_error = "bad dimensions";
++      break;
++    }
++    uint32_t mip_count = header.mip_map_count == 0 ? 1 : header.mip_map_count;
++    mip_count = std::min(mip_count, kMaxDdsMips);
++    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
++    bool swap_rb = false;
++    bool force_opaque = false;
++    size_t data_offset = 4 + sizeof(header);
++    if ((header.pixel_format.flags & 0x4) != 0 &&
++        header.pixel_format.four_cc == kFourCC_DX10) {
++      DdsHeaderDXT10 dx10 = {};
++      if (file_size < int64_t(data_offset + sizeof(dx10)) ||
++          std::fread(&dx10, sizeof(dx10), 1, file) != 1) {
++        *out_error = "truncated DX10 header";
++        break;
++      }
++      data_offset += sizeof(dx10);
++      if (dx10.resource_dimension != 3 || dx10.array_size != 1) {
++        *out_error = "only 2D single images supported";
++        break;
++      }
++      format = MapDxgiForReplace(dx10.dxgi_format);
++    } else if ((header.pixel_format.flags & 0x4) != 0) {
++      switch (header.pixel_format.four_cc) {
++        case kFourCC_DXT1:
++          format = DXGI_FORMAT_BC1_UNORM;
++          break;
++        case kFourCC_DXT3:
++          format = DXGI_FORMAT_BC2_UNORM;
++          break;
++        case kFourCC_DXT5:
++          format = DXGI_FORMAT_BC3_UNORM;
++          break;
++        case kFourCC_ATI1:
++        case kFourCC_BC4U:
++          format = DXGI_FORMAT_BC4_UNORM;
++          break;
++        case kFourCC_ATI2:
++        case kFourCC_BC5U:
++          format = DXGI_FORMAT_BC5_UNORM;
++          break;
++        default:
++          break;
++      }
++    } else if ((header.pixel_format.flags & 0x40) != 0) {
++      uint32_t bits = header.pixel_format.rgb_bit_count;
++      uint32_t r = header.pixel_format.r_mask;
++      uint32_t g = header.pixel_format.g_mask;
++      uint32_t b = header.pixel_format.b_mask;
++      uint32_t a = header.pixel_format.a_mask;
++      if (bits == 32 && r == 0x00FF0000 && g == 0x0000FF00 && b == 0x000000FF &&
++          (a == 0xFF000000 || a == 0)) {
++        format = DXGI_FORMAT_R8G8B8A8_UNORM;
++        swap_rb = true;
++        force_opaque = (a == 0);
++      } else if (bits == 32 && r == 0x000000FF && g == 0x0000FF00 && b == 0x00FF0000 &&
++                 a == 0xFF000000) {
++        format = DXGI_FORMAT_R8G8B8A8_UNORM;
++      } else if (bits == 16 && r == 0x00FF && g == 0xFF00) {
++        format = DXGI_FORMAT_R8G8_UNORM;
++      } else if (bits == 8 && r == 0xFF) {
++        format = DXGI_FORMAT_R8_UNORM;
++      }
++    }
++    if (format == DXGI_FORMAT_UNKNOWN) {
++      *out_error = "unsupported pixel format";
++      break;
++    }
++    bool block = IsBlockDxgi(format);
++    uint32_t block_bytes = block ? DxgiBlockBytes(format) : DxgiTexelBytes(format);
++    if (!block_bytes) {
++      *out_error = "unsupported pixel format";
++      break;
++    }
++    if (!rex::filesystem::Seek(file, int64_t(data_offset), SEEK_SET)) {
++      *out_error = "seek failed";
++      break;
++    }
++    ReplacementImage image;
++    image.format = format;
++    image.width = header.width;
++    image.height = header.height;
++    size_t file_bytes = size_t(file_size);
++    for (uint32_t level = 0; level < mip_count; ++level) {
++      uint32_t w = std::max(header.width >> level, uint32_t(1));
++      uint32_t h = std::max(header.height >> level, uint32_t(1));
++      uint32_t tight_pitch = block ? ((w + 3) / 4) * block_bytes : w * block_bytes;
++      uint32_t rows = block ? (h + 3) / 4 : h;
++      size_t slice = size_t(tight_pitch) * rows;
++      if (data_offset + slice > file_bytes) {
++        break;
++      }
++      ReplacementImage::Mip mip;
++      mip.row_pitch = tight_pitch;
++      mip.slice_pitch = uint32_t(slice);
++      mip.bytes.resize(slice);
++      if (slice != 0 && std::fread(mip.bytes.data(), 1, slice, file) != slice) {
++        break;
++      }
++      data_offset += slice;
++      if (swap_rb) {
++        for (size_t i = 0; i + 4 <= mip.bytes.size(); i += 4) {
++          std::swap(mip.bytes[i], mip.bytes[i + 2]);
++          if (force_opaque) {
++            mip.bytes[i + 3] = 0xFF;
++          }
++        }
++      }
++      image.mips.push_back(std::move(mip));
++    }
++    if (image.mips.empty()) {
++      *out_error = "truncated mips";
++      break;
++    }
++    image.mip_levels = uint32_t(image.mips.size());
++    *out = std::move(image);
++    ok = true;
++  } while (false);
++  std::fclose(file);
++  return ok;
++}
++
++bool ValidateReplacement(const GuestTextureDesc& desc, const ReplacementImage& image,
++                          uint32_t max_width_height, bool unaligned_bc_supported,
++                          std::string* out_reason) {
++  uint32_t guest_levels = desc.mip_max_level + 1;
++  if (image.mip_levels < guest_levels) {
++    char reason[96];
++    std::snprintf(reason, sizeof(reason), "only %u mips for %u guest levels", image.mip_levels,
++                  guest_levels);
++    *out_reason = reason;
++    return false;
++  }
++  if (image.width > max_width_height || image.height > max_width_height) {
++    *out_reason = "exceeds device texture limits";
++    return false;
++  }
++  if (IsBlockDxgi(image.format) && ((image.width & 3) != 0 || (image.height & 3) != 0) &&
++      !unaligned_bc_supported) {
++    *out_reason = "unaligned block texture unsupported by device";
++    return false;
++  }
++  if (!REXCVAR_GET(texture_replace_allow_larger) &&
++      (image.width != desc.width || image.height != desc.height)) {
++    *out_reason = "larger than guest (texture_replace_allow_larger is off)";
++    return false;
++  }
++  if (image.width < desc.width || image.height < desc.height) {
++    *out_reason = "smaller than guest";
++    return false;
++  }
++  uint32_t block_bytes =
++      IsBlockDxgi(image.format) ? DxgiBlockBytes(image.format) : DxgiTexelBytes(image.format);
++  uint32_t tight =
++      IsBlockDxgi(image.format) ? ((image.width + 3) / 4) * block_bytes : image.width * block_bytes;
++  uint32_t rows = IsBlockDxgi(image.format) ? (image.height + 3) / 4 : image.height;
++  if (size_t(rex::align(tight, uint32_t(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT))) * rows >
++      kTexpackUploadPageSize) {
++    *out_reason = "mip 0 too large to stage";
++    return false;
++  }
++  return true;
++}
++
++}  // namespace
++
++void TextureReplacementManager::Refuse(uint64_t hash, const std::string& reason) {
++  if (!refused_.insert(hash).second) {
++    return;
++  }
++  if (refusal_logs_ < kMaxRefusalLogs) {
++    REXLOG_INFO("[texpack] replace {:016x} refused: {}", hash, reason);
++  } else if (refusal_logs_ == kMaxRefusalLogs) {
++    REXLOG_INFO("[texpack] further replace refusals suppressed");
++  }
++  ++refusal_logs_;
++}
++
++bool TextureReplacementManager::FindReplacement(uint64_t hash, const GuestTextureDesc& desc,
++                                                uint32_t max_width_height,
++                                                bool unaligned_bc_supported,
++                                                const ReplacementImage** out_image) {
++  *out_image = nullptr;
++  if (!REXCVAR_GET(texture_replace)) {
++    return false;
++  }
++  auto cached = replace_images_.find(hash);
++  if (cached != replace_images_.end()) {
++    *out_image = &cached->second;
++    return true;
++  }
++  if (refused_.find(hash) != refused_.end()) {
++    return false;
++  }
++  auto found = replace_paths_.find(hash);
++  if (found == replace_paths_.end()) {
++    return false;
++  }
++  ReplacementImage image;
++  std::string error;
++  if (!ReadDdsFile(found->second, &image, &error)) {
++    Refuse(hash, "bad DDS (" + error + ")");
++    return false;
++  }
++  if (!ValidateReplacement(desc, image, max_width_height, unaligned_bc_supported, &error)) {
++    Refuse(hash, error);
++    return false;
++  }
++  auto inserted = replace_images_.emplace(hash, std::move(image));
++  *out_image = &inserted.first->second;
++  if (replaced_.insert(hash).second) {
++    REXLOG_INFO("[texpack] replace {:016x} with {}x{} ({} mips) for guest {}x{}", hash,
++                (*out_image)->width, (*out_image)->height, (*out_image)->mip_levels, desc.width,
++                desc.height);
++  }
++  return true;
++}
++
++bool TextureReplacementManager::GetReplacementImage(uint64_t hash,
++                                                    const ReplacementImage** out_image) const {
++  *out_image = nullptr;
++  auto it = replace_images_.find(hash);
++  if (it == replace_images_.end()) {
++    return false;
++  }
++  *out_image = &it->second;
++  return true;
++}
++
++bool TextureReplacementManager::GetReplacementView(uint64_t hash, DXGI_FORMAT* out_format,
++                                                   uint32_t* out_mip_levels) const {
++  auto it = replace_images_.find(hash);
++  if (it == replace_images_.end()) {
++    return false;
++  }
++  *out_format = it->second.format;
++  *out_mip_levels = it->second.mip_levels;
++  return true;
++}
++
++bool TextureReplacementManager::UploadReplacement(D3D12CommandProcessor& command_processor,
++                                                  ID3D12Resource* dest,
++                                                  const ReplacementImage& image) {
++  if (!upload_pool_ || !dest || image.mips.empty()) {
++    return false;
++  }
++  D3D12_RESOURCE_DESC dest_desc = dest->GetDesc();
++  DeferredCommandList& command_list = command_processor.GetDeferredCommandList();
++  uint64_t submission = command_processor.GetCurrentSubmission();
++  for (uint32_t level = 0; level < image.mip_levels && level < image.mips.size(); ++level) {
++    const ReplacementImage::Mip& mip = image.mips[level];
++    uint32_t width = std::max(image.width >> level, uint32_t(1));
++    uint32_t height = std::max(image.height >> level, uint32_t(1));
++    bool block = IsBlockDxgi(image.format);
++    uint32_t rows = block ? (height + 3) / 4 : height;
++    if (rows == 0 || mip.row_pitch == 0) {
++      return false;
++    }
++    if (mip.bytes.size() < size_t(mip.row_pitch) * rows) {
++      return false;
++    }
++    uint32_t aligned_pitch =
++        rex::align(mip.row_pitch, uint32_t(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT));
++    size_t staged_size = size_t(aligned_pitch) * rows;
++    ID3D12Resource* upload_buffer = nullptr;
++    size_t upload_offset = 0;
++    uint8_t* mapping = upload_pool_->Request(
++        submission, staged_size, size_t(D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT), &upload_buffer,
++        &upload_offset, nullptr);
++    if (!mapping || !upload_buffer) {
++      return false;
++    }
++    for (uint32_t row = 0; row < rows; ++row) {
++      std::memcpy(mapping + size_t(row) * aligned_pitch,
++                  mip.bytes.data() + size_t(row) * mip.row_pitch, mip.row_pitch);
++    }
++    D3D12_TEXTURE_COPY_LOCATION src = {};
++    src.pResource = upload_buffer;
++    src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
++    src.PlacedFootprint.Offset = upload_offset;
++    src.PlacedFootprint.Footprint.Format = dest_desc.Format;
++    src.PlacedFootprint.Footprint.Width = width;
++    src.PlacedFootprint.Footprint.Height = height;
++    src.PlacedFootprint.Footprint.Depth = 1;
++    src.PlacedFootprint.Footprint.RowPitch = aligned_pitch;
++    D3D12_TEXTURE_COPY_LOCATION dst = {};
++    dst.pResource = dest;
++    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++    dst.SubresourceIndex = level;
++    command_list.D3DCopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
++  }
++  return true;
++}
++
++}  // namespace rex::graphics::d3d12
+diff --git a/src/graphics/d3d12/texture_replacement.h b/src/graphics/d3d12/texture_replacement.h
+new file mode 100644
+index 0000000..104e808
+--- /dev/null
++++ b/src/graphics/d3d12/texture_replacement.h
+@@ -0,0 +1,112 @@
++#pragma once
++
++#include <cstdint>
++#include <filesystem>
++#include <memory>
++#include <string>
++#include <unordered_map>
++#include <unordered_set>
++#include <vector>
++
++#include <rex/graphics/xenos.h>
++#include <rex/ui/d3d12/d3d12_api.h>
++
++namespace rex::ui::d3d12 {
++class D3D12Provider;
++class D3D12UploadBufferPool;
++}  // namespace rex::ui::d3d12
++
++namespace rex::graphics::d3d12 {
++
++class D3D12CommandProcessor;
++
++// Plain guest description so the pack manager never touches the protected
++// TextureCache::TextureKey type.
++struct GuestTextureDesc {
++  xenos::TextureFormat format = xenos::TextureFormat::k_8_8_8_8;
++  xenos::DataDimension dimension = xenos::DataDimension::k2DOrStacked;
++  xenos::Endian endianness = xenos::Endian::kNone;
++  uint32_t width = 0;
++  uint32_t height = 0;
++  uint32_t depth_or_array = 1;
++  uint32_t pitch = 0;
++  bool tiled = false;
++  bool packed_mips = false;
++  uint32_t mip_max_level = 0;
++  bool scaled_resolve = false;
++  // True when the backend keeps separate unsigned/signed host resources.
++  bool signed_separate_format = false;
++  // True for 3D-as-2D wrapper textures sharing a 3D key.
++  bool force_3d_tiling = false;
++  uint32_t base_page = 0;
++  uint32_t mip_page = 0;
++  uint32_t base_size = 0;
++  uint32_t mips_size = 0;
++};
++
++struct ReplacementImage {
++  DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
++  uint32_t width = 0;
++  uint32_t height = 0;
++  uint32_t mip_levels = 0;
++  struct Mip {
++    uint32_t row_pitch = 0;
++    uint32_t slice_pitch = 0;
++    std::vector<uint8_t> bytes;
++  };
++  std::vector<Mip> mips;
++};
++
++// Typeless resource format matching a replacement view format, so unsigned and
++// signed views can share one resource.
++DXGI_FORMAT TypelessResourceFormatForReplacement(DXGI_FORMAT view_format);
++// Signed view for a replacement resource, or the input when no signed variant
++// exists (BC1/2/3/6H/7, BGRA8).
++DXGI_FORMAT TexpackSignedViewFormat(DXGI_FORMAT view_format);
++
++// Single-threaded (GPU thread only) dump + replacement manager.
++class TextureReplacementManager {
++ public:
++  TextureReplacementManager();
++  ~TextureReplacementManager();
++
++  void Initialize(const std::filesystem::path& cache_root, uint32_t title_id,
++                  const ui::d3d12::D3D12Provider& provider);
++  void Reclaim(uint64_t completed_submission);
++  void ClearCache();
++
++  bool HashGuest(const GuestTextureDesc& desc, const uint8_t* base_bytes,
++                 const uint8_t* mips_bytes, bool gpu_written, uint64_t* out_hash) const;
++  void MaybeDump(const GuestTextureDesc& desc, const uint8_t* base_bytes,
++                 uint32_t base_row_pitch_bytes, uint64_t hash);
++  bool FindReplacement(uint64_t hash, const GuestTextureDesc& desc, uint32_t max_width_height,
++                       bool unaligned_bc_supported, const ReplacementImage** out_image);
++  bool GetReplacementImage(uint64_t hash, const ReplacementImage** out_image) const;
++  bool GetReplacementView(uint64_t hash, DXGI_FORMAT* out_format,
++                          uint32_t* out_mip_levels) const;
++  // Dest must already be in COPY_DEST with barriers submitted.
++  bool UploadReplacement(D3D12CommandProcessor& command_processor, ID3D12Resource* dest,
++                         const ReplacementImage& image);
++
++ private:
++  void ResolveDirs();
++  void ScanReplaceDir();
++  void Refuse(uint64_t hash, const std::string& reason);
++
++  uint32_t title_id_ = 0;
++  std::filesystem::path pack_dir_;
++  std::filesystem::path dump_dir_;
++  std::filesystem::path replace_dir_;
++
++  std::unique_ptr<ui::d3d12::D3D12UploadBufferPool> upload_pool_;
++
++  std::unordered_map<uint64_t, std::filesystem::path> replace_paths_;
++  std::unordered_map<uint64_t, ReplacementImage> replace_images_;
++  std::unordered_set<uint64_t> dumped_;
++  std::unordered_set<uint64_t> replaced_;
++  std::unordered_set<uint64_t> refused_;
++  uint64_t dumped_count_ = 0;
++  uint64_t refusal_logs_ = 0;
++};
++
++}  // namespace rex::graphics::d3d12
+diff --git a/src/graphics/graphics_system.cpp b/src/graphics/graphics_system.cpp
+index 8f2fcb0..13ff07d 100644
+--- a/src/graphics/graphics_system.cpp
++++ b/src/graphics/graphics_system.cpp
+@@ -341,6 +341,9 @@ void GraphicsSystem::InvalidateGpuMemory() {
+ 
+ void GraphicsSystem::InitializeShaderStorage(const std::filesystem::path& cache_root,
+                                              uint32_t title_id, bool blocking) {
++  command_processor_->CallInThread([this, cache_root, title_id]() {
++    command_processor_->InitializeTextureReplacement(cache_root, title_id);
++  });
+   if (!REXCVAR_GET(store_shaders)) {
+     return;
+   }
+diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
+index ec0df7c..f1286a6 100644
+--- a/src/graphics/shared_memory.cpp
++++ b/src/graphics/shared_memory.cpp
+@@ -272,6 +272,34 @@ void SharedMemory::RangeWrittenByGpu(uint32_t start, uint32_t length) {
+   MakeRangeValid(start, length, true);
+ }
+ 
++bool SharedMemory::IsRangeGpuWritten(uint32_t start, uint32_t length) {
++  if (length == 0 || start >= kBufferSize) {
++    return false;
++  }
++  length = std::min(length, kBufferSize - start);
++  uint32_t page_first = start >> page_size_log2_;
++  uint32_t page_last = (start + length - 1) >> page_size_log2_;
++  auto global_lock = global_critical_region_.Acquire();
++  uint32_t page = page_first;
++  while (page <= page_last) {
++    uint32_t block = page >> 6;
++    uint32_t block_last_page = std::min(page_last, ((block + 1) << 6) - 1);
++    uint32_t first_bit = page & 63;
++    uint32_t last_bit = block_last_page & 63;
++    uint64_t mask;
++    if (first_bit == 0 && last_bit == 63) {
++      mask = ~uint64_t(0);
++    } else {
++      mask = ((uint64_t(1) << (last_bit - first_bit + 1)) - 1) << first_bit;
++    }
++    if ((system_page_flags_valid_and_gpu_written_[block] & mask) != 0) {
++      return true;
++    }
++    page = block_last_page + 1;
++  }
++  return false;
++}
++
+ bool SharedMemory::AllocateSparseHostGpuMemoryRange(uint32_t offset_allocations,
+                                                     uint32_t length_allocations) {
+   assert_always(

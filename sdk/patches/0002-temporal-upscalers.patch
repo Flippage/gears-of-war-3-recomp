@@ -1,0 +1,2316 @@
+diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
+index 96d362b..8e7d40d 100644
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -67,6 +67,14 @@ class D3D12CommandProcessor : public CommandProcessor {
+     return deferred_command_list_;
+   }
+ 
++  // Call after recording a DeferredCommandList::Callback that may have changed pipelines, root
++  // signatures or descriptor heaps: the next draw re-binds everything.
++  void InvalidateBindingsAfterExternalCommands() {
++    current_guest_pipeline_ = nullptr;
++    current_external_pipeline_ = nullptr;
++    current_graphics_root_signature_ = nullptr;
++    current_graphics_root_up_to_date_ = 0;
++  }
+   uint64_t GetCurrentSubmission() const { return submission_current_; }
+   uint64_t GetCompletedSubmission() const { return submission_completed_; }
+ 
+diff --git a/include/rex/graphics/d3d12/deferred_command_list.h b/include/rex/graphics/d3d12/deferred_command_list.h
+index 7f1eb7f..2e761c8 100644
+--- a/include/rex/graphics/d3d12/deferred_command_list.h
++++ b/include/rex/graphics/d3d12/deferred_command_list.h
+@@ -442,6 +442,17 @@ class DeferredCommandList {
+ 
+   void EndDebugMarker() { WriteCommand(Command::kEndDebugMarker, 0); }
+ 
++  // Runs fn(command_list, user) when the list is replayed onto the real command list, in order
++  // with everything recorded before and after it. The callback may record any commands; it must
++  // leave the list usable (the processor marks its cached bindings stale afterwards).
++  using CallbackFn = void (*)(ID3D12GraphicsCommandList* command_list, void* user);
++  void Callback(CallbackFn fn, void* user) {
++    auto& args = *reinterpret_cast<CallbackArguments*>(
++        WriteCommand(Command::kCallback, sizeof(CallbackArguments)));
++    args.fn = fn;
++    args.user = user;
++  }
++
+   void InsertDebugMarker(const char* label_name) {
+     size_t label_len = std::strlen(label_name);
+     uint8_t* args_ptr = reinterpret_cast<uint8_t*>(
+@@ -494,6 +505,7 @@ class DeferredCommandList {
+     kBeginDebugMarker,
+     kEndDebugMarker,
+     kInsertDebugMarker,
++    kCallback,
+   };
+ 
+   struct CommandHeader {
+@@ -556,6 +568,11 @@ class DeferredCommandList {
+     bool has_src_box;
+   };
+ 
++  struct CallbackArguments {
++    CallbackFn fn;
++    void* user;
++  };
++
+   struct D3DDispatchArguments {
+     UINT thread_group_count_x;
+     UINT thread_group_count_y;
+diff --git a/include/rex/graphics/d3d12/gow2_dlss.h b/include/rex/graphics/d3d12/gow2_dlss.h
+new file mode 100644
+index 0000000..79c2c7b
+--- /dev/null
++++ b/include/rex/graphics/d3d12/gow2_dlss.h
+@@ -0,0 +1,28 @@
++// Adapted from gears-judgement-recomp (BSD-3-Clause).
++#pragma once
++#include <cstdint>
++
++#include <rex/ui/d3d12/d3d12_api.h>
++
++namespace rex::graphics::d3d12::gow2 {
++
++struct DlssEval {
++  // SRV state, typed format (NGX cannot view a TYPELESS frame), render-size region at the top-left
++  ID3D12Resource* color = nullptr;
++  ID3D12Resource* depth = nullptr;   // SRV state (inverted depth)
++  ID3D12Resource* motion = nullptr;  // SRV state, RG16F pixels, current -> previous
++  ID3D12Resource* output = nullptr;  // UAV state
++  uint32_t render_w = 0, render_h = 0, out_w = 0, out_h = 0;
++  float jitter_x = 0, jitter_y = 0;  // render pixels
++  bool reset = false;
++  bool hdr = false;
++  int quality = 5;  // NVSDK_NGX_PerfQuality_Value: 0 MaxPerf, 1 Balanced, 2 MaxQuality, 3 UltraPerf, 4 UltraQuality, 5 DLAA
++  float frame_ms = 16.7f;
++};
++
++bool DlssCompiledIn();
++bool DlssInit(ID3D12Device* device);
++bool DlssEvaluate(ID3D12GraphicsCommandList* list, const DlssEval& eval);
++void DlssShutdown();
++
++}  // namespace rex::graphics::d3d12::gow2
+diff --git a/include/rex/graphics/d3d12/gow2_fsr.h b/include/rex/graphics/d3d12/gow2_fsr.h
+new file mode 100644
+index 0000000..6b0f165
+--- /dev/null
++++ b/include/rex/graphics/d3d12/gow2_fsr.h
+@@ -0,0 +1,33 @@
++// Adapted from gears-judgement-recomp (BSD-3-Clause).
++#pragma once
++#include <cstdint>
++
++#include <rex/ui/d3d12/d3d12_api.h>
++
++namespace rex::graphics::d3d12::gow2 {
++
++struct FsrEval {
++  ID3D12Resource* color = nullptr;   // SRV state, render region at the top-left
++  DXGI_FORMAT color_format = DXGI_FORMAT_UNKNOWN;  // typed view of color (UpscalerColorFormat)
++  ID3D12Resource* depth = nullptr;   // SRV state, inverted depth (1 - z)
++  ID3D12Resource* motion = nullptr;  // SRV state, render-size RG16F pixels, current -> previous
++  ID3D12Resource* output = nullptr;  // UAV state, full output size
++  uint32_t render_w = 0, render_h = 0, out_w = 0, out_h = 0;
++  float jitter_x = 0, jitter_y = 0;  // render pixels
++  bool reset = false;
++  float frame_ms = 16.7f;
++  float camera_near = 10.0f, camera_far = 8000.0f, fov_y = 1.0f;
++  // 3 = FSR 3.1, 4 = FSR 4 (when the loader reports it), 0 = whatever the loader picks
++  int wanted_major = 3;
++};
++
++// Loads amd_fidelityfx_loader_dx12.dll from the game folder and enumerates the providers.
++bool FsrInit(ID3D12Device* device);
++// Name of the provider actually used by the current context ("" if none yet).
++const char* FsrProviderName();
++// True when the loader offers an FSR 4 provider on this system.
++bool FsrHasFsr4();
++bool FsrEvaluate(ID3D12GraphicsCommandList* list, const FsrEval& eval);
++void FsrShutdown();
++
++}  // namespace rex::graphics::d3d12::gow2
+diff --git a/include/rex/graphics/d3d12/gow2_temporal.h b/include/rex/graphics/d3d12/gow2_temporal.h
+new file mode 100644
+index 0000000..eb01b2f
+--- /dev/null
++++ b/include/rex/graphics/d3d12/gow2_temporal.h
+@@ -0,0 +1,122 @@
++// Adapted from gears-judgement-recomp (BSD-3-Clause).
++#pragma once
++// Project-local temporal-upscaling support for the D3D12 backend (Gears of War 2).
++//
++// What this module assumes about the game (measured on Gears of War: Judgment; MUST be
++// validated for Gears of War 2, Unreal Engine 3, 2008):
++//   * One frame = scene draws into one HDR render target, then a depth resolve, particle draws
++//     that sample the resolved depth, a colour resolve (scene colour texture), and one full-screen
++//     tonemap draw that samples only that colour texture, then the HUD.
++//   * Scene vertex shaders read the ViewProjection matrix from vertex float constants c0..c3
++//     (cvar gow2_vp_register) and the camera world position from c13 (cvar gow2_campos_register).
++#include <cstdint>
++#include <cstdio>
++
++#include <rex/graphics/d3d12/gow2_trace.h>
++#include <rex/ui/d3d12/d3d12_api.h>
++
++namespace rex::graphics {
++class RegisterFile;
++}
++
++namespace rex::graphics::d3d12 {
++
++class D3D12CommandProcessor;
++class D3D12TextureCache;
++
++namespace gow2 {
++
++// Floats of VS constants cN..cN+15 (N = cvar gow2_vp_register) captured from the first
++// qualifying scene draw of a frame.
++struct SceneCamera {
++  bool valid = false;
++  float c[16][4] = {};
++  uint32_t draws_matching = 0;  // later draws of the frame whose VP rows equal the captured ones
++  uint32_t draws_other = 0;     // qualifying draws whose VP rows differ
++};
++
++struct FrameState {
++  uint32_t frame = 0;
++  SceneCamera camera;       // this frame
++  SceneCamera prev_camera;  // previous frame
++  uint32_t depth_resolve_dst = 0;
++  uint32_t depth_dsts[4] = {};  // every depth resolve destination of this frame
++  uint32_t depth_dst_count = 0;
++  uint32_t color_resolve_dst = 0;  // scene colour (largest non-frontbuffer colour resolve)
++  uint32_t depth_resolve_area = 0;  // width*height of the chosen resolves, this frame
++  uint32_t color_resolve_area = 0;
++  uint32_t color_resolve_w = 0, color_resolve_h = 0;
++  uint32_t last_front = 0;
++  uint32_t scale_x = 1, scale_y = 1;
++  uint32_t last_upscaled_frame = 0xFFFFFFFFu;
++  // The frame that just ended (BeginFrame runs at the swap, after its draws): its camera, the camera
++  // before it and the frame number its jitter was taken from. The end-of-frame upscaler uses these.
++  SceneCamera ended_camera, ended_prev_camera;
++  uint32_t ended_frame = 0;
++  // Sub-pixel jitter is applied only while the previous frame went through the upscaler, so menus
++  // and loading screens are left alone.
++  bool ended_jittered = false;  // whether the frame that just ended was jittered
++  bool jitter_this_frame = false;
++  bool jitter_next = false;  // set by a successful end-of-frame upscale: jitter the next frames
++  // Decided once per frame (BeginFrame): rasterise world geometry into the render region only
++  // when the previous frame went through the upscaler, so menus and loading screens are left alone.
++  bool shrink_this_frame = false;
++  uint32_t guest_w = 0, guest_h = 0;  // scene colour resolve size of the last finished frame
++};
++
++FrameState& State();
++
++// Dump capture: create "gow2_dump.now" in the working directory. The next two frames write
++// gow2_dump/f<k>_{depth,color}.bin and f<k>_cam.txt.
++void BeginFrame(D3D12CommandProcessor& cp, uint32_t front_ptr);
++void NoteResolve(bool is_depth, uint32_t dst, uint32_t width, uint32_t height, uint32_t fmt);
++// Called for each draw with a pixel shader. vs_consts: pointer to 4*256 floats of VS constants.
++void NoteSceneDraw(const float* vs_consts, uint32_t color_fmt, uint32_t index_count);
++// Text for the FPS overlay (cvar gow2_upscale_status); only touches the cvar when the text changes.
++void SetUpscaleStatus(const char* text);
++// Create "gow2_shot.now": the next presented frame's final guest output is written to
++// gow2_dump/f0_shot<N>.bin (R10G10B10A2, same header as the other dumps). Headless screenshots.
++void CaptureOutputIfRequested(D3D12CommandProcessor& cp, ID3D12Resource* output,
++                              D3D12_RESOURCE_STATES state);
++// Master switch (cvar gow2_temporal).
++bool Enabled();
++// True for draws that should be sub-pixel jittered: world-geometry vertex shaders (read the
++// ViewProjection matrix at cvar gow2_vp_register) drawing into the scene target (surface pitch
++// == guest scene width). vs_float_bitmap: the 256-bit VS float-constant bitmap (4 words).
++bool ShouldJitter(const uint64_t* vs_float_bitmap, uint32_t surface_pitch, uint32_t color_fmt);
++// Jitter for this frame in NDC units (add to the NDC offset); host_w/h = host render size.
++void JitterNdc(uint32_t host_w, uint32_t host_h, float out[2]);
++// Jitter for this frame in render-target pixels, as handed to an upscaler (x right, y down).
++void JitterPixels(float out[2]);
++void JitterPixelsForFrame(uint32_t frame, float out[2]);
++// Render-resolution scale of the scene (1.0 = native). World geometry is rasterised into the
++// top-left (fx*W, fy*H) region of the target and the upscaler reconstructs the full size.
++// Only active while the upscaler is usable. out_w/out_h = full host target size.
++bool RenderScale(uint32_t out_w, uint32_t out_h, float* fx, float* fy, uint32_t* rw, uint32_t* rh);
++// 0 = off, 1 = DLSS, 2 = FSR 3.1, 3 = FSR 4 (cvar gow2_upscaler).
++int SelectedUpscaler();
++// Upscaler (DLSS) hooks. UpscaleEnabled(): cvar gow2_dlss && temporal pipeline on.
++bool UpscaleEnabled();
++void NoteDepthTexture(ID3D12Resource* depth);
++// Typed view format both upscalers read the finished frame with: the frame texture is TYPELESS
++// (Gears of War 2: R8G8B8A8_TYPELESS) and neither NGX nor FidelityFX can view that.
++// DXGI_FORMAT_UNKNOWN = a frame format the upscalers do not take.
++DXGI_FORMAT UpscalerColorFormat(DXGI_FORMAT frame_format);
++// End-of-frame upscaling. Called at the swap with the finished guest frame (colour: the frontbuffer
++// texture, in_w x in_h active pixels). On success the upscaled picture is in `out` (output size,
++// R10G10B10A2, ready to be sampled) and the presenter should use it instead of the guest frame.
++struct FinalImage {
++  ID3D12Resource* resource = nullptr;
++  uint32_t w = 0, h = 0;
++};
++bool UpscaleFinal(D3D12CommandProcessor& cp, ID3D12Resource* color, uint32_t in_w, uint32_t in_h,
++                  FinalImage& out);
++// Index of the first VS constant register at which 4 consecutive rows equal this frame's camera
++// matrix (0..252), or -1.
++int FindCameraMatrix(const float* vs_consts);
++// Called after textures for the draw were requested. fetch constants listed in used_mask.
++void OnDrawTextures(D3D12CommandProcessor& cp, D3D12TextureCache& tc,
++                    const RegisterFile& regs, uint32_t used_mask);
++
++}  // namespace gow2
++}  // namespace rex::graphics::d3d12
+diff --git a/include/rex/graphics/d3d12/gow2_trace.h b/include/rex/graphics/d3d12/gow2_trace.h
+new file mode 100644
+index 0000000..88b8c64
+--- /dev/null
++++ b/include/rex/graphics/d3d12/gow2_trace.h
+@@ -0,0 +1,31 @@
++// Adapted from gears-judgement-recomp (BSD-3-Clause).
++#pragma once
++// Project-local frame trace shared by the D3D12 backend.
++//   Create a file named "gow2_trace.now" in the working directory while the game runs: the next
++//   few frames log every resolve (RESOLVE) and swap (SWAP) with their parameters, then it stops.
++#include <atomic>
++#include <cstdint>
++#include <cstdio>
++#include <filesystem>
++
++namespace rex::graphics::d3d12 {
++inline std::atomic<uint32_t> gow2_trace_frame{0};
++inline std::atomic<int> gow2_trace_remaining{0};
++
++// Called once per swap. Returns true if this frame is being traced.
++inline bool Gow2TraceBeginFrame() {
++  uint32_t f = gow2_trace_frame.fetch_add(1);
++  if (gow2_trace_remaining.load() <= 0 && (f % 30) == 0) {
++    std::error_code ec;
++    if (std::filesystem::exists("gow2_trace.now", ec)) {
++      std::filesystem::remove("gow2_trace.now", ec);
++      gow2_trace_remaining.store(3);
++    }
++  }
++  return gow2_trace_remaining.load() > 0;
++}
++inline bool Gow2TraceActive() { return gow2_trace_remaining.load() > 0; }
++inline void Gow2TraceEndFrame() {
++  if (gow2_trace_remaining.load() > 0) gow2_trace_remaining.fetch_sub(1);
++}
++}  // namespace rex::graphics::d3d12
+diff --git a/include/rex/graphics/d3d12/texture_cache.h b/include/rex/graphics/d3d12/texture_cache.h
+index 4d845c7..fae1448 100644
+--- a/include/rex/graphics/d3d12/texture_cache.h
++++ b/include/rex/graphics/d3d12/texture_cache.h
+@@ -113,6 +113,10 @@ class D3D12TextureCache final : public TextureCache {
+                                     D3D12_CPU_DESCRIPTOR_HANDLE handle);
+   uint32_t GetActiveTextureBindlessSRVIndex(const D3D12Shader::TextureBinding& host_shader_binding);
+ 
++  // Resource of the texture bound to a fetch constant (nullptr if none); sizes in host texels.
++  ID3D12Resource* GetActiveTextureResource(uint32_t fetch_constant_index, uint32_t* width,
++                                           uint32_t* height) const;
++
+   SamplerParameters GetSamplerParameters(const D3D12Shader::SamplerBinding& binding) const;
+   void WriteSampler(SamplerParameters parameters, D3D12_CPU_DESCRIPTOR_HANDLE handle) const;
+ 
+diff --git a/include/rex/graphics/pipeline/texture/cache.h b/include/rex/graphics/pipeline/texture/cache.h
+index d26cd4f..914ef19 100644
+--- a/include/rex/graphics/pipeline/texture/cache.h
++++ b/include/rex/graphics/pipeline/texture/cache.h
+@@ -450,6 +450,11 @@ class TextureCache {
+   static constexpr uint8_t kSwizzledSignsUnsigned =
+       uint8_t(xenos::TextureSign::kUnsigned) * uint8_t(0b01010101);
+ 
++  // The host texture bound to a fetch constant by the last RequestTextures (nullptr if none).
++  Texture* GetActiveTexture(uint32_t fetch_constant_index) const {
++    return texture_bindings_[fetch_constant_index].texture;
++  }
++
+   struct TextureBinding {
+     TextureKey key;
+     // Destination swizzle merged with guest to host format swizzle.
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index 0d8f8af..60c0298 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -82,6 +82,10 @@ if(REXGLUE_USE_D3D12)
+         d3d12/texture_cache.cpp
+         d3d12/deferred_command_list.cpp
+         d3d12/pipeline_cache.cpp
++        d3d12/gow2_temporal.cpp
++        d3d12/gow2_dlss.cpp
++        d3d12/gow2_upscale.cpp
++        d3d12/gow2_fsr.cpp
+     )
+ endif()
+ 
+@@ -112,6 +116,34 @@ target_include_directories(rexgpu-xenos PRIVATE
+ 
+ target_compile_options(rexgpu-xenos PRIVATE -Wno-unused-variable)
+ 
++option(GOW2_DEV_TOOLS "Frame tracing, dumps and a D3D12 debug-layer switch (development only)" OFF)
++if(GOW2_DEV_TOOLS)
++    target_compile_definitions(rexgpu-xenos PRIVATE GOW2_DEV_TOOLS=1)
++endif()
++
++# Optional AMD FidelityFX upscaler (FSR) support: public API headers only (loaded at run time).
++set(GOW2_FFX_SDK "${REXGLUE_ROOT}/../ffx-sdk/Kits/FidelityFX" CACHE PATH "AMD FidelityFX SDK Kits/FidelityFX folder")
++if(WIN32 AND EXISTS "${GOW2_FFX_SDK}/api/include/ffx_api.h")
++    target_include_directories(rexgpu-xenos PRIVATE "${GOW2_FFX_SDK}/api/include"
++                               "${GOW2_FFX_SDK}/upscalers/include")
++    target_compile_definitions(rexgpu-xenos PRIVATE GOW2_HAS_FFX=1)
++    message(STATUS "FSR (FidelityFX API) support: ON (${GOW2_FFX_SDK})")
++else()
++    message(STATUS "FSR (FidelityFX API) support: OFF")
++endif()
++
++# Optional NVIDIA DLSS (NGX) support: headers and import library come from the public NVIDIA/DLSS
++# repository checked out next to this tree. Nothing from NVIDIA ends up in the source tree.
++set(GOW2_DLSS_SDK "${REXGLUE_ROOT}/../dlss-sdk" CACHE PATH "NVIDIA DLSS SDK folder")
++if(WIN32 AND EXISTS "${GOW2_DLSS_SDK}/include/nvsdk_ngx.h")
++    target_include_directories(rexgpu-xenos PRIVATE "${GOW2_DLSS_SDK}/include")
++    target_link_libraries(rexgpu-xenos PRIVATE "${GOW2_DLSS_SDK}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib")
++    target_compile_definitions(rexgpu-xenos PRIVATE GOW2_HAS_DLSS=1)
++    message(STATUS "DLSS (NGX) support: ON (${GOW2_DLSS_SDK})")
++else()
++    message(STATUS "DLSS (NGX) support: OFF")
++endif()
++
+ rex_target_pch(rexgpu-xenos
+     <mutex>
+     <unordered_map>
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 19874a5..74869af 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -20,6 +20,9 @@
+ #include <rex/dbg.h>
+ #include <rex/perf/counter.h>
+ #include <rex/graphics/d3d12/command_processor.h>
++#include <rex/graphics/d3d12/gow2_temporal.h>
++#include <rex/graphics/d3d12/gow2_trace.h>
++#include <cstdlib>
+ #include <rex/graphics/d3d12/graphics_system.h>
+ #include <rex/graphics/d3d12/shader.h>
+ #include <rex/graphics/flags.h>
+@@ -1896,6 +1899,15 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+   SCOPE_profile_cpu_f("gpu");
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
++#ifdef GOW2_DEV_TOOLS
++  if (Gow2TraceBeginFrame()) {
++    REXGPU_WARN("SWAP f={} front={:08X} {}x{} remaining={}", gow2_trace_frame.load(),
++                frontbuffer_ptr, frontbuffer_width, frontbuffer_height,
++                gow2_trace_remaining.load());
++    Gow2TraceEndFrame();
++  }
++#endif
++  gow2::BeginFrame(*this, frontbuffer_ptr);
+ 
+   if (!graphics_system_)
+     return;
+@@ -1980,6 +1992,18 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+     }
+   }
+ 
++  // DLSS / FSR: the finished guest frame is upscaled to the screen size and shown instead of it.
++  {
++    gow2::FinalImage upscaled;
++    if (gow2::UpscaleFinal(*this, swap_texture_resource, guest_output_width, guest_output_height,
++                           upscaled)) {
++      swap_texture_resource = upscaled.resource;
++      swap_texture_srv_desc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
++      guest_output_width = upscaled.w;
++      guest_output_height = upscaled.h;
++    }
++  }
++
+   system::X_VIDEO_MODE video_mode;
+   kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+   uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
+@@ -2246,6 +2270,8 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+         // Need to submit all the commands before giving the image back to the
+         // presenter so it can submit its own commands for displaying it to the
+         // queue.
++        gow2::CaptureOutputIfRequested(*this, guest_output_resource,
++                                       ui::d3d12::D3D12Presenter::kGuestOutputInternalState);
+         SubmitBarriers();
+         EndSubmission(true);
+         return true;
+@@ -2327,6 +2353,38 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   bool memexport_used_pixel = pixel_shader && (pixel_shader->memexport_eM_written() != 0);
+   bool memexport_used = memexport_used_vertex || memexport_used_pixel;
+ 
++  if (pixel_shader) {
++    gow2::NoteSceneDraw(
++        reinterpret_cast<const float*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]),
++        uint32_t(regs.Get<reg::RB_COLOR_INFO>().color_format), index_count);
++  }
++#ifdef GOW2_DEV_TOOLS
++  if (Gow2TraceActive() && pixel_shader) {
++    // One line per draw: shaders, primitive, targets and the textures the pixel shader samples.
++    uint32_t color0 = regs.Get<reg::RB_COLOR_INFO>().color_base;
++    uint32_t color_fmt = uint32_t(regs.Get<reg::RB_COLOR_INFO>().color_format);
++    uint32_t depth_base = regs.Get<reg::RB_DEPTH_INFO>().depth_base;
++    std::string tex;
++    uint32_t used = 0;
++    for (const auto& b : pixel_shader->texture_bindings()) used |= (1u << b.fetch_constant);
++    for (uint32_t i = 0; i < 32; ++i) {
++      if (!(used & (1u << i))) continue;
++      xenos::xe_gpu_texture_fetch_t tf = regs.GetTextureFetch(i);
++      tex += fmt::format(" tf{}={:08X}/{}x{}/f{}", i, uint32_t(tf.base_address) << 12,
++                         uint32_t(tf.size_2d.width) + 1, uint32_t(tf.size_2d.height) + 1,
++                         uint32_t(tf.format));
++    }
++    int vp_at = gow2::FindCameraMatrix(
++        reinterpret_cast<const float*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]));
++    REXGPU_WARN(
++        "DRAW f={} vs={:016X} ps={:016X} prim={} n={} rt0={:X}/f{} z={:X} edram_mode={} pitch={} "
++        "vp@{}{}",
++        gow2_trace_frame.load(), vertex_shader->ucode_data_hash(), pixel_shader->ucode_data_hash(),
++        uint32_t(primitive_type), index_count, color0, color_fmt, depth_base, uint32_t(edram_mode),
++        uint32_t(regs.Get<reg::RB_SURFACE_INFO>().surface_pitch), vp_at, tex);
++  }
++#endif
++
+   if (!BeginSubmission(true)) {
+     return false;
+   }
+@@ -2408,6 +2466,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+       vertex_shader->GetUsedTextureMaskAfterTranslation() |
+       (pixel_shader != nullptr ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
+   texture_cache_->RequestTextures(used_texture_mask);
++  gow2::OnDrawTextures(*this, *texture_cache_, regs, used_texture_mask);
+ 
+   // Bind the pipeline after configuring it and doing everything that may bind
+   // other pipelines.
+@@ -2462,12 +2521,36 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   // Update viewport, scissor, blend factor and stencil reference.
+   UpdateFixedFunctionState(viewport_info, scissor, primitive_polygonal, normalized_depth_control);
+ 
++  // Temporal jitter: shifts the NDC offset of world-geometry draws in the scene surface only
++  // (the fixed-function viewport is unchanged).
++  draw_util::ViewportInfo ndc_viewport_info = viewport_info;
++  if (gow2::ShouldJitter(vertex_shader->constant_register_map().float_bitmap,
++                         regs.Get<reg::RB_SURFACE_INFO>().surface_pitch,
++                         uint32_t(regs.Get<reg::RB_COLOR_INFO>().color_format))) {
++    const uint32_t host_w = gow2::State().guest_w * draw_resolution_scale_x;
++    const uint32_t host_h = gow2::State().guest_h * draw_resolution_scale_y;
++    float j[2];
++    gow2::JitterNdc(host_w, host_h, j);
++    float fx, fy;
++    uint32_t rw, rh;
++    if (gow2::RenderScale(host_w, host_h, &fx, &fy, &rw, &rh)) {
++      // Rasterise into the top-left (fx*W, fy*H) region; the upscaler reconstructs the rest.
++      ndc_viewport_info.ndc_scale[0] *= fx;
++      ndc_viewport_info.ndc_scale[1] *= fy;
++      ndc_viewport_info.ndc_offset[0] = ndc_viewport_info.ndc_offset[0] * fx + (fx - 1.0f);
++      ndc_viewport_info.ndc_offset[1] = ndc_viewport_info.ndc_offset[1] * fy + (1.0f - fy);
++    }
++    ndc_viewport_info.ndc_offset[0] += j[0];
++    ndc_viewport_info.ndc_offset[1] += j[1];
++  }
++
+   // Update system constants before uploading them.
+   // TODO(Triang3l): With ROV, pass the disabled render target mask for safety.
+   UpdateSystemConstantValues(memexport_used, primitive_polygonal,
+                              primitive_processing_result.line_loop_closing_index,
+-                             primitive_processing_result.host_shader_index_endian, viewport_info,
+-                             used_texture_mask, normalized_depth_control, normalized_color_mask);
++                             primitive_processing_result.host_shader_index_endian,
++                             ndc_viewport_info, used_texture_mask, normalized_depth_control,
++                             normalized_color_mask);
+ 
+   // Update constant buffers, descriptors and root parameters.
+   if (!UpdateBindings(vertex_shader, pixel_shader, root_signature, memexport_used)) {
+diff --git a/src/graphics/d3d12/deferred_command_list.cpp b/src/graphics/d3d12/deferred_command_list.cpp
+index e6d6277..964c2bf 100644
+--- a/src/graphics/d3d12/deferred_command_list.cpp
++++ b/src/graphics/d3d12/deferred_command_list.cpp
+@@ -36,6 +36,8 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
+   const uintmax_t* stream = command_stream_.data();
+   size_t stream_remaining = command_stream_.size();
+   ID3D12PipelineState* current_pipeline_state = nullptr;
++  ID3D12DescriptorHeap* current_heaps[2] = {};
++  UINT current_heap_count = 0;
+   while (stream_remaining != 0) {
+     const CommandHeader& header = *reinterpret_cast<const CommandHeader*>(stream);
+     stream += kCommandHeaderSizeElements;
+@@ -229,6 +231,8 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
+           descriptor_heaps[num_descriptor_heaps++] = args.sampler_descriptor_heap;
+         }
+         command_list->SetDescriptorHeaps(num_descriptor_heaps, descriptor_heaps);
++        current_heap_count = num_descriptor_heaps;
++        std::memcpy(current_heaps, descriptor_heaps, sizeof(current_heaps));
+       } break;
+       case Command::kD3DSetPipelineState: {
+         current_pipeline_state = *reinterpret_cast<ID3D12PipelineState* const*>(stream);
+@@ -262,6 +266,13 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
+       case Command::kEndDebugMarker: {
+         command_list->EndEvent();
+       } break;
++      case Command::kCallback: {
++        auto& args = *reinterpret_cast<const CallbackArguments*>(stream);
++        args.fn(command_list, args.user);
++        // The callback may have bound other descriptor heaps or pipelines.
++        if (current_heap_count) command_list->SetDescriptorHeaps(current_heap_count, current_heaps);
++        current_pipeline_state = nullptr;
++      } break;
+       case Command::kInsertDebugMarker: {
+         auto& args = *reinterpret_cast<const DebugMarkerHeader*>(stream);
+         const char* label_name = reinterpret_cast<const char*>(
+diff --git a/src/graphics/d3d12/gow2_dlss.cpp b/src/graphics/d3d12/gow2_dlss.cpp
+new file mode 100644
+index 0000000..0fecf91
+--- /dev/null
++++ b/src/graphics/d3d12/gow2_dlss.cpp
+@@ -0,0 +1,202 @@
++// Adapted from gears-judgement-recomp (BSD-3-Clause).
++// NVIDIA DLSS (NGX) wrapper for the temporal pipeline. Nothing from NVIDIA is redistributed here:
++// nvngx_dlss.dll is loaded at run time from the game folder when it is present.
++#include <rex/graphics/d3d12/gow2_dlss.h>
++
++#include <filesystem>
++
++#include <rex/logging.h>
++
++#ifdef GOW2_HAS_DLSS
++#include <nvsdk_ngx.h>
++#include <nvsdk_ngx_defs.h>
++#include <nvsdk_ngx_helpers.h>
++#include <nvsdk_ngx_helpers_d3d.h>
++#include <nvsdk_ngx_params.h>
++#endif
++
++namespace rex::graphics::d3d12::gow2 {
++
++#ifdef GOW2_HAS_DLSS
++namespace {
++ID3D12Device* g_device = nullptr;
++NVSDK_NGX_Parameter* g_caps = nullptr;
++NVSDK_NGX_Parameter* g_params = nullptr;
++NVSDK_NGX_Handle* g_feature = nullptr;
++bool g_init_tried = false;
++bool g_ok = false;
++uint32_t g_in_w, g_in_h, g_out_w, g_out_h;
++int g_quality = -1;
++}  // namespace
++
++static void NgxLog(const char* msg, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature) {
++  REXGPU_WARN("NGX: {}", msg);
++}
++
++bool DlssInit(ID3D12Device* device) {
++  if (g_init_tried) return g_ok;
++  g_init_tried = true;
++  g_device = device;
++  std::filesystem::path dir = std::filesystem::current_path();
++  std::wstring dllpath = dir.wstring();
++  // The single-file release unpacks the game elsewhere; the vendor DLLs sit in the folder the player
++  // started it from (GOW2_HOME), which is searched first.
++  std::wstring home;
++  {
++    wchar_t b[1024];
++    const DWORD n = GetEnvironmentVariableW(L"GOW2_HOME", b, 1024);
++    if (n && n < 1024) home = b;
++  }
++  if (!home.empty()) SetDllDirectoryW(home.c_str());
++  const wchar_t* paths[2] = {home.empty() ? dllpath.c_str() : home.c_str(), dllpath.c_str()};
++  NVSDK_NGX_FeatureCommonInfo info = {};
++  info.PathListInfo.Path = paths;
++  info.PathListInfo.Length = home.empty() ? 1 : 2;
++  info.LoggingInfo.LoggingCallback = &NgxLog;
++  info.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_ON;
++  info.LoggingInfo.DisableOtherLoggingSinks = false;
++  std::wstring data = (dir / L"gow2_ngx").wstring();
++  std::filesystem::create_directories(dir / L"gow2_ngx");
++  NVSDK_NGX_Result r = NVSDK_NGX_D3D12_Init_with_ProjectID(
++      "b742a0d0-b3f9-4ebd-baa6-c3066954b994", NVSDK_NGX_ENGINE_TYPE_CUSTOM, "1.0", data.c_str(),
++      device, &info);
++  if (NVSDK_NGX_FAILED(r)) {
++    REXGPU_WARN("DLSS: NGX init failed 0x{:08X}", uint32_t(r));
++    return false;
++  }
++  r = NVSDK_NGX_D3D12_GetCapabilityParameters(&g_caps);
++  if (NVSDK_NGX_FAILED(r)) {
++    REXGPU_WARN("DLSS: capability parameters failed 0x{:08X}", uint32_t(r));
++    return false;
++  }
++  int available = 0;
++  NVSDK_NGX_Parameter_GetI(g_caps, NVSDK_NGX_Parameter_SuperSampling_Available, &available);
++  if (!available) {
++    int need_update = 0;
++    NVSDK_NGX_Parameter_GetI(g_caps, NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver,
++                             &need_update);
++    REXGPU_WARN("DLSS: super sampling unavailable (needs updated driver: {})", need_update);
++    return false;
++  }
++  {
++    // Diagnostics: can this device create the kind of shared textures NGX needs?
++    D3D12_HEAP_PROPERTIES hp = {};
++    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
++    D3D12_RESOURCE_DESC d = {};
++    d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++    d.Width = 256;
++    d.Height = 256;
++    d.DepthOrArraySize = 1;
++    d.MipLevels = 1;
++    d.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
++    d.SampleDesc.Count = 1;
++    struct Variant {
++      D3D12_HEAP_FLAGS hf;
++      D3D12_RESOURCE_FLAGS rf;
++      const char* name;
++    } variants[] = {
++        {D3D12_HEAP_FLAG_NONE, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, "uav"},
++        {D3D12_HEAP_FLAG_SHARED, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, "shared+uav"},
++        {D3D12_HEAP_FLAG_SHARED,
++         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS,
++         "shared+uav+simultaneous"},
++    };
++    for (auto& v : variants) {
++      d.Flags = v.rf;
++      ID3D12Resource* res = nullptr;
++      HRESULT hr = device->CreateCommittedResource(&hp, v.hf, &d, D3D12_RESOURCE_STATE_COMMON,
++                                                   nullptr, IID_PPV_ARGS(&res));
++      REXGPU_WARN("DLSS diag: CreateCommittedResource {} -> 0x{:08X}", v.name, uint32_t(hr));
++      if (res) res->Release();
++    }
++    D3D12_FEATURE_DATA_D3D12_OPTIONS opt = {};
++    device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &opt, sizeof opt);
++    REXGPU_WARN("DLSS diag: ResourceHeapTier {} ResourceBindingTier {}", int(opt.ResourceHeapTier),
++                int(opt.ResourceBindingTier));
++  }
++  r = NVSDK_NGX_D3D12_AllocateParameters(&g_params);
++  if (NVSDK_NGX_FAILED(r)) return false;
++  g_ok = true;
++  REXGPU_WARN("DLSS: NGX initialised, super sampling available");
++  return true;
++}
++
++bool DlssEvaluate(ID3D12GraphicsCommandList* list, const DlssEval& e) {
++  if (!g_ok) return false;
++  if (!g_feature || g_in_w != e.render_w || g_in_h != e.render_h || g_out_w != e.out_w ||
++      g_out_h != e.out_h || g_quality != e.quality) {
++    if (g_feature) {
++      NVSDK_NGX_D3D12_ReleaseFeature(g_feature);
++      g_feature = nullptr;
++    }
++    NVSDK_NGX_DLSS_Create_Params cp = {};
++    cp.Feature.InWidth = e.render_w;
++    cp.Feature.InHeight = e.render_h;
++    cp.Feature.InTargetWidth = e.out_w;
++    cp.Feature.InTargetHeight = e.out_h;
++    cp.Feature.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value(e.quality);
++    cp.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
++                              NVSDK_NGX_DLSS_Feature_Flags_DepthInverted |
++                              NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
++    if (e.hdr) cp.InFeatureCreateFlags |= NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
++    NVSDK_NGX_Result r = NGX_D3D12_CREATE_DLSS_EXT(list, 1, 1, &g_feature, g_params, &cp);
++    if (NVSDK_NGX_FAILED(r)) {
++      REXGPU_WARN("DLSS: feature creation failed 0x{:08X} ({}x{} -> {}x{} q{})", uint32_t(r),
++                  e.render_w, e.render_h, e.out_w, e.out_h, e.quality);
++      g_feature = nullptr;
++      return false;
++    }
++    g_in_w = e.render_w;
++    g_in_h = e.render_h;
++    g_out_w = e.out_w;
++    g_out_h = e.out_h;
++    g_quality = e.quality;
++    REXGPU_WARN("DLSS: feature created {}x{} -> {}x{} quality {}", e.render_w, e.render_h, e.out_w,
++                e.out_h, e.quality);
++  }
++  NVSDK_NGX_D3D12_DLSS_Eval_Params ep = {};
++  ep.Feature.pInColor = e.color;
++  ep.Feature.pInOutput = e.output;
++  ep.Feature.InSharpness = 0.0f;
++  ep.pInDepth = e.depth;
++  ep.pInMotionVectors = e.motion;
++  ep.InJitterOffsetX = e.jitter_x;
++  ep.InJitterOffsetY = e.jitter_y;
++  ep.InRenderSubrectDimensions.Width = e.render_w;
++  ep.InRenderSubrectDimensions.Height = e.render_h;
++  ep.InReset = e.reset ? 1 : 0;
++  ep.InMVScaleX = 1.0f;
++  ep.InMVScaleY = 1.0f;
++  ep.InPreExposure = 1.0f;
++  ep.InExposureScale = 1.0f;
++  ep.InFrameTimeDeltaInMsec = e.frame_ms;
++  NVSDK_NGX_Result r = NGX_D3D12_EVALUATE_DLSS_EXT(list, g_feature, g_params, &ep);
++  if (NVSDK_NGX_FAILED(r)) {
++    REXGPU_WARN("DLSS: evaluate failed 0x{:08X}", uint32_t(r));
++    return false;
++  }
++  return true;
++}
++
++void DlssShutdown() {
++  if (g_feature) NVSDK_NGX_D3D12_ReleaseFeature(g_feature);
++  g_feature = nullptr;
++  if (g_params) NVSDK_NGX_D3D12_DestroyParameters(g_params);
++  g_params = nullptr;
++  if (g_device) NVSDK_NGX_D3D12_Shutdown1(g_device);
++  g_device = nullptr;
++  g_ok = false;
++}
++
++bool DlssCompiledIn() { return true; }
++
++#else  // !GOW2_HAS_DLSS
++
++bool DlssInit(ID3D12Device*) { return false; }
++bool DlssEvaluate(ID3D12GraphicsCommandList*, const DlssEval&) { return false; }
++void DlssShutdown() {}
++bool DlssCompiledIn() { return false; }
++
++#endif
++
++}  // namespace rex::graphics::d3d12::gow2
+diff --git a/src/graphics/d3d12/gow2_fsr.cpp b/src/graphics/d3d12/gow2_fsr.cpp
+new file mode 100644
+index 0000000..5bbb6b3
+--- /dev/null
++++ b/src/graphics/d3d12/gow2_fsr.cpp
+@@ -0,0 +1,237 @@
++// Adapted from gears-judgement-recomp (BSD-3-Clause).
++// AMD FidelityFX Super Resolution backend for the temporal pipeline. Nothing from AMD is
++// redistributed: amd_fidelityfx_loader_dx12.dll (and the upscaler provider next to it) are loaded
++// from the game folder when present.
++#include <rex/graphics/d3d12/gow2_fsr.h>
++
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++
++#include <rex/logging.h>
++
++#ifdef GOW2_HAS_FFX
++#define _WINDOWS 1
++#include <ffx_api.h>
++#include <ffx_api_loader.h>
++#include <ffx_api_types.h>
++#include <dx12/ffx_api_dx12.h>
++#include <ffx_upscale.h>
++#endif
++
++namespace rex::graphics::d3d12::gow2 {
++
++#ifdef GOW2_HAS_FFX
++namespace {
++ID3D12Device* g_device = nullptr;
++HMODULE g_module = nullptr;
++ffxFunctions g_fn = {};
++bool g_tried = false, g_ok = false;
++ffxContext g_ctx = nullptr;
++uint32_t g_rw, g_rh, g_ow, g_oh;
++int g_major = -1;
++std::string g_provider;
++bool g_fsr4 = false;
++struct Version {
++  uint64_t id;
++  std::string name;
++};
++std::vector<Version> g_versions;
++
++void FsrMessage(uint32_t type, const wchar_t* msg) {
++  char buf[512];
++  size_t n = 0;
++  wcstombs_s(&n, buf, sizeof buf, msg, _TRUNCATE);
++  REXGPU_WARN("FFX{}: {}", type, buf);
++}
++
++// Creation chain: upscale desc -> DX12 backend desc (-> version override).
++struct Chain {
++  ffxCreateContextDescUpscale up{};
++  ffxCreateBackendDX12Desc be{};
++  ffxOverrideVersion ov{};
++};
++
++// Provider names are bare versions such as "4.1.1"; older loaders prefix them ("FSR 3.1.5").
++int VersionMajor(const std::string& name) {
++  size_t i = 0;
++  while (i < name.size() && (name[i] < '0' || name[i] > '9')) ++i;
++  if (i == name.size()) return -1;
++  int major = 0;
++  while (i < name.size() && name[i] >= '0' && name[i] <= '9') {
++    major = major * 10 + (name[i] - '0');
++    ++i;
++  }
++  return major;
++}
++}  // namespace
++
++bool FsrInit(ID3D12Device* device) {
++  if (g_tried) return g_ok;
++  g_tried = true;
++  g_device = device;
++  // Look in the folder the player started the game from first (the single-file release unpacks the
++  // game elsewhere), then in the default search path.
++  {
++    wchar_t b[1024];
++    const DWORD n = GetEnvironmentVariableW(L"GOW2_HOME", b, 1024);
++    if (n && n < 1024) {
++      SetDllDirectoryW(b);  // the loader finds the upscaler DLL there too
++      g_module = LoadLibraryExW((std::wstring(b) + L"\\amd_fidelityfx_loader_dx12.dll").c_str(), nullptr,
++                                LOAD_WITH_ALTERED_SEARCH_PATH);
++    }
++  }
++  if (!g_module) g_module = LoadLibraryW(L"amd_fidelityfx_loader_dx12.dll");
++  if (!g_module) {
++    REXGPU_WARN("FSR: amd_fidelityfx_loader_dx12.dll not found next to the game");
++    return false;
++  }
++  ffxLoadFunctions(&g_fn, g_module);
++  if (!g_fn.CreateContext || !g_fn.Dispatch || !g_fn.Query || !g_fn.DestroyContext) {
++    REXGPU_WARN("FSR: loader exports are missing");
++    return false;
++  }
++  // Enumerate the upscaler providers this machine can use.
++  uint64_t count = 0;
++  ffxQueryDescGetVersions q{};
++  q.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
++  q.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
++  q.device = device;
++  q.outputCount = &count;
++  if (g_fn.Query(nullptr, &q.header) == FFX_API_RETURN_OK && count) {
++    std::vector<uint64_t> ids(count);
++    std::vector<const char*> names(count);
++    q.versionIds = ids.data();
++    q.versionNames = names.data();
++    uint64_t cap = count;
++    q.outputCount = &cap;
++    if (g_fn.Query(nullptr, &q.header) == FFX_API_RETURN_OK) {
++      for (uint64_t i = 0; i < cap; ++i) {
++        g_versions.push_back({ids[i], names[i] ? names[i] : ""});
++        REXGPU_WARN("FSR provider {}: id=0x{:X} '{}'", i, ids[i], names[i] ? names[i] : "?");
++        if (VersionMajor(names[i] ? names[i] : "") == 4) g_fsr4 = true;
++      }
++    }
++  }
++  if (g_versions.empty()) {
++    REXGPU_WARN("FSR: the loader reports no upscaler providers (is the upscaler DLL next to it?)");
++    return false;
++  }
++  g_ok = true;
++  return true;
++}
++
++bool FsrHasFsr4() { return g_fsr4; }
++const char* FsrProviderName() { return g_provider.c_str(); }
++
++static bool CreateCtx(const FsrEval& e) {
++  Chain c;
++  c.up.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
++  c.up.flags = FFX_UPSCALE_ENABLE_DEPTH_INVERTED | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE |
++               FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;
++  if (std::getenv("GOW2_FSR_DEBUG")) c.up.flags |= FFX_UPSCALE_ENABLE_DEBUG_CHECKING;
++  c.up.maxRenderSize = {e.render_w, e.render_h};
++  c.up.maxUpscaleSize = {e.out_w, e.out_h};
++  c.up.fpMessage = &FsrMessage;
++  c.be.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
++  c.be.device = g_device;
++  c.up.header.pNext = &c.be.header;
++  // Pick a provider by major version (names look like "4.1.1" or "FSR 3.1.5").
++  uint64_t chosen = 0;
++  for (const Version& v : g_versions) {
++    const int major = VersionMajor(v.name);
++    if (major == e.wanted_major) {
++      chosen = v.id;
++      g_provider = v.name;
++      break;
++    }
++  }
++  if (chosen) {
++    c.ov.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
++    c.ov.versionId = chosen;
++    c.be.header.pNext = &c.ov.header;
++  } else {
++    g_provider = g_versions.front().name;
++  }
++  ffxReturnCode_t rc = g_fn.CreateContext(&g_ctx, &c.up.header, nullptr);
++  if (rc != FFX_API_RETURN_OK) {
++    REXGPU_WARN("FSR: context creation failed ({}), provider '{}'", uint32_t(rc), g_provider);
++    g_ctx = nullptr;
++    return false;
++  }
++  g_rw = e.render_w;
++  g_rh = e.render_h;
++  g_ow = e.out_w;
++  g_oh = e.out_h;
++  g_major = e.wanted_major;
++  REXGPU_WARN("FSR: context created '{}' render {}x{} -> {}x{}", g_provider, g_rw, g_rh, g_ow, g_oh);
++  return true;
++}
++
++static bool CreateCtxWithFallback(const FsrEval& e) {
++  if (CreateCtx(e)) return true;
++  if (e.wanted_major != 4) return false;
++  REXGPU_WARN("FSR: FSR 4 context failed, falling back to FSR 3.1");
++  g_fsr4 = false;
++  FsrEval fallback = e;
++  fallback.wanted_major = 3;
++  return CreateCtx(fallback);
++}
++
++bool FsrEvaluate(ID3D12GraphicsCommandList* list, const FsrEval& e) {
++  if (!g_ok) return false;
++  if (!g_ctx || g_rw != e.render_w || g_rh != e.render_h || g_ow != e.out_w || g_oh != e.out_h ||
++      g_major != e.wanted_major) {
++    if (g_ctx) {
++      g_fn.DestroyContext(&g_ctx, nullptr);
++      g_ctx = nullptr;
++    }
++    if (!CreateCtxWithFallback(e)) return false;
++  }
++  ffxDispatchDescUpscale d{};
++  d.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
++  d.commandList = list;
++  d.color = ffxApiGetResourceDX12(e.color, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
++  d.depth = ffxApiGetResourceDX12(e.depth, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
++  d.motionVectors = ffxApiGetResourceDX12(e.motion, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
++  d.output = ffxApiGetResourceDX12(e.output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
++  d.color.description.format = ffxApiGetSurfaceFormatDX12(e.color_format);
++  d.jitterOffset = {e.jitter_x, e.jitter_y};
++  d.motionVectorScale = {1.0f, 1.0f};
++  d.renderSize = {e.render_w, e.render_h};
++  d.upscaleSize = {e.out_w, e.out_h};
++  d.enableSharpening = false;
++  d.sharpness = 0.0f;
++  d.frameTimeDelta = e.frame_ms;
++  d.preExposure = 1.0f;
++  d.reset = e.reset;
++  d.cameraNear = e.camera_near;
++  d.cameraFar = e.camera_far;
++  d.cameraFovAngleVertical = e.fov_y;
++  d.viewSpaceToMetersFactor = 0.01f;  // Unreal units are centimetres
++  d.flags = 0;
++  ffxReturnCode_t rc = g_fn.Dispatch(&g_ctx, &d.header);
++  if (rc != FFX_API_RETURN_OK) {
++    REXGPU_WARN("FSR: dispatch failed ({})", uint32_t(rc));
++    return false;
++  }
++  return true;
++}
++
++void FsrShutdown() {
++  if (g_ctx && g_fn.DestroyContext) g_fn.DestroyContext(&g_ctx, nullptr);
++  g_ctx = nullptr;
++}
++
++#else  // !GOW2_HAS_FFX
++
++bool FsrInit(ID3D12Device*) { return false; }
++bool FsrHasFsr4() { return false; }
++const char* FsrProviderName() { return ""; }
++bool FsrEvaluate(ID3D12GraphicsCommandList*, const FsrEval&) { return false; }
++void FsrShutdown() {}
++
++#endif
++
++}  // namespace rex::graphics::d3d12::gow2
+diff --git a/src/graphics/d3d12/gow2_temporal.cpp b/src/graphics/d3d12/gow2_temporal.cpp
+new file mode 100644
+index 0000000..0619953
+--- /dev/null
++++ b/src/graphics/d3d12/gow2_temporal.cpp
+@@ -0,0 +1,371 @@
++// Adapted from gears-judgement-recomp (BSD-3-Clause).
++// Project-local temporal-upscaling support: scene camera capture and frame dumps.
++#include <rex/graphics/d3d12/gow2_temporal.h>
++
++#include <wrl/client.h>
++
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <string>
++#include <cstring>
++#include <filesystem>
++#include <fstream>
++#include <memory>
++#include <vector>
++
++#include <rex/graphics/d3d12/command_processor.h>
++#include <rex/graphics/d3d12/deferred_command_list.h>
++#include <rex/graphics/d3d12/texture_cache.h>
++#include <rex/graphics/register_file.h>
++#include <rex/cvar.h>
++#include <rex/logging.h>
++
++REXCVAR_DEFINE_BOOL(gow2_temporal, false, "gfx",
++                    "Temporal pipeline: sub-pixel jitter of the scene (foundation for DLSS/FSR)");
++REXCVAR_DEFINE_STRING(gow2_upscale_status, "", "gfx",
++                      "Upscaler status line shown by the FPS overlay (set by the GPU plugin)");
++REXCVAR_DEFINE_DOUBLE(gow2_jitter_scale, 1.0, "gfx",
++                      "Multiplier on the jitter offsets (debug: a large value makes jitter visible)");
++REXCVAR_DEFINE_INT32(gow2_jitter_phases, 8, "gfx", "Length of the Halton jitter sequence");
++REXCVAR_DEFINE_INT32(gow2_vp_register, 0, "gfx",
++                     "First VS float constant holding the scene ViewProjection matrix (4 rows)");
++REXCVAR_DEFINE_INT32(gow2_campos_register, 13, "gfx",
++                     "VS float constant row holding the camera world position");
++
++namespace rex::graphics::d3d12::gow2 {
++
++namespace {
++
++struct Readback {
++  Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
++  ID3D12Resource* source = nullptr;
++  D3D12_RESOURCE_STATES state =
++      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++  D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
++  UINT rows = 0;
++  UINT64 row_size = 0;
++  uint64_t submission = 0;
++  std::string path;
++  uint32_t width = 0, height = 0;
++  uint32_t format = 0;
++};
++
++FrameState g_state;
++std::vector<std::unique_ptr<Readback>> g_pending;
++int g_dump_frames_left = 0;      // frames still to capture after the trigger
++bool g_dump_this_frame = false;  // capture during the current frame
++bool g_depth_dumped = false, g_color_dumped = false;
++uint32_t g_dump_seq = 0;
++
++void CopyCallback(ID3D12GraphicsCommandList* list, void* user) {
++  auto* rb = static_cast<Readback*>(user);
++  const D3D12_RESOURCE_STATES kSrv = rb->state;
++  D3D12_RESOURCE_BARRIER b = {};
++  b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++  b.Transition.pResource = rb->source;
++  b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++  b.Transition.StateBefore = kSrv;
++  b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
++  list->ResourceBarrier(1, &b);
++  D3D12_TEXTURE_COPY_LOCATION dst = {};
++  dst.pResource = rb->buffer.Get();
++  dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
++  dst.PlacedFootprint = rb->footprint;
++  D3D12_TEXTURE_COPY_LOCATION src = {};
++  src.pResource = rb->source;
++  src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++  src.SubresourceIndex = 0;
++  list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
++  std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
++  list->ResourceBarrier(1, &b);
++}
++
++void QueueCapture(D3D12CommandProcessor& cp, ID3D12Resource* resource, const char* what,
++                  D3D12_RESOURCE_STATES state =
++                      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
++                      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
++  ID3D12Device* device = cp.GetD3D12Provider().GetDevice();
++  D3D12_RESOURCE_DESC desc = resource->GetDesc();
++  auto rb = std::make_unique<Readback>();
++  UINT64 total = 0;
++  device->GetCopyableFootprints(&desc, 0, 1, 0, &rb->footprint, &rb->rows, &rb->row_size, &total);
++  D3D12_HEAP_PROPERTIES hp = {};
++  hp.Type = D3D12_HEAP_TYPE_READBACK;
++  D3D12_RESOURCE_DESC bd = {};
++  bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++  bd.Width = total;
++  bd.Height = bd.DepthOrArraySize = bd.MipLevels = 1;
++  bd.SampleDesc.Count = 1;
++  bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++  if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
++                                             D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
++                                             IID_PPV_ARGS(&rb->buffer)))) {
++    REXGPU_WARN("GOW2 dump: readback buffer creation failed");
++    return;
++  }
++  rb->source = resource;
++  rb->state = state;
++  rb->width = uint32_t(desc.Width);
++  rb->height = desc.Height;
++  rb->format = uint32_t(desc.Format);
++  char name[96];
++  std::snprintf(name, sizeof name, "gow2_dump/f%u_%s.bin", g_dump_seq, what);
++  rb->path = name;
++  cp.SubmitBarriers();
++  rb->submission = cp.GetCurrentSubmission();
++  Readback* raw = rb.get();
++  g_pending.push_back(std::move(rb));
++  cp.GetDeferredCommandList().Callback(&CopyCallback, raw);
++  REXGPU_WARN("GOW2 dump: queued {} {}x{} dxgi={} -> {}", what, raw->width, raw->height,
++              raw->format, raw->path);
++}
++
++void WriteCamera(uint32_t seq) {
++  char name[96];
++  std::snprintf(name, sizeof name, "gow2_dump/f%u_cam.txt", seq);
++  FILE* f = std::fopen(name, "w");
++  if (!f) return;
++  auto dump = [&](const char* tag, const SceneCamera& c) {
++    std::fprintf(f, "%s valid=%d matching=%u other=%u\n", tag, int(c.valid), c.draws_matching,
++                 c.draws_other);
++    for (int i = 0; i < 16; ++i)
++      std::fprintf(f, "%s c%d %.9g %.9g %.9g %.9g\n", tag, i, c.c[i][0], c.c[i][1], c.c[i][2],
++                   c.c[i][3]);
++  };
++  dump("cur", g_state.camera);
++  dump("prev", g_state.prev_camera);
++  std::fprintf(f, "scale %u %u\ndepth_dst %08X\ncolor_dst %08X\n", g_state.scale_x,
++               g_state.scale_y, g_state.depth_resolve_dst, g_state.color_resolve_dst);
++  std::fclose(f);
++}
++
++void FlushCompleted(D3D12CommandProcessor& cp) {
++  for (size_t i = 0; i < g_pending.size();) {
++    Readback& rb = *g_pending[i];
++    if (cp.GetCompletedSubmission() < rb.submission) {
++      ++i;
++      continue;
++    }
++    void* mapped = nullptr;
++    D3D12_RANGE range = {0, size_t(rb.footprint.Footprint.RowPitch) * rb.rows};
++    if (SUCCEEDED(rb.buffer->Map(0, &range, &mapped))) {
++      std::filesystem::create_directories("gow2_dump");
++      FILE* f = std::fopen(rb.path.c_str(), "wb");
++      if (f) {
++        uint32_t hdr[6] = {rb.width, rb.height, rb.format, rb.footprint.Footprint.RowPitch,
++                           rb.rows, 0};
++        std::fwrite(hdr, sizeof hdr, 1, f);
++        std::fwrite(mapped, 1, size_t(rb.footprint.Footprint.RowPitch) * rb.rows, f);
++        std::fclose(f);
++      }
++      D3D12_RANGE none = {0, 0};
++      rb.buffer->Unmap(0, &none);
++    }
++    g_pending.erase(g_pending.begin() + i);
++  }
++}
++
++}  // namespace
++
++FrameState& State() { return g_state; }
++
++void CaptureOutputIfRequested(D3D12CommandProcessor& cp, ID3D12Resource* output,
++                              D3D12_RESOURCE_STATES state) {
++  static uint32_t counter = 0, shot_seq = 0;
++  if ((++counter % 6) != 0) return;
++  std::error_code ec;
++  if (!std::filesystem::exists("gow2_shot.now", ec)) return;
++  std::filesystem::remove("gow2_shot.now", ec);
++  std::filesystem::create_directories("gow2_dump");
++  char what[32];
++  std::snprintf(what, sizeof what, "shot%u", shot_seq++);
++  uint32_t keep = g_dump_seq;
++  g_dump_seq = 0;
++  // QueueCapture names the file f<seq>_<what>.bin
++  QueueCapture(cp, output, what, state);
++  g_dump_seq = keep;
++}
++
++void BeginFrame(D3D12CommandProcessor& cp, uint32_t front_ptr) {
++  FlushCompleted(cp);
++  // Close out the previous frame's dump (camera text needs both cameras).
++  if (g_dump_this_frame) {
++    WriteCamera(g_dump_seq);
++    ++g_dump_seq;
++    g_dump_this_frame = false;
++  }
++  g_state.ended_camera = g_state.camera;
++  g_state.ended_prev_camera = g_state.prev_camera;
++  g_state.ended_frame = g_state.frame;
++  g_state.ended_jittered = g_state.jitter_this_frame;
++  g_state.prev_camera = g_state.camera;
++  g_state.camera = SceneCamera();
++  // The scene size comes from the finished frame: inside a frame, smaller colour resolves come
++  // before the scene's and would stop the jitter of the scene draws that follow them.
++  if (g_state.color_resolve_area) {
++    g_state.guest_w = g_state.color_resolve_w;
++    g_state.guest_h = g_state.color_resolve_h;
++  }
++  g_state.depth_resolve_dst = 0;
++  g_state.depth_resolve_area = 0;
++  g_state.depth_dst_count = 0;
++  g_state.color_resolve_dst = 0;
++  g_state.color_resolve_area = 0;
++  g_state.last_front = front_ptr;
++  ++g_state.frame;
++  g_state.shrink_this_frame = false;  // the whole guest frame is rendered at the render size now
++  g_state.jitter_this_frame = g_state.jitter_next;
++  g_state.jitter_next = false;
++
++  if (g_dump_frames_left <= 0 && (g_state.frame % 30) == 0) {
++    std::error_code ec;
++    if (std::filesystem::exists("gow2_dump.now", ec)) {
++      std::filesystem::remove("gow2_dump.now", ec);
++      g_dump_frames_left = 2;
++      g_dump_seq = 0;
++    }
++  }
++  if (g_dump_frames_left > 0) {
++    --g_dump_frames_left;
++    g_dump_this_frame = true;
++    g_depth_dumped = g_color_dumped = false;
++    std::filesystem::create_directories("gow2_dump");
++  }
++}
++
++void NoteResolve(bool is_depth, uint32_t dst, uint32_t width, uint32_t height, uint32_t) {
++  // The scene's resolves are the first largest of the frame. Gears of War 2 resolves a 704x480 shadow
++  // map after the 1280x704 scene depth, and 640x352 and 328x184 colour buffers around the scene
++  // colour, so taking the last resolve picked the wrong targets and the scene was never jittered.
++  const uint32_t area = width * height;
++  if (is_depth) {
++    if (area > g_state.depth_resolve_area) {
++      g_state.depth_resolve_dst = dst;
++      g_state.depth_resolve_area = area;
++    }
++    bool known = false;
++    for (uint32_t i = 0; i < g_state.depth_dst_count; ++i) known |= g_state.depth_dsts[i] == dst;
++    if (!known && g_state.depth_dst_count < 4) g_state.depth_dsts[g_state.depth_dst_count++] = dst;
++  } else if (dst != g_state.last_front && area > g_state.color_resolve_area) {
++    g_state.color_resolve_dst = dst;
++    g_state.color_resolve_area = area;
++    g_state.color_resolve_w = width;
++    g_state.color_resolve_h = height;
++  }
++}
++
++bool Enabled() { return REXCVAR_GET(gow2_temporal) || SelectedUpscaler() != 0; }
++
++void SetUpscaleStatus(const char* text) {
++  static std::string last = "\x01";
++  if (last == text) return;
++  last = text;
++  const bool ok = rex::cvar::SetFlagByName("gow2_upscale_status", last);
++  REXGPU_WARN("GOW2 upscale status -> '{}' (set ok={}, read back '{}')", last, ok,
++              rex::cvar::GetFlagByName("gow2_upscale_status"));
++}
++
++bool ShouldJitter(const uint64_t* vs_float_bitmap, uint32_t surface_pitch,
++                  uint32_t color_fmt) {
++  if (!Enabled() || !g_state.jitter_this_frame) return false;
++  const int vp = std::clamp<int>(REXCVAR_GET(gow2_vp_register), 0, 252);
++  for (int r = 0; r < 4; ++r) {  // the world VS reads the whole ViewProjection matrix
++    const int reg = vp + r;
++    if (!(vs_float_bitmap[reg / 64] & (uint64_t(1) << (reg % 64)))) return false;
++  }
++  if (!g_state.guest_w || surface_pitch != g_state.guest_w) return false;  // not the scene surface
++  (void)color_fmt;
++  return true;
++}
++
++static double Halton(uint32_t i, uint32_t b) {
++  double f = 1.0, r = 0.0;
++  while (i > 0) {
++    f /= b;
++    r += f * (i % b);
++    i /= b;
++  }
++  return r;
++}
++
++void JitterPixels(float out[2]) { JitterPixelsForFrame(g_state.frame, out); }
++
++void JitterPixelsForFrame(uint32_t frame, float out[2]) {
++  int phases = std::max(1, REXCVAR_GET(gow2_jitter_phases));
++  uint32_t i = (frame % uint32_t(phases)) + 1;
++  double s = REXCVAR_GET(gow2_jitter_scale);
++  out[0] = float((Halton(i, 2) - 0.5) * s);
++  out[1] = float((Halton(i, 3) - 0.5) * s);
++}
++
++void JitterNdc(uint32_t host_w, uint32_t host_h, float out[2]) {
++  float px[2];
++  JitterPixels(px);
++  out[0] = 2.0f * px[0] / float(host_w);
++  out[1] = -2.0f * px[1] / float(host_h);
++}
++
++void NoteSceneDraw(const float* vs_consts, uint32_t color_fmt, uint32_t index_count) {
++  if (color_fmt != 3 || index_count < 30) return;
++  const int vp = std::clamp<int>(REXCVAR_GET(gow2_vp_register), 0, 240);
++  const float* rows = vs_consts + vp * 4;
++  for (int i = 0; i < 16; ++i) {
++    for (int k = 0; k < 4; ++k)
++      if (!std::isfinite(rows[i * 4 + k]) || std::fabs(rows[i * 4 + k]) > 1e7f) return;
++  }
++  SceneCamera& cam = g_state.camera;
++  if (!cam.valid) {
++    std::memcpy(cam.c, rows, sizeof cam.c);
++    cam.valid = true;
++    cam.draws_matching = 1;
++    return;
++  }
++  if (std::memcmp(cam.c, rows, 4 * 4 * sizeof(float)) == 0)
++    ++cam.draws_matching;
++  else
++    ++cam.draws_other;
++}
++
++int FindCameraMatrix(const float* vs_consts) {
++  const SceneCamera& cam = g_state.camera;
++  if (!cam.valid) return -1;
++  for (int r = 0; r + 4 <= 256; ++r) {
++    if (std::memcmp(cam.c, vs_consts + r * 4, 4 * 4 * sizeof(float)) == 0) return r;
++  }
++  return -1;
++}
++
++void OnDrawTextures(D3D12CommandProcessor& cp, D3D12TextureCache& tc, const RegisterFile& regs,
++                    uint32_t used_mask) {
++  const bool upscale = UpscaleEnabled();
++  if (!upscale && (!g_dump_this_frame || (g_depth_dumped && g_color_dumped))) return;
++  for (uint32_t i = 0; i < 32; ++i) {
++    if (!(used_mask & (1u << i))) continue;
++    xenos::xe_gpu_texture_fetch_t tf = regs.GetTextureFetch(i);
++    uint32_t base = uint32_t(tf.base_address) << 12;
++    if (upscale) {
++      bool is_depth_dst = false;
++      for (uint32_t k = 0; k < g_state.depth_dst_count; ++k) is_depth_dst |= base == g_state.depth_dsts[k];
++      if (is_depth_dst) {
++        uint32_t w, h;
++        if (ID3D12Resource* r = tc.GetActiveTextureResource(i, &w, &h)) NoteDepthTexture(r);
++      } else if (g_state.color_resolve_dst && base == g_state.color_resolve_dst) {
++        uint32_t w, h;
++        (void)w;
++        (void)h;
++      }
++    }
++    if (!g_dump_this_frame || (g_depth_dumped && g_color_dumped)) continue;
++    bool want_depth = !g_depth_dumped && g_state.depth_resolve_dst && base == g_state.depth_resolve_dst;
++    bool want_color = !g_color_dumped && g_state.color_resolve_dst && base == g_state.color_resolve_dst;
++    if (!want_depth && !want_color) continue;
++    uint32_t w = 0, h = 0;
++    ID3D12Resource* res = tc.GetActiveTextureResource(i, &w, &h);
++    if (!res) continue;
++    QueueCapture(cp, res, want_depth ? "depth" : "color");
++    (want_depth ? g_depth_dumped : g_color_dumped) = true;
++  }
++}
++
++}  // namespace rex::graphics::d3d12::gow2
+diff --git a/src/graphics/d3d12/gow2_upscale.cpp b/src/graphics/d3d12/gow2_upscale.cpp
+new file mode 100644
+index 0000000..8a86043
+--- /dev/null
++++ b/src/graphics/d3d12/gow2_upscale.cpp
+@@ -0,0 +1,766 @@
++// Adapted from gears-judgement-recomp (BSD-3-Clause).
++// Temporal upscaler pass runner: camera motion vectors -> DLSS -> write back into the scene colour
++// texture, all recorded as one callback in the guest command stream.
++#include <wrl/client.h>
++
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <string>
++#include <cstring>
++#include <memory>
++#include <vector>
++
++#include <rex/cvar.h>
++#include <rex/graphics/d3d12/command_processor.h>
++#include <rex/graphics/d3d12/deferred_command_list.h>
++#include <rex/graphics/d3d12/gow2_dlss.h>
++#include <rex/graphics/d3d12/gow2_fsr.h>
++#include <rex/graphics/d3d12/gow2_temporal.h>
++#include <rex/graphics/d3d12/texture_cache.h>
++#include <rex/logging.h>
++
++REXCVAR_DEFINE_BOOL(gow2_dlss, false, "gfx", "Run NVIDIA DLSS on the scene colour (needs gow2_temporal)");
++REXCVAR_DEFINE_STRING(gow2_upscaler, "off", "gfx",
++                      "Temporal upscaler: off, dlss, fsr3 (FSR 3.1), fsr4, auto (dlss, else fsr3)");
++REXCVAR_DEFINE_INT32(gow2_upscale_quality, -1, "gfx",
++                     "Upscaler mode: -1 auto (from the quality level: Low performance, Medium balanced, "
++                     "High quality), 0 performance, 1 balanced, 2 quality, 3 ultra performance, "
++                     "4 ultra quality, 5 native (DLAA)");
++REXCVAR_DEFINE_DOUBLE(gow2_render_scale, 0.0, "gfx",
++                      "Scene render scale for the upscaler (0 = from the DLSS quality mode, 1 = native)");
++REXCVAR_DEFINE_BOOL(gow2_dlss_hdr, false, "gfx", "Tell DLSS the scene colour is HDR/linear");
++REXCVAR_DEFINE_INT32(gow2_mv_debug, 0, "gfx",
++                     "1 = write the motion vectors into the scene colour instead of the upscaled "
++                     "image (debug), 2 = bypass (copy input colour back)");
++REXCVAR_DEFINE_BOOL(gow2_upscale_typed_copy, false, "gfx",
++                    "Give FSR the same typed copy of the frame that DLSS always reads (debug: "
++                    "exercises the DLSS input path on any GPU)");
++
++REXCVAR_DECLARE(int32_t, gow2_vp_register);
++REXCVAR_DECLARE(int32_t, gow2_campos_register);
++
++namespace rex::graphics::d3d12::gow2 {
++
++namespace {
++
++using Microsoft::WRL::ComPtr;
++
++const char kMotionHlsl[] = R"(
++cbuffer C : register(b0) {
++  row_major float4x4 invVP;
++  row_major float4x4 prevVP;
++  float3 tdelta; float pad0;
++  uint2 size; uint2 pad1;
++};
++Texture2D<float> depthTex : register(t0);
++RWTexture2D<float2> mvOut : register(u0);
++[numthreads(8, 8, 1)]
++void main(uint3 id : SV_DispatchThreadID) {
++  if (id.x >= size.x || id.y >= size.y) return;
++  float d = depthTex[id.xy];
++  float z = 1.0 - d;
++  float2 ndc = float2((id.x + 0.5) / size.x * 2.0 - 1.0, 1.0 - (id.y + 0.5) / size.y * 2.0);
++  float4 q = mul(float4(ndc, z, 1.0), invVP);
++  float3 p = q.xyz / q.w;
++  float4 cp = mul(float4(p + tdelta, 1.0), prevVP);
++  float2 mv = float2(0.0, 0.0);
++  if (cp.w > 1e-4) {
++    float2 pn = cp.xy / cp.w;
++    float2 ppx = float2((pn.x * 0.5 + 0.5) * size.x, (0.5 - pn.y * 0.5) * size.y);
++    mv = ppx - (float2(id.xy) + 0.5);
++  }
++  mvOut[id.xy] = mv;
++}
++)";
++
++const char kWritebackHlsl[] = R"(
++cbuffer C : register(b0) {
++  row_major float4x4 m0; row_major float4x4 m1; float3 t0; float p0;
++  uint2 size; uint mode; uint p1;
++};
++Texture2D<float4> src : register(t0);
++RWTexture2D<unorm float4> dst : register(u0);
++[numthreads(8, 8, 1)]
++void main(uint3 id : SV_DispatchThreadID) {
++  if (id.x >= size.x || id.y >= size.y) return;
++  float4 o = src[id.xy];
++#ifdef KEEP_ALPHA
++  float a = dst[id.xy].a;
++#else
++  float a = 1.0;
++#endif
++  dst[id.xy] = float4(saturate(o.rgb), a);
++}
++)";
++
++struct Job {
++  ComPtr<ID3D12Resource> color, depth;
++  DXGI_FORMAT color_format = DXGI_FORMAT_UNKNOWN;  // typed view format of color
++  float inv_vp[16], prev_vp[16], tdelta[3];
++  uint32_t rw, rh, ow, oh;
++  float jx, jy;
++  bool reset;
++  int quality;
++  bool hdr;
++  int debug;
++  int backend = 0;  // 0 DLSS, 1 FSR
++  int fsr_major = 3;
++  float cam_near = 10.0f, cam_far = 8000.0f, fov_y = 0.9f;
++  D3D12_GPU_DESCRIPTOR_HANDLE table_mv, table_wb;
++  ID3D12Resource* mv = nullptr;   // owned by g_mv
++  ID3D12Resource* out = nullptr;     // owned by g.out
++  ID3D12Resource* final_ = nullptr;  // owned by g.final_: what the presenter shows
++  ID3D12Resource* color_typed = nullptr;  // owned by g.color_typed: typed copy of color, or null
++  uint64_t submission = 0;
++};
++
++struct Gpu {
++  bool tried = false, ok = false;
++  ComPtr<ID3D12Device> device;
++  ComPtr<ID3D12RootSignature> rs;
++  ComPtr<ID3D12PipelineState> pso_mv, pso_wb;
++  ComPtr<ID3D12DescriptorHeap> heap;
++  UINT inc = 0;
++  bool keep_alpha = false;
++  ComPtr<ID3D12Resource> mv, out, final_;
++  uint32_t mv_w = 0, mv_h = 0, out_w = 0, out_h = 0;
++  ComPtr<ID3D12Resource> color_typed;
++  uint32_t color_typed_w = 0, color_typed_h = 0;
++  DXGI_FORMAT color_typed_format = DXGI_FORMAT_UNKNOWN;
++  D3D12_RESOURCE_STATES mv_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
++  D3D12_RESOURCE_STATES out_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
++  uint32_t slice = 0;
++  std::vector<std::unique_ptr<Job>> jobs;
++  std::vector<std::pair<uint64_t, ComPtr<ID3D12Resource>>> graveyard;
++  ComPtr<ID3D12Resource> depth_tex;
++  uint64_t depth_area = 0;
++  uint32_t last_frame = 0;
++  bool dlss_failed = false;
++  bool fsr_failed = false;
++};
++Gpu g;
++constexpr uint32_t kSlices = 8;
++constexpr uint32_t kPerSlice = 4;
++
++typedef HRESULT(WINAPI* PFN_Compile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*,
++                                     LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
++
++ComPtr<ID3D12PipelineState> MakePso(ID3D12Device* dev, ID3D12RootSignature* rs, const char* src,
++                                    const char* name, const D3D_SHADER_MACRO* defs) {
++  static PFN_Compile compile = [] {
++    HMODULE m = LoadLibraryW(L"d3dcompiler_47.dll");
++    return m ? reinterpret_cast<PFN_Compile>(GetProcAddress(m, "D3DCompile")) : nullptr;
++  }();
++  if (!compile) {
++    REXGPU_WARN("GOW2: d3dcompiler_47.dll not found");
++    return nullptr;
++  }
++  ComPtr<ID3DBlob> blob, err;
++  if (FAILED(compile(src, std::strlen(src), name, defs, nullptr, "main", "cs_5_0", 1 << 15, 0,
++                     &blob, &err))) {
++    REXGPU_WARN("GOW2: shader {} failed: {}", name,
++                err ? static_cast<const char*>(err->GetBufferPointer()) : "?");
++    return nullptr;
++  }
++  D3D12_COMPUTE_PIPELINE_STATE_DESC d = {};
++  d.pRootSignature = rs;
++  d.CS = {blob->GetBufferPointer(), blob->GetBufferSize()};
++  ComPtr<ID3D12PipelineState> pso;
++  if (FAILED(dev->CreateComputePipelineState(&d, IID_PPV_ARGS(&pso)))) {
++    REXGPU_WARN("GOW2: PSO {} failed", name);
++    return nullptr;
++  }
++  return pso;
++}
++
++bool InitGpu(D3D12CommandProcessor& cp) {
++  if (g.tried) return g.ok;
++  g.tried = true;
++  g.device = cp.GetD3D12Provider().GetDevice();
++  ID3D12Device* dev = g.device.Get();
++
++  D3D12_FEATURE_DATA_D3D12_OPTIONS opt = {};
++  dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &opt, sizeof opt);
++  D3D12_FEATURE_DATA_FORMAT_SUPPORT fs = {DXGI_FORMAT_R10G10B10A2_UNORM};
++  dev->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fs, sizeof fs);
++  g.keep_alpha = (fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) &&
++                 (fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
++  REXGPU_WARN("GOW2 upscale: R10G10B10A2 typed UAV load={} store={} (alpha preserved: {})",
++              (fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) != 0,
++              (fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) != 0, g.keep_alpha);
++
++  D3D12_DESCRIPTOR_RANGE ranges[2] = {};
++  ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++  ranges[0].NumDescriptors = 1;
++  ranges[0].BaseShaderRegister = 0;
++  ranges[0].OffsetInDescriptorsFromTableStart = 0;
++  ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
++  ranges[1].NumDescriptors = 1;
++  ranges[1].BaseShaderRegister = 0;
++  ranges[1].OffsetInDescriptorsFromTableStart = 1;
++  D3D12_ROOT_PARAMETER params[2] = {};
++  params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
++  params[0].Constants.ShaderRegister = 0;
++  params[0].Constants.Num32BitValues = 40;
++  params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++  params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
++  params[1].DescriptorTable.NumDescriptorRanges = 2;
++  params[1].DescriptorTable.pDescriptorRanges = ranges;
++  params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
++  D3D12_ROOT_SIGNATURE_DESC rsd = {};
++  rsd.NumParameters = 2;
++  rsd.pParameters = params;
++  ComPtr<ID3DBlob> rsblob, rserr;
++  if (FAILED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &rsblob, &rserr)) ||
++      FAILED(dev->CreateRootSignature(0, rsblob->GetBufferPointer(), rsblob->GetBufferSize(),
++                                      IID_PPV_ARGS(&g.rs)))) {
++    REXGPU_WARN("GOW2 upscale: root signature failed");
++    return false;
++  }
++  g.pso_mv = MakePso(dev, g.rs.Get(), kMotionHlsl, "gow2_motion", nullptr);
++  D3D_SHADER_MACRO defs[] = {{"KEEP_ALPHA", "1"}, {nullptr, nullptr}};
++  (void)defs;
++  g.pso_wb = MakePso(dev, g.rs.Get(), kWritebackHlsl, "gow2_writeback", nullptr);  // alpha = 1: a fresh image
++  if (!g.pso_mv || !g.pso_wb) return false;
++
++  D3D12_DESCRIPTOR_HEAP_DESC hd = {};
++  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
++  hd.NumDescriptors = kSlices * kPerSlice;
++  hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
++  if (FAILED(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&g.heap)))) return false;
++  g.inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
++
++  g.ok = true;
++  REXGPU_WARN("GOW2 upscale: GPU objects ready");
++  return true;
++}
++
++ComPtr<ID3D12Resource> MakeTex(ID3D12Device* dev, uint32_t w, uint32_t h, DXGI_FORMAT fmt,
++                               D3D12_RESOURCE_STATES state,
++                               D3D12_RESOURCE_FLAGS flags =
++                                   D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) {
++  D3D12_HEAP_PROPERTIES hp = {};
++  hp.Type = D3D12_HEAP_TYPE_DEFAULT;
++  D3D12_RESOURCE_DESC d = {};
++  d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
++  d.Width = w;
++  d.Height = h;
++  d.DepthOrArraySize = 1;
++  d.MipLevels = 1;
++  d.Format = fmt;
++  d.SampleDesc.Count = 1;
++  d.Flags = flags;
++  ComPtr<ID3D12Resource> r;
++  if (FAILED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, state, nullptr,
++                                          IID_PPV_ARGS(&r))))
++    return nullptr;
++  return r;
++}
++
++void Barrier(ID3D12GraphicsCommandList* l, ID3D12Resource* r, D3D12_RESOURCE_STATES a,
++             D3D12_RESOURCE_STATES b) {
++  if (a == b) return;
++  D3D12_RESOURCE_BARRIER br = {};
++  br.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++  br.Transition.pResource = r;
++  br.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++  br.Transition.StateBefore = a;
++  br.Transition.StateAfter = b;
++  l->ResourceBarrier(1, &br);
++}
++
++// NGX views its inputs with the resource's own format, so a TYPELESS frame needs a typed copy.
++bool NeedsTypedColorCopy(int backend, DXGI_FORMAT frame_format, DXGI_FORMAT view_format) {
++  if (frame_format == view_format) return false;
++  return backend == 0 || REXCVAR_GET(gow2_upscale_typed_copy);
++}
++
++void CopyFrameRegion(ID3D12GraphicsCommandList* l, ID3D12Resource* src, ID3D12Resource* dst,
++                     uint32_t w, uint32_t h) {
++  Barrier(l, src, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
++  Barrier(l, dst, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
++  D3D12_TEXTURE_COPY_LOCATION src_loc = {};
++  src_loc.pResource = src;
++  src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++  src_loc.SubresourceIndex = 0;
++  D3D12_TEXTURE_COPY_LOCATION dst_loc = {};
++  dst_loc.pResource = dst;
++  dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
++  dst_loc.SubresourceIndex = 0;
++  D3D12_BOX box = {0, 0, 0, w, h, 1};
++  l->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, &box);
++  Barrier(l, dst, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++  Barrier(l, src, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++}
++
++ID3D12Resource* TypedColorCopy(D3D12CommandProcessor& cp, uint32_t w, uint32_t h,
++                               DXGI_FORMAT format) {
++  if (!g.color_typed || g.color_typed_w != w || g.color_typed_h != h ||
++      g.color_typed_format != format) {
++    if (g.color_typed) g.graveyard.emplace_back(cp.GetCurrentSubmission(), g.color_typed);
++    g.color_typed = MakeTex(g.device.Get(), w, h, format,
++                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
++                            D3D12_RESOURCE_FLAG_NONE);
++    g.color_typed_w = w;
++    g.color_typed_h = h;
++    g.color_typed_format = format;
++  }
++  return g.color_typed.Get();
++}
++
++void LogTypedColorCopyOnce(DXGI_FORMAT frame_format, DXGI_FORMAT view_format, uint32_t w,
++                           uint32_t h) {
++  static bool logged = false;
++  if (logged) return;
++  logged = true;
++  REXGPU_WARN("GOW2 upscale: the upscaler reads a typed copy of the frame (dxgi {} -> {}, {}x{})",
++              uint32_t(frame_format), uint32_t(view_format), w, h);
++}
++
++bool Invert4x4(const double m[16], double out[16]) {
++  double inv[16];
++  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] +
++           m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
++  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] -
++           m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
++  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] +
++           m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
++  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] -
++            m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
++  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] -
++           m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
++  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] +
++           m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
++  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] -
++           m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
++  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] +
++            m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
++  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] +
++           m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
++  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] -
++           m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
++  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] +
++            m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
++  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] -
++            m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
++  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] -
++           m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
++  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] +
++           m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
++  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] -
++            m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
++  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] +
++            m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
++  double det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
++  if (std::fabs(det) < 1e-30) return false;
++  det = 1.0 / det;
++  for (int i = 0; i < 16; ++i) out[i] = inv[i] * det;
++  return true;
++}
++
++// Job backend: 0 = DLSS, 1 = FSR.
++void MarkBackendFailed(int job_backend) {
++  if (job_backend == 0)
++    g.dlss_failed = true;
++  else
++    g.fsr_failed = true;
++}
++
++void RunJob(ID3D12GraphicsCommandList* list, void* user) {
++  Job& j = *static_cast<Job*>(user);
++  const D3D12_RESOURCE_STATES kSrv =
++      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++  ID3D12DescriptorHeap* heaps[1] = {g.heap.Get()};
++  list->SetDescriptorHeaps(1, heaps);
++  list->SetComputeRootSignature(g.rs.Get());
++
++  uint32_t consts[40] = {};
++  std::memcpy(consts, j.inv_vp, 64);
++  std::memcpy(consts + 16, j.prev_vp, 64);
++  std::memcpy(consts + 32, j.tdelta, 12);
++  // layout: invVP 0..15, prevVP 16..31, tdelta 32..34, pad 35, size 36..37
++  consts[36] = j.rw;
++  consts[37] = j.rh;
++
++  // 1. Camera motion vectors.
++  Barrier(list, j.mv, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
++          D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
++  list->SetPipelineState(g.pso_mv.Get());
++  list->SetComputeRoot32BitConstants(0, 40, consts, 0);
++  list->SetComputeRootDescriptorTable(1, j.table_mv);
++  list->Dispatch((j.rw + 7) / 8, (j.rh + 7) / 8, 1);
++  Barrier(list, j.mv, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
++          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++
++  bool have_out = false;
++  if (j.debug != 1 && j.debug != 2) {
++    // 2. The temporal upscaler (DLSS or FSR).
++    ID3D12Resource* color = j.color.Get();
++    if (j.color_typed) {
++      CopyFrameRegion(list, color, j.color_typed, j.rw, j.rh);
++      color = j.color_typed;
++    }
++    if (j.backend == 1) {
++      FsrEval e;
++      e.color = color;
++      e.color_format = j.color_format;
++      e.depth = j.depth.Get();
++      e.motion = j.mv;
++      e.output = j.out;
++      e.render_w = j.rw;
++      e.render_h = j.rh;
++      e.out_w = j.ow;
++      e.out_h = j.oh;
++      e.jitter_x = j.jx;
++      e.jitter_y = j.jy;
++      e.reset = j.reset;
++      e.camera_near = j.cam_near;
++      e.camera_far = j.cam_far;
++      e.fov_y = j.fov_y;
++      e.wanted_major = j.fsr_major;
++      have_out = FsrEvaluate(list, e);
++    } else {
++      DlssEval e;
++      e.color = color;
++      e.depth = j.depth.Get();
++      e.motion = j.mv;
++      e.output = j.out;
++      e.render_w = j.rw;
++      e.render_h = j.rh;
++      e.out_w = j.ow;
++      e.out_h = j.oh;
++      e.jitter_x = j.jx;
++      e.jitter_y = j.jy;
++      e.reset = j.reset;
++      e.hdr = j.hdr;
++      e.quality = j.quality;
++      have_out = DlssEvaluate(list, e);
++    }
++    if (!have_out) MarkBackendFailed(j.backend);
++  }
++  // The upscaler (NGX / FidelityFX) rebinds its own heaps and root signature.
++  list->SetDescriptorHeaps(1, heaps);
++  list->SetComputeRootSignature(g.rs.Get());
++
++  if (have_out) {
++    // 3. Convert the upscaler's output into the image the presenter shows (R10G10B10A2).
++    Barrier(list, j.out, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
++            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++    Barrier(list, j.final_, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
++            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
++    list->SetPipelineState(g.pso_wb.Get());
++    uint32_t wb[40] = {};
++    wb[36] = j.ow;
++    wb[37] = j.oh;
++    list->SetComputeRoot32BitConstants(0, 40, wb, 0);
++    list->SetComputeRootDescriptorTable(1, j.table_wb);
++    list->Dispatch((j.ow + 7) / 8, (j.oh + 7) / 8, 1);
++    Barrier(list, j.final_, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
++            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++    Barrier(list, j.out, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
++            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
++  }
++}
++
++}  // namespace
++
++// 0 = off, 1 = DLSS, 2 = FSR 3.1, 3 = FSR 4.
++static int SelectedBackend() {
++  const std::string& u = REXCVAR_GET(gow2_upscaler);
++  if (u == "off") return 0;  // explicit off wins over the legacy gow2_dlss switch
++  if (u == "dlss") return 1;
++  if (u == "fsr3" || u == "fsr") return 2;
++  if (u == "fsr4") return 3;
++  if (u == "auto") return g.dlss_failed ? 2 : 1;
++  return REXCVAR_GET(gow2_dlss) ? 1 : 0;
++}
++
++// Selection as SelectedBackend() returns it: 1 = DLSS, 2/3 = FSR.
++static bool BackendFailed(int backend_sel) {
++  return backend_sel == 1 ? g.dlss_failed : g.fsr_failed;
++}
++
++int SelectedUpscaler() { return SelectedBackend(); }
++
++bool UpscaleEnabled() { return SelectedBackend() != 0; }
++
++bool RenderScale(uint32_t out_w, uint32_t out_h, float* fx, float* fy, uint32_t* rw, uint32_t* rh) {
++  *fx = *fy = 1.0f;
++  *rw = out_w;
++  *rh = out_h;
++  return false;  // the whole guest frame is rendered at the render size; nothing is shrunk any more
++}
++
++DXGI_FORMAT UpscalerColorFormat(DXGI_FORMAT frame_format) {
++  switch (frame_format) {
++    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
++    case DXGI_FORMAT_R10G10B10A2_UNORM:
++      return DXGI_FORMAT_R10G10B10A2_UNORM;
++    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
++    case DXGI_FORMAT_R8G8B8A8_UNORM:
++      return DXGI_FORMAT_R8G8B8A8_UNORM;
++    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
++    case DXGI_FORMAT_B8G8R8A8_UNORM:
++      return DXGI_FORMAT_B8G8R8A8_UNORM;
++    default:
++      return DXGI_FORMAT_UNKNOWN;
++  }
++}
++
++// The game resolves depth more than once per frame (the full-size scene depth, then smaller copies
++// for effects). The largest one is the scene depth the upscaler needs.
++void NoteDepthTexture(ID3D12Resource* depth) {
++  if (!depth) return;
++  const D3D12_RESOURCE_DESC d = depth->GetDesc();
++  const uint64_t area = d.Width * uint64_t(d.Height);
++  if (!g.depth_tex || area >= g.depth_area) {
++    g.depth_tex = depth;
++    g.depth_area = area;
++  }
++}
++
++// The scaling ratio picks the DLSS mode: the render size is whatever the game was set to draw at.
++static int ModeFromRatio(double r) {
++  if (r >= 0.95) return 5;  // DLAA / native
++  if (r >= 0.62) return 2;  // quality
++  if (r >= 0.55) return 1;  // balanced
++  if (r >= 0.42) return 0;  // performance
++  return 3;                 // ultra performance
++}
++
++static bool TargetSize(uint32_t* w, uint32_t* h) {
++  static uint32_t tw = 0, th = 0;
++  static bool read = false;
++  if (!read) {
++    read = true;
++    char b[16]{};
++    if (GetEnvironmentVariableA("GOW2_TARGET_W", b, sizeof b)) tw = uint32_t(std::atoi(b));
++    if (GetEnvironmentVariableA("GOW2_TARGET_H", b, sizeof b)) th = uint32_t(std::atoi(b));
++  }
++  *w = tw;
++  *h = th;
++  return tw >= 640 && th >= 360;
++}
++
++bool UpscaleFinal(D3D12CommandProcessor& cp, ID3D12Resource* color, uint32_t in_w, uint32_t in_h,
++                  FinalImage& result) {
++  FrameState& st = State();
++  // Retire finished jobs and graveyard entries.
++  for (size_t i = 0; i < g.jobs.size();) {
++    if (cp.GetCompletedSubmission() >= g.jobs[i]->submission)
++      g.jobs.erase(g.jobs.begin() + i);
++    else
++      ++i;
++  }
++  for (size_t i = 0; i < g.graveyard.size();) {
++    if (cp.GetCompletedSubmission() >= g.graveyard[i].first)
++      g.graveyard.erase(g.graveyard.begin() + i);
++    else
++      ++i;
++  }
++  // This frame's depth; the next frame starts with none.
++  ComPtr<ID3D12Resource> frame_depth = std::move(g.depth_tex);
++  g.depth_tex.Reset();
++  g.depth_area = 0;
++  if (!UpscaleEnabled()) return false;
++  if (BackendFailed(SelectedBackend())) {
++    SetUpscaleStatus("Upscaler: failed (see log)");
++    return false;
++  }
++  const SceneCamera& cam = st.ended_camera;
++  const SceneCamera& prev = st.ended_prev_camera;
++  // No scene this frame (menus, movies, loading): the guest frame is shown unchanged.
++  if (!frame_depth || !cam.valid || !prev.valid) return false;
++  if (st.last_upscaled_frame == st.ended_frame) return false;  // once per frame
++  uint32_t tw = 0, th = 0;
++  if (!TargetSize(&tw, &th)) return false;
++  if (!InitGpu(cp)) return false;
++
++  D3D12_RESOURCE_DESC cd = color->GetDesc();
++  const DXGI_FORMAT color_format = UpscalerColorFormat(cd.Format);
++  if (color_format == DXGI_FORMAT_UNKNOWN) {
++    static int bad = 0;
++    if (bad++ < 3)
++      REXGPU_WARN("GOW2 upscale: skipping, the frame has an unsupported format (dxgi {})",
++                  uint32_t(cd.Format));
++    return false;
++  }
++  D3D12_RESOURCE_DESC dd = frame_depth->GetDesc();
++  {
++    static int logged = 0;
++    if (logged++ < 3)
++      REXGPU_WARN("GOW2 upscale: frame colour {}x{} (active {}x{}) dxgi={}; depth {}x{} dxgi={}", uint32_t(cd.Width),
++                  cd.Height, in_w, in_h, uint32_t(cd.Format), uint32_t(dd.Width), dd.Height, uint32_t(dd.Format));
++  }
++  if (dd.Width != in_w || dd.Height != in_h) {
++    static int skipped = 0;
++    if (skipped++ < 3)
++      REXGPU_WARN("GOW2 upscale: skipping, depth {}x{} does not match the frame {}x{}", uint32_t(dd.Width), dd.Height,
++                  in_w, in_h);
++    return false;
++  }
++
++  const int backend_sel = SelectedBackend();  // 1 DLSS, 2 FSR 3.1, 3 FSR 4
++  if (backend_sel == 1) {
++    if (!DlssInit(g.device.Get())) {
++      g.dlss_failed = true;
++      SetUpscaleStatus(DlssCompiledIn() ? "DLSS: unavailable (NGX init failed or no DLSS runtime DLL)"
++                                        : "DLSS: not built into this plugin");
++      return false;
++    }
++  } else {
++    if (!FsrInit(g.device.Get())) {
++      g.fsr_failed = true;
++      SetUpscaleStatus("FSR: unavailable (amd_fidelityfx_loader_dx12.dll / upscaler DLL missing)");
++      return false;
++    }
++  }
++
++  // Output: the screen size at the frame's aspect ratio (never below the frame itself).
++  uint32_t oh = std::max(th, in_h);
++  uint32_t ow = uint32_t(std::lround(double(oh) * in_w / in_h));
++  if (ow > tw && tw >= in_w) {
++    ow = tw;
++    oh = uint32_t(std::lround(double(ow) * in_h / in_w));
++  }
++  ow = std::max(ow, in_w);
++  oh = std::max(oh, in_h);
++  const uint32_t rw = in_w, rh = in_h;
++
++  // (Re)create the motion-vector, upscaler-output and final images.
++  if (!g.mv || g.mv_w != rw || g.mv_h != rh) {
++    if (g.mv) g.graveyard.emplace_back(cp.GetCurrentSubmission(), g.mv);
++    g.mv = MakeTex(g.device.Get(), rw, rh, DXGI_FORMAT_R16G16_FLOAT, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++    g.mv_w = rw;
++    g.mv_h = rh;
++  }
++  if (!g.out || g.out_w != ow || g.out_h != oh) {
++    if (g.out) g.graveyard.emplace_back(cp.GetCurrentSubmission(), g.out);
++    if (g.final_) g.graveyard.emplace_back(cp.GetCurrentSubmission(), g.final_);
++    g.out = MakeTex(g.device.Get(), ow, oh, DXGI_FORMAT_R16G16B16A16_FLOAT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
++    g.final_ = MakeTex(g.device.Get(), ow, oh, DXGI_FORMAT_R10G10B10A2_UNORM,
++                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++    g.out_w = ow;
++    g.out_h = oh;
++  }
++  if (!g.mv || !g.out || !g.final_) return false;
++
++  auto job = std::make_unique<Job>();
++  job->color = color;
++  job->depth = frame_depth;
++  job->rw = rw;
++  job->rh = rh;
++  job->ow = ow;
++  job->oh = oh;
++  job->mv = g.mv.Get();
++  job->out = g.out.Get();
++  job->final_ = g.final_.Get();
++  const int mode = ModeFromRatio(double(rh) / double(oh));
++  job->quality = mode;
++  job->backend = backend_sel == 1 ? 0 : 1;
++  job->fsr_major = (backend_sel == 3 && FsrHasFsr4()) ? 4 : 3;
++  job->color_format = color_format;
++  if (NeedsTypedColorCopy(job->backend, cd.Format, color_format)) {
++    job->color_typed = TypedColorCopy(cp, rw, rh, color_format);
++    if (!job->color_typed) return false;
++    LogTypedColorCopyOnce(cd.Format, color_format, rw, rh);
++  }
++  {
++    const float f = cam.c[2][1] > 1e-3f ? cam.c[2][1] : 2.0f;  // world-z scale of clip.y
++    job->fov_y = 2.0f * std::atan(1.0f / f);
++    const float a = std::fabs(cam.c[0][3]) > 1e-6f ? cam.c[0][2] / cam.c[0][3] : 1.0f;
++    const float b = -(cam.c[3][2] - a * cam.c[3][3]);
++    if (b > 0.0f && a > 0.5f && a < 1.0f) {
++      job->cam_near = b / a;
++      job->cam_far = job->cam_near * a / (1.0f - a);
++    }
++  }
++  job->hdr = false;
++  job->debug = 0;
++  // The frame was jittered only if earlier swaps went through the upscaler; otherwise this is the
++  // first frame of a run and the history has to start over.
++  float jp[2] = {0.0f, 0.0f};
++  if (st.ended_jittered) JitterPixelsForFrame(st.ended_frame, jp);
++  job->jx = jp[0];
++  job->jy = jp[1];
++  job->reset = !st.ended_jittered || (st.ended_frame - g.last_frame) > 3;
++  g.last_frame = st.ended_frame;
++
++  double cur[16], prv[16], inv[16];
++  for (int r = 0; r < 4; ++r)
++    for (int c = 0; c < 4; ++c) {
++      cur[r * 4 + c] = cam.c[r][c];
++      prv[r * 4 + c] = prev.c[r][c];
++    }
++  if (!Invert4x4(cur, inv)) return false;
++  for (int i = 0; i < 16; ++i) {
++    job->inv_vp[i] = float(inv[i]);
++    job->prev_vp[i] = float(prv[i]);
++  }
++  const int campos =
++      std::clamp<int>(REXCVAR_GET(gow2_campos_register) - REXCVAR_GET(gow2_vp_register), 0, 15);
++  for (int k = 0; k < 3; ++k) job->tdelta[k] = prev.c[campos][k] - cam.c[campos][k];
++  float td = std::sqrt(job->tdelta[0] * job->tdelta[0] + job->tdelta[1] * job->tdelta[1] +
++                       job->tdelta[2] * job->tdelta[2]);
++  if (td > 5000.0f) job->reset = true;  // teleport / camera cut
++
++  // Descriptors (this job's slice of the ring).
++  uint32_t slice = (g.slice++) % kSlices;
++  D3D12_CPU_DESCRIPTOR_HANDLE cpu = g.heap->GetCPUDescriptorHandleForHeapStart();
++  D3D12_GPU_DESCRIPTOR_HANDLE gpu = g.heap->GetGPUDescriptorHandleForHeapStart();
++  cpu.ptr += size_t(slice) * kPerSlice * g.inc;
++  gpu.ptr += uint64_t(slice) * kPerSlice * g.inc;
++  auto srv = [&](ID3D12Resource* r, DXGI_FORMAT f, uint32_t idx) {
++    D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
++    d.Format = f;
++    d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
++    d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++    d.Texture2D.MipLevels = 1;
++    D3D12_CPU_DESCRIPTOR_HANDLE h = cpu;
++    h.ptr += size_t(idx) * g.inc;
++    g.device->CreateShaderResourceView(r, &d, h);
++  };
++  auto uav = [&](ID3D12Resource* r, DXGI_FORMAT f, uint32_t idx) {
++    D3D12_UNORDERED_ACCESS_VIEW_DESC d = {};
++    d.Format = f;
++    d.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
++    D3D12_CPU_DESCRIPTOR_HANDLE h = cpu;
++    h.ptr += size_t(idx) * g.inc;
++    g.device->CreateUnorderedAccessView(r, nullptr, &d, h);
++  };
++  srv(job->depth.Get(), DXGI_FORMAT_R32_FLOAT, 0);
++  uav(job->mv, DXGI_FORMAT_R16G16_FLOAT, 1);
++  srv(job->out, DXGI_FORMAT_R16G16B16A16_FLOAT, 2);
++  uav(job->final_, DXGI_FORMAT_R10G10B10A2_UNORM, 3);
++  job->table_mv = gpu;
++  job->table_wb = gpu;
++  job->table_wb.ptr += 2ull * g.inc;
++
++  {
++    static const char* kNames[] = {"Performance", "Balanced", "Quality", "Ultra Performance", "Ultra Quality", "Native"};
++    char buf[160];
++    if (job->backend == 0) {
++      std::snprintf(buf, sizeof buf, "DLSS %s: render %ux%u, output %ux%u", mode == 5 ? "DLAA" : kNames[mode], rw, rh,
++                    ow, oh);
++    } else {
++      std::snprintf(buf, sizeof buf, "FSR %s %s: render %ux%u, output %ux%u%s", job->fsr_major == 4 ? "4" : "3.1",
++                    kNames[mode], rw, rh, ow, oh,
++                    (backend_sel == 3 && job->fsr_major != 4) ? "  (FSR 4 unavailable)" : "");
++    }
++    SetUpscaleStatus(buf);
++  }
++  job->submission = cp.GetCurrentSubmission();
++  st.last_upscaled_frame = st.ended_frame;
++  st.jitter_next = true;
++  cp.SubmitBarriers();
++  cp.GetDeferredCommandList().Callback(&RunJob, job.get());
++  cp.InvalidateBindingsAfterExternalCommands();
++  result.resource = g.final_.Get();
++  result.w = ow;
++  result.h = oh;
++  g.jobs.push_back(std::move(job));
++  return true;
++}
++
++}  // namespace rex::graphics::d3d12::gow2
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index dd321a5..5a9f655 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -25,7 +25,10 @@
+ #include <rex/cvar.h>
+ #include <rex/graphics/d3d12/command_processor.h>
+ #include <rex/graphics/d3d12/deferred_command_list.h>
++#include <rex/graphics/d3d12/gow2_temporal.h>
++#include <rex/graphics/d3d12/gow2_trace.h>
+ #include <rex/graphics/d3d12/render_target_cache.h>
++#include <cstdlib>
+ #include <rex/graphics/d3d12/texture_cache.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/format/dxbc.h>
+@@ -1180,6 +1183,41 @@ bool D3D12RenderTargetCache::Resolve(const memory::Memory& memory, D3D12SharedMe
+     return true;
+   }
+ 
++#ifdef GOW2_DEV_TOOLS
++  // gow2_trace.now: log every resolve for the next few frames.
++  {
++    if (Gow2TraceActive()) {
++      uint32_t f = gow2_trace_frame.load();
++      {
++        REXGPU_WARN(
++            "RESOLVE f={} dst={:08X} len={:X} {}x{} src={} depth={} fmt={} msaa={} dstfmt={} "
++            "cpy={} clr_d={} clr_c={} scale={}x{}",
++            f, resolve_info.copy_dest_base, resolve_info.copy_dest_extent_length,
++            resolve_info.coordinate_info.width_div_8 * 8, resolve_info.height_div_8 * 8,
++            uint32_t(resolve_info.rb_copy_control.copy_src_select),
++            uint32_t(resolve_info.IsCopyingDepth()),
++            uint32_t(resolve_info.IsCopyingDepth() ? resolve_info.depth_edram_info.format
++                                                   : resolve_info.color_edram_info.format),
++            uint32_t(resolve_info.IsCopyingDepth() ? resolve_info.depth_edram_info.msaa_samples
++                                                   : resolve_info.color_edram_info.msaa_samples),
++            uint32_t(resolve_info.copy_dest_info.copy_dest_format),
++            uint32_t(resolve_info.copy_dest_extent_length != 0),
++            uint32_t(resolve_info.IsClearingDepth()), uint32_t(resolve_info.IsClearingColor()),
++            uint32_t(resolve_info.coordinate_info.draw_resolution_scale_x),
++            uint32_t(resolve_info.coordinate_info.draw_resolution_scale_y));
++      }
++    }
++  }
++#endif
++
++  if (resolve_info.copy_dest_extent_length) {
++    gow2::State().scale_x = resolve_info.coordinate_info.draw_resolution_scale_x;
++    gow2::State().scale_y = resolve_info.coordinate_info.draw_resolution_scale_y;
++    gow2::NoteResolve(resolve_info.IsCopyingDepth(), resolve_info.copy_dest_base,
++                      resolve_info.coordinate_info.width_div_8 * 8, resolve_info.height_div_8 * 8,
++                      uint32_t(resolve_info.copy_dest_info.copy_dest_format));
++  }
++
+   DeferredCommandList& command_list = command_processor_.GetDeferredCommandList();
+ 
+   // Copying.
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 2be0e8e..7c8b752 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -877,6 +877,20 @@ void D3D12TextureCache::WriteActiveTextureBindfulSRV(
+   }
+ }
+ 
++ID3D12Resource* D3D12TextureCache::GetActiveTextureResource(uint32_t fetch_constant_index,
++                                                            uint32_t* width,
++                                                            uint32_t* height) const {
++  Texture* texture = GetActiveTexture(fetch_constant_index);
++  if (!texture) return nullptr;
++  ID3D12Resource* resource = static_cast<D3D12Texture*>(texture)->resource();
++  if (resource) {
++    D3D12_RESOURCE_DESC desc = resource->GetDesc();
++    if (width) *width = uint32_t(desc.Width);
++    if (height) *height = desc.Height;
++  }
++  return resource;
++}
++
+ uint32_t D3D12TextureCache::GetActiveTextureBindlessSRVIndex(
+     const D3D12Shader::TextureBinding& host_shader_binding) {
+   assert_true(bindless_resources_used_);
+@@ -1544,6 +1558,12 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
+   // Untiling through a buffer instead of using unordered access because copying
+   // is not done that often.
+   desc.Flags = D3D12_RESOURCE_FLAG_NONE;
++  if ((desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ||
++       desc.Format == DXGI_FORMAT_R10G10B10A2_TYPELESS) &&
++      desc.Width >= 1024 && desc.Height >= 512) {
++    // The scene colour resolve target: the temporal upscaler writes its result back into it.
++    desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
++  }
+   const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
+   ID3D12Device* device = provider.GetDevice();
+   // Assuming untiling will be the next operation.
+diff --git a/src/ui/d3d12/d3d12_provider.cpp b/src/ui/d3d12/d3d12_provider.cpp
+index bf8252b..bc11866 100644
+--- a/src/ui/d3d12/d3d12_provider.cpp
++++ b/src/ui/d3d12/d3d12_provider.cpp
+@@ -305,7 +305,55 @@ bool D3D12Provider::Initialize() {
+ 
+   // Create the Direct3D 12 device.
+   ID3D12Device* device;
+-  if (FAILED(pfn_d3d12_create_device_(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
++#ifdef GOW2_DEV_TOOLS
++  // GOW2_D3D12_DEBUG=1: enable the debug layer (messages are logged through the info queue).
++  const bool gow2_debug_layer = [] {
++    const char* e = std::getenv("GOW2_D3D12_DEBUG");
++    return e && *e == '1';
++  }();
++  if (gow2_debug_layer) {
++    typedef HRESULT(WINAPI * PFN_GetDebugInterface)(REFIID, void**);
++    auto get_debug = reinterpret_cast<PFN_GetDebugInterface>(
++        GetProcAddress(library_d3d12_, "D3D12GetDebugInterface"));
++    ID3D12Debug* debug = nullptr;
++    if (get_debug && SUCCEEDED(get_debug(IID_PPV_ARGS(&debug)))) {
++      debug->EnableDebugLayer();
++      debug->Release();
++      REXGPU_WARN("D3D12 debug layer enabled");
++    }
++  }
++#else
++  const bool gow2_debug_layer = false;
++#endif
++  // Prefer feature level 12_x (required by vendor upscalers such as DLSS), fall back to 11_0.
++  D3D_FEATURE_LEVEL chosen_level = D3D_FEATURE_LEVEL_12_1;
++  HRESULT create_hr = E_FAIL;
++  for (D3D_FEATURE_LEVEL level :
++       {D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_0}) {
++    create_hr = pfn_d3d12_create_device_(adapter, level, IID_PPV_ARGS(&device));
++    if (SUCCEEDED(create_hr)) {
++      chosen_level = level;
++      break;
++    }
++  }
++  REXGPU_INFO("D3D12 device feature level 0x{:X}", uint32_t(chosen_level));
++#ifdef GOW2_DEV_TOOLS
++  if (gow2_debug_layer && SUCCEEDED(create_hr)) {
++    ID3D12InfoQueue1* iq1 = nullptr;
++    if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&iq1)))) {
++      DWORD cookie = 0;
++      iq1->RegisterMessageCallback(
++          [](D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY sev, D3D12_MESSAGE_ID id,
++             LPCSTR desc, void*) {
++            if (sev <= D3D12_MESSAGE_SEVERITY_WARNING)
++              REXGPU_WARN("D3D12 debug [{}] {}", uint32_t(id), desc);
++          },
++          D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &cookie);
++      iq1->Release();
++    }
++  }
++#endif
++  if (FAILED(create_hr)) {
+     REXLOG_ERROR("Failed to create a Direct3D 12 feature level 11_0 device");
+     adapter->Release();
+     dxgi_factory->Release();

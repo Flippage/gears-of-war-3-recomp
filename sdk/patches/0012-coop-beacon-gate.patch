@@ -1,0 +1,541 @@
+diff --git a/include/rex/system/system_link.h b/include/rex/system/system_link.h
+index bccc299..cfce98f 100644
+--- a/include/rex/system/system_link.h
++++ b/include/rex/system/system_link.h
+@@ -53,6 +53,10 @@ constexpr size_t kReplyBudgetCapacity = 64;
+ // back to recent senders.
+ constexpr uint16_t kBeaconGuestPort = 14001;
+ constexpr size_t kMaxUdpDatagramSize = 65536;
++constexpr size_t kBeaconHelloSize = 17;
++constexpr uint8_t kBeaconHelloVersion = 1;
++constexpr uint64_t kBeaconHelloWindowMs = 5000;
++constexpr size_t kBeaconHelloCapacity = 32;
+ constexpr uint64_t kHeardFromWindowMs = 10ull * 60 * 1000;
+ constexpr size_t kRecentSourceCapacity = 32;
+ constexpr uint64_t kDuplicateWindowMs = 250;
+@@ -84,6 +88,35 @@ struct Endpoint {
+   bool operator==(const Endpoint&) const = default;
+ };
+ 
++std::array<uint8_t, kBeaconHelloSize> EncodeBeaconHello(uint64_t token);
++std::optional<uint64_t> ParseBeaconHello(std::span<const uint8_t> datagram);
++
++// Remembers the latest co-op hello from each source. Not thread-safe.
++class BeaconHellos {
++ public:
++  BeaconHellos(uint64_t window_ms, size_t capacity);
++  void Note(const Endpoint& source, uint64_t token, uint64_t now_ms);
++  std::optional<uint64_t> TokenFrom(const Endpoint& source, uint64_t now_ms) const;
++
++ private:
++  struct Entry {
++    Endpoint source;
++    uint64_t token;
++    uint64_t seen_ms;
++  };
++  uint64_t window_ms_;
++  size_t capacity_;
++  std::vector<Entry> entries_;
++};
++
++enum class BeaconVerdict { kPass, kHello, kNoHello, kMismatch };
++
++BeaconVerdict JudgeBeaconDatagram(uint16_t socket_guest_port, uint64_t own_token,
++                                  std::span<const uint8_t> datagram, const Endpoint& source,
++                                  BeaconHellos& hellos, uint64_t now_ms);
++
++uint64_t BeaconGateToken();
++
+ enum class GuestSocketOption {
+   kUnknown,
+   kReuseAddr,
+@@ -210,6 +243,7 @@ std::optional<uint64_t> ParseXuid(std::string_view text);
+ bool IsUsableXuid(uint64_t xuid);
+ uint64_t MakeInstallXuid(uint64_t random_bits);
+ std::string FormatXuid(uint64_t xuid);
++std::string FormatCoopHash(uint64_t hash);
+ bool IsLanAddress(uint32_t ip);
+ uint32_t ResolveLocalIp(std::optional<uint32_t> local_ip, std::optional<uint32_t> bind_ip,
+                         std::optional<uint32_t> detected_ip);
+diff --git a/include/rex/system/xsocket.h b/include/rex/system/xsocket.h
+index aa8a381..2fcda3e 100644
+--- a/include/rex/system/xsocket.h
++++ b/include/rex/system/xsocket.h
+@@ -13,6 +13,9 @@
+ #include <cstring>
+ #include <mutex>
+ #include <queue>
++#include <span>
++#include <utility>
++#include <vector>
+ 
+ #include <rex/math.h>
+ #include <rex/system/system_link.h>
+@@ -145,6 +148,17 @@ class XSocket : public XObject {
+   static void CaptureHostError();
+   static void SetHostError(uint32_t wsa_error);
+   bool AcceptDatagram(const system_link::Endpoint& source, const uint8_t* buf, int len);
++  enum class DatagramFate { kAccept, kDrop, kDropAndAnswerHello };
++  bool ShouldSendHelloBeforePayload(uint64_t token) const;
++  void SendBeaconHello(const system_link::Endpoint& destination, uint64_t token, uint32_t flags,
++                       const char* what);
++  void LogBeaconHelloMismatchOnce(const system_link::Endpoint& source, uint64_t theirs,
++                                  uint64_t ours);
++  void LogBeaconDropOnce(const system_link::Endpoint& source, system_link::BeaconVerdict verdict,
++                         uint64_t ours, uint64_t now);
++  DatagramFate JudgeAndRecord(const system_link::Endpoint& source,
++                              std::span<const uint8_t> datagram, uint64_t own_token,
++                              uint64_t now);
+   std::vector<system_link::Endpoint> TakeReplyCopyTargets(uint64_t now_ms);
+   int RecvFromDatagram(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADDR_IN* from,
+                        uint32_t* from_len);
+@@ -170,8 +184,13 @@ class XSocket : public XObject {
+                                              system_link::kRecentSourceCapacity};
+   system_link::DuplicateFilter duplicates_{system_link::kDuplicateWindowMs,
+                                            system_link::kDuplicateCapacity};
++  system_link::BeaconHellos beacon_hellos_{system_link::kBeaconHelloWindowMs,
++                                           system_link::kBeaconHelloCapacity};
++  system_link::ReplyBudget hello_budget_{1, system_link::kReplyBudgetCapacity};
+   system_link::ReplyBudget reply_budget_{system_link::kReplyCopiesPerSecond,
+                                          system_link::kReplyBudgetCapacity};
++  std::vector<std::pair<system_link::Endpoint, uint64_t>> beacon_mismatch_logs_;
++  std::vector<std::pair<system_link::Endpoint, uint64_t>> beacon_drop_logs_;
+ 
+   std::unique_ptr<rex::thread::Event> event_;
+   std::mutex incoming_packet_mutex_;
+diff --git a/src/system/system_link.cpp b/src/system/system_link.cpp
+index 03a4f9c..0d8dc64 100644
+--- a/src/system/system_link.cpp
++++ b/src/system/system_link.cpp
+@@ -35,6 +35,7 @@ constexpr int kNibbleBits = 4;
+ constexpr uint64_t kNibbleMask = 0xF;
+ constexpr uint8_t kHexLetterOffset = 10;
+ constexpr char kUpperHexDigits[] = "0123456789ABCDEF";
++constexpr char kLowerHexDigits[] = "0123456789abcdef";
+ constexpr uint64_t kSplitMixIncrement = 0x9E3779B97F4A7C15ull;
+ constexpr uint64_t kSplitMixMul1 = 0xBF58476D1CE4E5B9ull;
+ constexpr uint64_t kSplitMixMul2 = 0x94D049BB133111EBull;
+@@ -47,6 +48,8 @@ constexpr size_t kXnAddrPadAfterIp = 6;
+ constexpr size_t kXnAddrIpOffset = 0;
+ constexpr size_t kXnAddrMacOffset = kIpByteCount + kXnAddrPadAfterIp;
+ constexpr uint8_t kXnKidLowNibbleMask = 0x0F;
++constexpr std::array<uint8_t, 8> kBeaconHelloMagic{'G', 'O', 'W', '2',
++                                                    'H', 'E', 'L', 'O'};
+ 
+ constexpr uint32_t kWsaSuccess = 0;
+ constexpr uint32_t kWsaEWouldBlock = 10035;
+@@ -603,6 +606,16 @@ std::string FormatXuid(uint64_t xuid) {
+   return result;
+ }
+ 
++std::string FormatCoopHash(uint64_t hash) {
++  std::string result(kXuidHexWidth, '0');
++  for (size_t i = 0; i < kXuidHexWidth; ++i) {
++    size_t shift = (kXuidHexWidth - 1 - i) * static_cast<size_t>(kNibbleBits);
++    uint8_t nibble = static_cast<uint8_t>((hash >> shift) & kNibbleMask);
++    result[i] = kLowerHexDigits[nibble];
++  }
++  return result;
++}
++
+ bool IsLanAddress(uint32_t ip) {
+   constexpr uint32_t kLoopbackNet = 0x7F000000;
+   constexpr uint32_t kLoopbackMask = 0xFF000000;
+@@ -1103,6 +1116,84 @@ uint64_t Fnv1a64(std::span<const uint8_t> bytes) {
+   return hash;
+ }
+ 
++std::array<uint8_t, kBeaconHelloSize> EncodeBeaconHello(uint64_t token) {
++  std::array<uint8_t, kBeaconHelloSize> datagram{};
++  std::copy(kBeaconHelloMagic.begin(), kBeaconHelloMagic.end(), datagram.begin());
++  datagram[kBeaconHelloMagic.size()] = kBeaconHelloVersion;
++  for (size_t i = 0; i < sizeof(token); ++i) {
++    size_t shift = (sizeof(token) - 1 - i) * kBitsPerByte;
++    datagram[kBeaconHelloMagic.size() + 1 + i] = static_cast<uint8_t>(token >> shift);
++  }
++  return datagram;
++}
++
++std::optional<uint64_t> ParseBeaconHello(std::span<const uint8_t> datagram) {
++  if (datagram.size() != kBeaconHelloSize ||
++      !std::equal(kBeaconHelloMagic.begin(), kBeaconHelloMagic.end(), datagram.begin()) ||
++      datagram[kBeaconHelloMagic.size()] != kBeaconHelloVersion) {
++    return std::nullopt;
++  }
++  uint64_t token = 0;
++  for (size_t i = 0; i < sizeof(token); ++i) {
++    token = (token << kBitsPerByte) | datagram[kBeaconHelloMagic.size() + 1 + i];
++  }
++  return token;
++}
++
++BeaconHellos::BeaconHellos(uint64_t window_ms, size_t capacity)
++    : window_ms_(window_ms), capacity_(capacity) {}
++
++void BeaconHellos::Note(const Endpoint& source, uint64_t token, uint64_t now_ms) {
++  for (Entry& entry : entries_) {
++    if (entry.source == source) {
++      entry.token = token;
++      entry.seen_ms = now_ms;
++      return;
++    }
++  }
++  if (capacity_ == kZeroCapacity) {
++    return;
++  }
++  if (entries_.size() >= capacity_) {
++    auto oldest = std::min_element(entries_.begin(), entries_.end(),
++                                   [](const Entry& a, const Entry& b) {
++                                     return a.seen_ms < b.seen_ms;
++                                   });
++    entries_.erase(oldest);
++  }
++  entries_.push_back(Entry{source, token, now_ms});
++}
++
++std::optional<uint64_t> BeaconHellos::TokenFrom(const Endpoint& source, uint64_t now_ms) const {
++  for (const Entry& entry : entries_) {
++    if (entry.source == source && entry.seen_ms <= now_ms &&
++        now_ms - entry.seen_ms <= window_ms_) {
++      return entry.token;
++    }
++  }
++  return std::nullopt;
++}
++
++BeaconVerdict JudgeBeaconDatagram(uint16_t socket_guest_port, uint64_t own_token,
++                                  std::span<const uint8_t> datagram, const Endpoint& source,
++                                  BeaconHellos& hellos, uint64_t now_ms) {
++  if (socket_guest_port != kBeaconGuestPort) {
++    return BeaconVerdict::kPass;
++  }
++  if (std::optional<uint64_t> hello = ParseBeaconHello(datagram)) {
++    hellos.Note(source, *hello, now_ms);
++    return BeaconVerdict::kHello;
++  }
++  if (own_token == 0) {
++    return BeaconVerdict::kPass;
++  }
++  std::optional<uint64_t> peer_token = hellos.TokenFrom(source, now_ms);
++  if (!peer_token) {
++    return BeaconVerdict::kNoHello;
++  }
++  return *peer_token == own_token ? BeaconVerdict::kPass : BeaconVerdict::kMismatch;
++}
++
+ RecentSources::RecentSources(uint64_t window_ms, size_t capacity)
+     : window_ms_(window_ms), capacity_(capacity) {}
+ 
+diff --git a/src/system/system_link_settings.cpp b/src/system/system_link_settings.cpp
+index 91c5a02..1959571 100644
+--- a/src/system/system_link_settings.cpp
++++ b/src/system/system_link_settings.cpp
+@@ -1,4 +1,5 @@
+ #include <algorithm>
++#include <atomic>
+ #include <chrono>
+ #include <cstring>
+ #include <fstream>
+@@ -32,6 +33,14 @@ REXCVAR_DEFINE_BOOL(net_link_active, false, "Network",
+                     "(LAN play, campaign co-op) on. false: an unplugged cable, as on a 360 without "
+                     "one; the game opens no LAN session and sees the fixed offline XUID")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++REXCVAR_DEFINE_BOOL(
++    net_beacon_gate, true, "Network",
++    "With gow2_coop_players 3+ the game sets a co-op hash; System Link then lists and answers "
++    "only peers that announce the same hash. false turns the check off");
++REXCVAR_DEFINE_UINT64(
++    net_coop_hash, 0, "Network",
++    "Set by the game when gow2_coop_players is 3 or more: the co-op hash every System Link peer "
++    "must share (0: no gate). Not meant to be set by hand");
+ REXCVAR_DEFINE_STRING(net_local_ip, "", "Network",
+                       "IPv4 address (a.b.c.d or a.b.c.d/prefix, prefix 24 by default) this "
+                       "instance advertises to System Link peers (its XNADDR) and treats as its "
+@@ -96,6 +105,8 @@ namespace {
+ constexpr size_t kMaxGamertagLength = 15;
+ constexpr const char* kDefaultGamertag = "User";
+ constexpr size_t kRandomWordSize = sizeof(uint64_t);
++std::atomic<bool> g_beacon_gate_on_logged{false};
++std::atomic<bool> g_beacon_gate_off_logged{false};
+ // Any address off the local networks makes the routing table pick the default-route adapter;
+ // connect() on UDP sends nothing. 192.0.2.1 is TEST-NET-1 (RFC 5737).
+ constexpr uint32_t kRouteProbeIp = 0xC0000201;
+@@ -705,6 +716,31 @@ uint64_t NowMs() {
+       std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+ }
+ 
++void LogBeaconGateOnOnce(uint64_t token) {
++  if (!g_beacon_gate_on_logged.exchange(true, std::memory_order_relaxed)) {
++    REXLOG_INFO("[netlink] beacon gate on: co-op hash {}", FormatCoopHash(token));
++  }
++}
++
++void LogBeaconGateOffOnce() {
++  if (!g_beacon_gate_off_logged.exchange(true, std::memory_order_relaxed)) {
++    REXLOG_INFO("[netlink] beacon gate off (net_beacon_gate=false)");
++  }
++}
++
++uint64_t BeaconGateToken() {
++  const uint64_t token = REXCVAR_GET(net_coop_hash);
++  if (token == 0) {
++    return 0;
++  }
++  if (!REXCVAR_GET(net_beacon_gate)) {
++    LogBeaconGateOffOnce();
++    return 0;
++  }
++  LogBeaconGateOnOnce(token);
++  return token;
++}
++
+ bool TraceEnabled() {
+   return REXCVAR_GET(system_link_trace);
+ }
+diff --git a/src/system/xsocket.cpp b/src/system/xsocket.cpp
+index b42ead8..ec186f9 100644
+--- a/src/system/xsocket.cpp
++++ b/src/system/xsocket.cpp
+@@ -74,6 +74,22 @@ constexpr uint32_t kIntOptionSize = 4;
+ constexpr uint32_t kMaxSetsockoptRemapLogs = 50;
+ constexpr uint32_t kMaxDropLogs = 50;
+ constexpr uint32_t kDropLogInterval = 500;
++constexpr size_t kBeaconLogCapacity = system_link::kBeaconHelloCapacity;
++
++template <class T>
++bool RememberOnce(std::vector<T>& seen, const T& value, size_t capacity) {
++  if (std::find(seen.begin(), seen.end(), value) != seen.end()) {
++    return false;
++  }
++  if (capacity == 0) {
++    return false;
++  }
++  if (seen.size() >= capacity) {
++    seen.erase(seen.begin());
++  }
++  seen.push_back(value);
++  return true;
++}
+ 
+ struct TrafficTotals {
+   uint64_t bytes = 0;
+@@ -850,6 +866,10 @@ int XSocket::SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADDR_
+ int XSocket::SendCopy(const uint8_t* buf, uint32_t buf_len, uint32_t flags, uint32_t ip,
+                       uint16_t port) {
+   sockaddr_in addr = MakeHostSockaddr(ip, port);
++  uint64_t gate_token = system_link::BeaconGateToken();
++  if (ShouldSendHelloBeforePayload(gate_token)) {
++    SendBeaconHello(system_link::Endpoint{ip, port}, gate_token, flags, "co-op hello to");
++  }
+   int ret = sendto(native_handle_, reinterpret_cast<const char*>(buf), buf_len, flags,
+                    reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+   if (ret < 0) {
+@@ -889,6 +909,83 @@ int XSocket::SendBroadcast(const uint8_t* buf, uint32_t buf_len, uint32_t flags,
+   return any_sent ? result : -1;
+ }
+ 
++bool XSocket::ShouldSendHelloBeforePayload(uint64_t token) const {
++  return bound_port_ == system_link::kBeaconGuestPort && token != 0;
++}
++
++void XSocket::SendBeaconHello(const system_link::Endpoint& destination, uint64_t token,
++                              uint32_t flags, const char* what) {
++  auto hello = system_link::EncodeBeaconHello(token);
++  sockaddr_in addr = MakeHostSockaddr(destination.ip, destination.port);
++  int ret = sendto(native_handle_, reinterpret_cast<const char*>(hello.data()),
++                   static_cast<int>(hello.size()), flags, reinterpret_cast<const sockaddr*>(&addr),
++                   sizeof(addr));
++  if (system_link::TraceEnabled()) {
++    REXLOG_INFO("[netlink] {} {}: {}", what, system_link::FormatEndpoint(destination),
++                ret < 0 ? "send failed" : "sent");
++  }
++}
++
++void XSocket::LogBeaconHelloMismatchOnce(const system_link::Endpoint& source, uint64_t theirs,
++                                         uint64_t ours) {
++  if (!RememberOnce(beacon_mismatch_logs_, std::pair{source, theirs}, kBeaconLogCapacity)) {
++    return;
++  }
++  REXLOG_INFO("[netlink] co-op hash from {} is {}, ours is {}: different build or co-op settings; "
++              "its campaigns stay hidden",
++              system_link::FormatEndpoint(source), system_link::FormatCoopHash(theirs),
++              system_link::FormatCoopHash(ours));
++}
++
++void XSocket::LogBeaconDropOnce(const system_link::Endpoint& source,
++                                system_link::BeaconVerdict verdict, uint64_t ours, uint64_t now) {
++  if (verdict == system_link::BeaconVerdict::kNoHello) {
++    if (!RememberOnce(beacon_drop_logs_, std::pair{source, uint64_t{0}}, kBeaconLogCapacity)) {
++      return;
++    }
++    REXLOG_INFO("[netlink] beacon from {} dropped: no co-op hello (ours {})",
++                system_link::FormatEndpoint(source), system_link::FormatCoopHash(ours));
++    return;
++  }
++  uint64_t theirs = beacon_hellos_.TokenFrom(source, now).value();
++  if (!RememberOnce(beacon_drop_logs_, std::pair{source, theirs}, kBeaconLogCapacity)) {
++    return;
++  }
++  REXLOG_INFO("[netlink] beacon from {} dropped: co-op hash {} differs from ours {}",
++              system_link::FormatEndpoint(source), system_link::FormatCoopHash(theirs),
++              system_link::FormatCoopHash(ours));
++}
++
++XSocket::DatagramFate XSocket::JudgeAndRecord(const system_link::Endpoint& source,
++                                               std::span<const uint8_t> datagram,
++                                               uint64_t own_token, uint64_t now) {
++  std::lock_guard<std::mutex> lock(peers_mutex_);
++  system_link::BeaconVerdict verdict = system_link::JudgeBeaconDatagram(
++      bound_port_, own_token, datagram, source, beacon_hellos_, now);
++  if (verdict == system_link::BeaconVerdict::kHello) {
++    auto theirs = system_link::ParseBeaconHello(datagram);
++    if (own_token != 0 && theirs && *theirs != own_token) {
++      LogBeaconHelloMismatchOnce(source, *theirs, own_token);
++    }
++    return DatagramFate::kDrop;
++  }
++  if (verdict == system_link::BeaconVerdict::kNoHello ||
++      verdict == system_link::BeaconVerdict::kMismatch) {
++    LogBeaconDropOnce(source, verdict, own_token, now);
++    return hello_budget_.TryTake(source, now) ? DatagramFate::kDropAndAnswerHello
++                                              : DatagramFate::kDrop;
++  }
++  if (duplicates_.IsDuplicate(source, datagram, now)) {
++    if (system_link::TraceEnabled() && ShouldLogDroppedDatagram()) {
++      REXLOG_INFO("[netlink] dropped a duplicate of {} bytes from {}", datagram.size(),
++                  system_link::FormatEndpoint(source));
++    }
++    return DatagramFate::kDrop;
++  }
++  recent_sources_.Note(source, now);
++  return DatagramFate::kAccept;
++}
++
+ bool XSocket::AcceptDatagram(const system_link::Endpoint& source, const uint8_t* buf, int len) {
+   auto allowed = system_link::AllowedSources();
+   if (!system_link::IsAllowedSource(source.ip, allowed)) {
+@@ -903,16 +1000,13 @@ bool XSocket::AcceptDatagram(const system_link::Endpoint& source, const uint8_t*
+   if (buf != nullptr && len > 0) {
+     datagram = std::span<const uint8_t>(buf, static_cast<size_t>(len));
+   }
+-  {
+-    std::lock_guard<std::mutex> lock(peers_mutex_);
+-    if (duplicates_.IsDuplicate(source, datagram, now)) {
+-      if (system_link::TraceEnabled() && ShouldLogDroppedDatagram()) {
+-        REXLOG_INFO("[netlink] dropped a duplicate of {} bytes from {}", len,
+-                    system_link::FormatEndpoint(source));
+-      }
+-      return false;
+-    }
+-    recent_sources_.Note(source, now);
++  uint64_t own_token = system_link::BeaconGateToken();
++  DatagramFate fate = JudgeAndRecord(source, datagram, own_token, now);
++  if (fate == DatagramFate::kDropAndAnswerHello) {
++    SendBeaconHello(source, own_token, 0, "co-op hello reply to");
++  }
++  if (fate != DatagramFate::kAccept) {
++    return false;
+   }
+   system_link::NoteHeardFrom(source);
+   LogFirstReceive(native_handle_, source, len);
+diff --git a/tests/unit/system/system_link_test.cpp b/tests/unit/system/system_link_test.cpp
+index 5957988..f591849 100644
+--- a/tests/unit/system/system_link_test.cpp
++++ b/tests/unit/system/system_link_test.cpp
+@@ -87,6 +87,12 @@ TEST_CASE("system_link: FormatXuid formats XUIDs", "[system][system_link]") {
+   CHECK(ParseXuid(FormatXuid(0xB13E000000000001ull)) == 0xB13E000000000001ull);
+ }
+ 
++TEST_CASE("system_link: FormatCoopHash formats lowercase zero-padded hashes",
++          "[system][system_link]") {
++  CHECK(FormatCoopHash(0x0) == "0000000000000000");
++  CHECK(FormatCoopHash(0x937c35f80cb274b7) == "937c35f80cb274b7");
++}
++
+ TEST_CASE("system_link: ResolveLocalIp selects local address", "[system][system_link]") {
+   CHECK(ResolveLocalIp(0x0A000001u, 0x0A000002u, std::nullopt) == 0x0A000001u);
+   CHECK(ResolveLocalIp(0x0A000001u, std::nullopt, std::nullopt) == 0x0A000001u);
+@@ -685,6 +691,83 @@ TEST_CASE("system_link: BuildXnAddr lays out online address fields", "[system][s
+   }
+ }
+ 
++TEST_CASE("system_link: beacon hello encodes and parses the versioned big-endian token",
++          "[system][system_link]") {
++  constexpr uint64_t token = 0x0123456789ABCDEFull;
++  const std::array<uint8_t, kBeaconHelloSize> expected{
++      'G', 'O', 'W', '2', 'H', 'E', 'L', 'O', 1, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD,
++      0xEF};
++  auto hello = EncodeBeaconHello(token);
++
++  CHECK(hello == expected);
++  CHECK(ParseBeaconHello(hello) == token);
++}
++
++TEST_CASE("system_link: beacon hello parser rejects malformed datagrams", "[system][system_link]") {
++  auto hello = EncodeBeaconHello(0x0123456789ABCDEFull);
++  std::array<uint8_t, kBeaconHelloSize - 1> short_hello{};
++  std::array<uint8_t, kBeaconHelloSize + 1> long_hello{};
++
++  CHECK_FALSE(ParseBeaconHello(short_hello).has_value());
++  CHECK_FALSE(ParseBeaconHello(long_hello).has_value());
++  hello[0] = 'X';
++  CHECK_FALSE(ParseBeaconHello(hello).has_value());
++  hello = EncodeBeaconHello(0x0123456789ABCDEFull);
++  hello[8] = 2;
++  CHECK_FALSE(ParseBeaconHello(hello).has_value());
++}
++
++TEST_CASE("system_link: BeaconHellos tracks source tokens, expiry and capacity",
++          "[system][system_link]") {
++  Endpoint a{0x01020304u, 14001};
++  Endpoint other_port{0x01020304u, 14002};
++  Endpoint c{0x05060708u, 14001};
++  BeaconHellos hellos(5000, 2);
++
++  hellos.Note(a, 0x1111, 100);
++  CHECK(hellos.TokenFrom(a, 5100) == 0x1111);
++  CHECK_FALSE(hellos.TokenFrom(a, 5101).has_value());
++  CHECK_FALSE(hellos.TokenFrom(other_port, 200).has_value());
++
++  hellos.Note(a, 0xAAAA, 200);
++  hellos.Note(other_port, 0xBBBB, 300);
++  CHECK(hellos.TokenFrom(a, 300) == 0xAAAA);
++  CHECK(hellos.TokenFrom(other_port, 300) == 0xBBBB);
++  hellos.Note(c, 0xCCCC, 400);
++  CHECK_FALSE(hellos.TokenFrom(a, 400).has_value());
++  CHECK(hellos.TokenFrom(other_port, 400) == 0xBBBB);
++  CHECK(hellos.TokenFrom(c, 400) == 0xCCCC);
++}
++
++TEST_CASE("system_link: JudgeBeaconDatagram gates only announced beacon sources",
++          "[system][system_link]") {
++  Endpoint source{0x01020304u, 14001};
++  BeaconHellos hellos(kBeaconHelloWindowMs, kBeaconHelloCapacity);
++  std::array<uint8_t, 16> search{};
++  auto matching_hello = EncodeBeaconHello(0x1111);
++  auto other_hello = EncodeBeaconHello(0x2222);
++
++  CHECK(JudgeBeaconDatagram(1000, 0x1111, matching_hello, source, hellos, 100) ==
++        BeaconVerdict::kPass);
++  CHECK_FALSE(hellos.TokenFrom(source, 100).has_value());
++  CHECK(JudgeBeaconDatagram(kBeaconGuestPort, 0x1111, search, source, hellos, 200) ==
++        BeaconVerdict::kNoHello);
++  CHECK(JudgeBeaconDatagram(kBeaconGuestPort, 0, search, source, hellos, 200) ==
++        BeaconVerdict::kPass);
++  CHECK(JudgeBeaconDatagram(kBeaconGuestPort, 0x1111, matching_hello, source, hellos, 300) ==
++        BeaconVerdict::kHello);
++  CHECK(JudgeBeaconDatagram(kBeaconGuestPort, 0x1111, search, source, hellos, 301) ==
++        BeaconVerdict::kPass);
++  CHECK(JudgeBeaconDatagram(kBeaconGuestPort, 0x1111, other_hello, source, hellos, 400) ==
++        BeaconVerdict::kHello);
++  CHECK(JudgeBeaconDatagram(kBeaconGuestPort, 0x1111, search, source, hellos, 401) ==
++        BeaconVerdict::kMismatch);
++  CHECK(JudgeBeaconDatagram(kBeaconGuestPort, 0x1111, matching_hello, source, hellos, 6000) ==
++        BeaconVerdict::kHello);
++  CHECK(JudgeBeaconDatagram(kBeaconGuestPort, 0x1111, search, source, hellos, 11001) ==
++        BeaconVerdict::kNoHello);
++}
++
+ TEST_CASE("system_link: RecentSources tracks active sources with eviction and expiry",
+           "[system][system_link]") {
+   Endpoint a{0x01020304u /* 1.2.3.4 */, 1111};

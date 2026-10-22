@@ -9,6 +9,7 @@
 Files derived from it:
 
 - `tools/harvest_hints.py`: adapted from its `tools/harvest_hints.py` (file names changed for gow3).
+- `scripts/build-sdk.ps1`, `scripts/sdk-source.ps1`, `scripts/sdk-symlinks.ps1`, `scripts/ngx-scan.ps1` and `sdk/patches/0002`-`0029`: copied from it.
 - `scripts/build.ps1`, `scripts/harvest-loop.ps1`: modelled on its `scripts/build.ps1` and `scripts/run-harvest-loop.sh`.
 
 ## gears-judgement-recomp
@@ -49,3 +50,8 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+## Xenia (canary)
+
+- Project: [xenia-canary/xenia-canary](https://github.com/xenia-canary/xenia-canary), BSD 3-Clause.
+- `sdk/patches/0030-scalar-swizzle-three-source.patch` ports its commit 92ada8ebc0 to the ReXGlue SDK.

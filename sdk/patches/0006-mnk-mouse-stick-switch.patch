@@ -1,0 +1,23 @@
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index 3f9422d..ae39865 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -29,6 +29,9 @@ REXCVAR_DEFINE_BOOL(mnk_mouse, false, "Input",
+                     "from the keybind_rstick_* keys only");
+ REXCVAR_DEFINE_DOUBLE(mnk_sensitivity, 1.0, "Input", "Mouse sensitivity for right stick")
+     .range(0.01, 10.0);
++REXCVAR_DEFINE_BOOL(mnk_mouse_stick, true, "Input",
++                    "Feed mouse motion into the right stick. A game that reads the mouse "
++                    "itself turns this off and keeps the capture");
+ 
+ REXCVAR_DEFINE_STRING(keybind_a, "Semicolon,Space", "Input/Keybinds/Controller", "A button");
+ REXCVAR_DEFINE_STRING(keybind_b, "Quote,Backspace", "Input/Keybinds/Controller", "B button");
+@@ -331,7 +334,7 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+   if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_down)))
+     ry -= INT16_MAX;
+ 
+-  if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
++  if (REXCVAR_GET(mnk_mouse) && REXCVAR_GET(mnk_mouse_stick) && IsMouseLookActive()) {
+     double sensitivity = REXCVAR_GET(mnk_sensitivity);
+     constexpr double kBaseScale = 200.0;
+     rx += static_cast<int32_t>(double(mouse_dx_) * sensitivity * kBaseScale);

@@ -1,0 +1,20 @@
+diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
+index c1e78d4..9fc1470 100644
+--- a/src/core/memory_posix.cpp
++++ b/src/core/memory_posix.cpp
+@@ -297,6 +297,15 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
+ #endif
+ 
+   void* result = mmap(base_address, length, prot_initial, flags, -1, 0);
++#if defined(MAP_FIXED_NOREPLACE) && REX_PLATFORM_LINUX
++  // Kernels before 4.17 ignore MAP_FIXED_NOREPLACE and place the mapping elsewhere instead of
++  // failing with EEXIST, so a commit on a reservation would silently land at another address.
++  if (result != MAP_FAILED && base_address && result != base_address) {
++    munmap(result, length);
++    result = MAP_FAILED;
++    errno = EEXIST;
++  }
++#endif
+   if (result != MAP_FAILED) {
+     return result;
+   }

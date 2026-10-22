@@ -1,0 +1,60 @@
+diff --git a/src/system/gpu_plugin_loader.cpp b/src/system/gpu_plugin_loader.cpp
+index 688c3d0..8973950 100644
+--- a/src/system/gpu_plugin_loader.cpp
++++ b/src/system/gpu_plugin_loader.cpp
+@@ -17,11 +17,16 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <rex/cvar.h>
+ #include <rex/filesystem.h>
+ #include <rex/logging.h>
+ #include <rex/platform.h>
+ #include <rex/platform/dynlib.h>
+ 
++REXCVAR_DEFINE_STRING(gpu_backend, "any", "GPU",
++                      "Graphics backend: any (D3D12 on Windows when available), d3d12 or vulkan")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ namespace rex::system {
+ 
+ namespace {
+@@ -94,12 +99,17 @@ std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::strin
+     return nullptr;
+   }
+ 
+-  std::string backend_str(backend);
++  std::string backend_str(backend == "any" ? REXCVAR_GET(gpu_backend) : backend);
+   GpuCreateInfo info{};
+   info.struct_size = sizeof(GpuCreateInfo);
+   info.backend = backend_str.c_str();
+ 
+   IGraphicsSystem* graphics_system = create_fn(kGpuPluginAbiVersion, &info);
++  if (!graphics_system && backend_str != "any") {
++    REXSYS_ERROR("GPU backend '{}' is not available; falling back to 'any'.", backend_str);
++    info.backend = "any";
++    graphics_system = create_fn(kGpuPluginAbiVersion, &info);
++  }
+   if (!graphics_system) {
+     REXSYS_ERROR("GPU plugin '{}' factory returned no graphics system (backend '{}')", name,
+                  backend_str);
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index 9ff54e8..a821411 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -312,7 +312,14 @@ bool ReXApp::SetupPresentation() {
+   OnPreSetup(config_);
+ 
+   if (!config_.graphics && !config_.gpu_plugin.empty()) {
+-    config_.graphics = rex::system::LoadGpuPlugin(config_.gpu_plugin);
++    std::string gpu_backend = REXCVAR_QUERY(std::string, gpu_backend);
++    config_.graphics = rex::system::LoadGpuPlugin(config_.gpu_plugin, gpu_backend);
++    if (!config_.graphics && gpu_backend != "any") {
++      REXLOG_ERROR(
++          "GPU backend '{}' requested via gpu_backend is not available; falling back to 'any'.",
++          gpu_backend);
++      config_.graphics = rex::system::LoadGpuPlugin(config_.gpu_plugin, "any");
++    }
+     if (!config_.graphics) {
+       // Fatal by design: no silent headless fallback.
+       auto msg =

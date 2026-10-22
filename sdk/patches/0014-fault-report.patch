@@ -1,0 +1,203 @@
+diff --git a/src/core/exception_handler_posix.cpp b/src/core/exception_handler_posix.cpp
+index 0bc7730..e7be0dd 100644
+--- a/src/core/exception_handler_posix.cpp
++++ b/src/core/exception_handler_posix.cpp
+@@ -31,6 +31,17 @@
+ 
+ #include <ucontext.h>
+ 
++#if REX_PLATFORM_ANDROID
++#include <dlfcn.h>
++
++#include <cstdio>
++#include <string>
++
++#include <fmt/format.h>
++
++#include <rex/thread.h>
++#endif
++
+ namespace rex::arch {
+ 
+ bool signal_handlers_installed_ = false;
+@@ -49,6 +60,110 @@ constexpr size_t kMaxHandlerCount = 8;
+ // Executed in order.
+ std::pair<ExceptionHandler::Handler, void*> handlers_[kMaxHandlerCount];
+ 
++#if REX_PLATFORM_ANDROID
++static const char* SignalName(int signal_number) {
++  switch (signal_number) {
++    case SIGSEGV:
++      return "SIGSEGV";
++    case SIGBUS:
++      return "SIGBUS";
++    case SIGILL:
++      return "SIGILL";
++    default:
++      break;
++  }
++  static char unknown_signal[32];
++  std::snprintf(unknown_signal, sizeof(unknown_signal), "signal %d", signal_number);
++  return unknown_signal;
++}
++
++static const char* SignalCodeName(int signal_number, int signal_code) {
++  if (signal_number == SIGSEGV) {
++    switch (signal_code) {
++      case SEGV_MAPERR:
++        return "SEGV_MAPERR";
++      case SEGV_ACCERR:
++        return "SEGV_ACCERR";
++      default:
++        return "?";
++    }
++  }
++  if (signal_number == SIGBUS) {
++    switch (signal_code) {
++      case BUS_ADRALN:
++        return "BUS_ADRALN";
++      case BUS_ADRERR:
++        return "BUS_ADRERR";
++      case BUS_OBJERR:
++        return "BUS_OBJERR";
++      default:
++        return "?";
++    }
++  }
++  if (signal_number == SIGILL) {
++    switch (signal_code) {
++      case ILL_ILLOPC:
++        return "ILL_ILLOPC";
++      case ILL_ILLOPN:
++        return "ILL_ILLOPN";
++      case ILL_ILLADR:
++        return "ILL_ILLADR";
++      case ILL_ILLTRP:
++        return "ILL_ILLTRP";
++      case ILL_PRVOPC:
++        return "ILL_PRVOPC";
++      case ILL_PRVREG:
++        return "ILL_PRVREG";
++#ifdef ILL_COPROC
++      case ILL_COPROC:
++        return "ILL_COPROC";
++#endif
++      case ILL_BADSTK:
++        return "ILL_BADSTK";
++      default:
++        return "?";
++    }
++  }
++  return "?";
++}
++
++static std::string DescribeHostAddress(uintptr_t address) {
++  Dl_info info{};
++  if (dladdr(reinterpret_cast<const void*>(address), &info) == 0 || !info.dli_fname) {
++    return fmt::format("0x{:016X}", address);
++  }
++  const char* slash = std::strrchr(info.dli_fname, '/');
++  const char* module = slash ? slash + 1 : info.dli_fname;
++  std::string result = fmt::format(
++      "{}+0x{:X}", module, address - reinterpret_cast<uintptr_t>(info.dli_fbase));
++  if (info.dli_sname) {
++    result += fmt::format(" ({}+0x{:X})", info.dli_sname,
++                          address - reinterpret_cast<uintptr_t>(info.dli_saddr));
++  }
++  return result;
++}
++
++static void LogUnclaimedFault(int signal_number, const siginfo_t* signal_info,
++                              const ucontext_t* signal_context, uint64_t esr) {
++  uintptr_t pc = 0;
++  uintptr_t lr = 0;
++#if REX_ARCH_ARM64
++  pc = static_cast<uintptr_t>(signal_context->uc_mcontext.pc);
++  lr = static_cast<uintptr_t>(signal_context->uc_mcontext.regs[30]);
++#else
++  (void)signal_context;
++#endif
++  const std::string esr_text =
++      esr != 0 ? fmt::format("0x{:08X}", static_cast<uint32_t>(esr)) : "none";
++  // dladdr is not async-signal-safe, but the process is about to die and this line is the only report a player can send.
++  REXLOG_ERROR("FAULT unclaimed {} code={}({}) addr=0x{:016X} pc={} lr={} esr={} thread=0x{:X}",
++               SignalName(signal_number), SignalCodeName(signal_number, signal_info->si_code),
++               signal_info->si_code, reinterpret_cast<uintptr_t>(signal_info->si_addr),
++               DescribeHostAddress(pc), DescribeHostAddress(lr), esr_text,
++               rex::thread::current_thread_id());
++}
++#endif  // REX_PLATFORM_ANDROID
++
+ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
+                                      void* signal_context) {
+ #if REX_PLATFORM_MAC
+@@ -423,6 +538,16 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
+   // No guest handler claimed the fault. Returning would resume the faulting
+   // instruction and fault again forever, so forward to the previously
+   // installed action instead.
++  {
++    uint64_t fault_esr = 0;
++#if REX_ARCH_ARM64
++    if (mcontext_esr) {
++      fault_esr = mcontext_esr->esr;
++    }
++#endif
++    LogUnclaimedFault(signal_number, signal_info,
++                      reinterpret_cast<const ucontext_t*>(signal_context), fault_esr);
++  }
+   const struct sigaction* previous = nullptr;
+   if (signal_number == SIGSEGV) {
+     previous = &original_sigsegv_handler_;
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 76cc877..f4adbe8 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -47,6 +47,21 @@ uint32_t get_page_count(uint32_t value, uint32_t page_size, uint32_t page_size_s
+   return rex::round_up(value, page_size) >> page_size_shift;
+ }
+ 
++static const char* DescribeAllocationState(uint32_t state) {
++  const bool reserved = (state & kMemoryAllocationReserve) != 0;
++  const bool committed = (state & kMemoryAllocationCommit) != 0;
++  if (reserved && committed) {
++    return "reserve|commit";
++  }
++  if (reserved) {
++    return "reserve";
++  }
++  if (committed) {
++    return "commit";
++  }
++  return "free";
++}
++
+ /**
+  * Memory map:
+  * 0x00000000 - 0x3FFFFFFF (1024mb) - virtual 4k pages
+@@ -547,6 +562,26 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
+         "Unhandled guest access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread 0x{:X}",
+         is_write ? "write" : "read", virtual_address, reinterpret_cast<uintptr_t>(host_address),
+         rex::thread::current_thread_id());
++    if (!heap) {
++      REXSYS_ERROR("Unhandled guest access violation: no guest heap owns 0x{:08X}",
++                   virtual_address);
++    } else {
++      const uint32_t guest_page_size = heap->page_size();
++      const uint32_t page_base = virtual_address & ~(guest_page_size - 1u);
++      HeapAllocationInfo info{};
++      if (!heap->QueryRegionInfo(page_base, &info)) {
++        REXSYS_ERROR(
++            "Unhandled guest access violation: heap 0x{:08X} (page 0x{:X}) page 0x{:08X} region "
++            "query failed",
++            heap->heap_base(), guest_page_size, page_base);
++      } else {
++        REXSYS_ERROR(
++            "Unhandled guest access violation: heap 0x{:08X} (page 0x{:X}) page 0x{:08X} "
++            "state={} protect=0x{:X} allocation 0x{:08X} size 0x{:X} region 0x{:X}",
++            heap->heap_base(), guest_page_size, page_base, DescribeAllocationState(info.state),
++            info.protect, info.allocation_base, info.allocation_size, info.region_size);
++      }
++    }
+     return false;
+   }
+ 

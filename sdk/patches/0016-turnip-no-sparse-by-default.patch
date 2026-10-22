@@ -1,0 +1,51 @@
+diff --git a/src/graphics/vulkan/shared_memory.cpp b/src/graphics/vulkan/shared_memory.cpp
+index de133a0..0e86b6f 100644
+--- a/src/graphics/vulkan/shared_memory.cpp
++++ b/src/graphics/vulkan/shared_memory.cpp
+@@ -29,6 +29,23 @@ REXCVAR_DEFINE_BOOL(vulkan_sparse_shared_memory, true, "GPU/Vulkan",
+ 
+ namespace rex::graphics::vulkan {
+ 
++namespace {
++
++// The player's explicit choice always wins. Otherwise sparse binding is off
++// by default on Mesa Turnip, where vkQueueBindSparse fails on some Adreno
++// GPUs even though the driver advertises sparse binding.
++bool UseSparseSharedMemory(bool cvar_value, bool cvar_set_by_player, VkDriverId driver_id) {
++  if (cvar_set_by_player) {
++    return cvar_value;
++  }
++  if (driver_id == VK_DRIVER_ID_MESA_TURNIP) {
++    return false;
++  }
++  return cvar_value;
++}
++
++}  // namespace
++
+ #if REX_PLATFORM_ANDROID
+ namespace {
+ 
+@@ -76,8 +93,20 @@ bool VulkanSharedMemory::Initialize() {
+   buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+   buffer_create_info.queueFamilyIndexCount = 0;
+   buffer_create_info.pQueueFamilyIndices = nullptr;
+-  if (REXCVAR_GET(vulkan_sparse_shared_memory) &&
+-      vulkan_device->properties().sparseResidencyBuffer) {
++  const bool sparse_shared_memory_cvar = REXCVAR_GET(vulkan_sparse_shared_memory);
++  const bool sparse_shared_memory_set_by_player =
++      rex::cvar::GetFlagSource("vulkan_sparse_shared_memory") != rex::cvar::Source::kDefault;
++  const VkDriverId driver_id = vulkan_device->properties().driverID;
++  const bool use_sparse_shared_memory =
++      UseSparseSharedMemory(sparse_shared_memory_cvar, sparse_shared_memory_set_by_player,
++                            driver_id);
++  if (!use_sparse_shared_memory && sparse_shared_memory_cvar &&
++      !sparse_shared_memory_set_by_player && driver_id == VK_DRIVER_ID_MESA_TURNIP) {
++    REXGPU_INFO(
++        "Vulkan sparse binding is not used on Mesa Turnip (its sparse binds fail on some Adreno "
++        "GPUs); set vulkan_sparse_shared_memory = true to force it");
++  }
++  if (use_sparse_shared_memory && vulkan_device->properties().sparseResidencyBuffer) {
+     if (dfn.vkCreateBuffer(device, &buffer_create_info, nullptr, &buffer_) == VK_SUCCESS) {
+       VkMemoryRequirements buffer_memory_requirements;
+       dfn.vkGetBufferMemoryRequirements(device, buffer_, &buffer_memory_requirements);

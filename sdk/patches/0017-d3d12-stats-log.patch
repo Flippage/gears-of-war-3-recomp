@@ -1,0 +1,359 @@
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 0400411..f672244 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -9,6 +9,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include "performance_stats.h"
++
+ #include <algorithm>
+ #include <cstdarg>
+ #include <cstring>
+@@ -35,6 +37,10 @@
+ #include <rex/ui/d3d12/d3d12_presenter.h>
+ #include <rex/ui/d3d12/d3d12_util.h>
+ 
++REXCVAR_DEFINE_BOOL(d3d12_stats_log, false, "GPU/D3D12",
++                    "Log D3D12 performance counters every five seconds")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
+ REXCVAR_DEFINE_BOOL(d3d12_bindless, true, "GPU/D3D12", "Use bindless resources where available")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
+@@ -1904,6 +1910,7 @@ void D3D12CommandProcessor::OnGammaRampPWLValueWritten() {
+ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                                       uint32_t frontbuffer_height) {
+   SCOPE_profile_cpu_f("gpu");
++  stats::OnSwap();
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+ #ifdef GOW2_DEV_TOOLS
+@@ -2465,6 +2472,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+   }
+   if (REXCVAR_GET(async_shader_compilation) &&
+       pipeline_cache_->GetD3D12PipelineByHandle(pipeline_handle) == nullptr) {
++    stats::Record(stats::Counter::kDrawsPipelinePending);
+     return true;
+   }
+ 
+@@ -2718,6 +2726,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+     SubmitBarriers();
+     PROFILE_DRAW_CALL();
+     PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
++    stats::Record(stats::Counter::kDraws);
+     deferred_command_list_.D3DDrawInstanced(primitive_processing_result.host_draw_vertex_count, 1,
+                                             0, 0);
+   } else {
+@@ -2777,6 +2786,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+     SubmitBarriers();
+     PROFILE_DRAW_CALL();
+     PROFILE_VERTICES(primitive_processing_result.host_draw_vertex_count);
++    stats::Record(stats::Counter::kDraws);
+     deferred_command_list_.D3DDrawIndexedInstanced(
+         primitive_processing_result.host_draw_vertex_count, 1, 0, 0, 0);
+     if (scratch_index_buffer != nullptr) {
+@@ -2825,6 +2835,7 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_s
+     return true;
+   }
+ 
++  stats::Record(stats::Counter::kMemexportFull);
+   ID3D12Resource* readback_buffer = RequestReadbackBuffer(total_size);
+   if (!readback_buffer) {
+     return true;
+@@ -2841,7 +2852,8 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_s
+     readback_buffer_offset += memexport_range.size_bytes;
+   }
+ 
+-  if (!AwaitAllQueueOperationsCompletion()) {
++  if (!stats::MeasureWait(stats::Counter::kMemexportWaitUs,
++                          [&] { return AwaitAllQueueOperationsCompletion(); })) {
+     return true;
+   }
+ 
+@@ -2870,6 +2882,7 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
+     return true;
+   }
+ 
++  stats::Record(stats::Counter::kMemexportFast);
+   const uint64_t readback_key =
+       MakeMemexportReadbackKey(memexport_ranges_.front().base_address_dwords, total_size);
+   ReadbackBuffer& readback = memexport_readback_buffers_[readback_key];
+@@ -2899,7 +2912,8 @@ bool D3D12CommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_s
+     }
+ 
+     if (readback.buffers[index]) {
+-      if (!AwaitAllQueueOperationsCompletion()) {
++      if (!stats::MeasureWait(stats::Counter::kMemexportWaitUs,
++                              [&] { return AwaitAllQueueOperationsCompletion(); })) {
+         buffer->Unmap(0, nullptr);
+         buffer->Release();
+         return false;
+@@ -3208,7 +3222,8 @@ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
+                     SUCCEEDED(queue_operations_since_submission_fence_->SetEventOnCompletion(
+                         fence_value, fence_completion_event_)))) {
+         PROFILE_CMD_BUFFER_STALL();
+-        WaitForSingleObject(fence_completion_event_, INFINITE);
++        stats::MeasureWait(stats::Counter::kQueueWaitUs,
++                           [&] { return WaitForSingleObject(fence_completion_event_, INFINITE); });
+         queue_operations_done_since_submission_signal_ = false;
+       } else {
+         REXGPU_ERROR(
+@@ -3227,7 +3242,8 @@ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
+     if (SUCCEEDED(
+             submission_fence_->SetEventOnCompletion(await_submission, fence_completion_event_))) {
+       PROFILE_CMD_BUFFER_STALL();
+-      WaitForSingleObject(fence_completion_event_, INFINITE);
++      stats::MeasureWait(stats::Counter::kQueueWaitUs,
++                         [&] { return WaitForSingleObject(fence_completion_event_, INFINITE); });
+       submission_completed_ = submission_fence_->GetCompletedValue();
+     }
+   }
+diff --git a/src/graphics/d3d12/performance_stats.h b/src/graphics/d3d12/performance_stats.h
+new file mode 100644
+index 0000000..228dab5
+--- /dev/null
++++ b/src/graphics/d3d12/performance_stats.h
+@@ -0,0 +1,111 @@
++#pragma once
++
++#include <array>
++#include <atomic>
++#include <chrono>
++#include <cstddef>
++#include <cstdint>
++#include <utility>
++
++#include <rex/cvar.h>
++#include <rex/logging.h>
++
++REXCVAR_DECLARE(bool, d3d12_stats_log);
++
++namespace rex::graphics::d3d12::stats {
++
++enum class Counter : size_t {
++  kFrames,
++  kDraws,
++  kDrawsPipelinePending,
++  kShadersSynchronous,
++  kShadersDeferred,
++  kPipelines,
++  kGuestUploads,
++  kGuestUploadBytes,
++  kMemexportFast,
++  kMemexportFull,
++  kMemexportWaitUs,
++  kTextureLoads,
++  kTextureAllocations,
++  kQueueWaits,
++  kQueueWaitUs,
++  kCount,
++};
++
++inline std::array<std::atomic<uint64_t>, size_t(Counter::kCount)> counters{};
++
++inline void Record(Counter counter, uint64_t amount = 1) {
++  if (REXCVAR_GET(d3d12_stats_log)) {
++    counters[size_t(counter)].fetch_add(amount, std::memory_order_relaxed);
++  }
++}
++
++template <typename Operation>
++auto MeasureWait(Counter counter, Operation&& operation) {
++  if (!REXCVAR_GET(d3d12_stats_log)) {
++    return std::forward<Operation>(operation)();
++  }
++  const auto start = std::chrono::steady_clock::now();
++  auto result = std::forward<Operation>(operation)();
++  const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
++                           std::chrono::steady_clock::now() - start)
++                           .count();
++  counters[size_t(counter)].fetch_add(uint64_t(elapsed), std::memory_order_relaxed);
++  if (counter == Counter::kQueueWaitUs) {
++    counters[size_t(Counter::kQueueWaits)].fetch_add(1, std::memory_order_relaxed);
++  }
++  return result;
++}
++
++using Snapshot = std::array<uint64_t, size_t(Counter::kCount)>;
++
++inline Snapshot TakeSnapshot() {
++  Snapshot values;
++  for (size_t i = 0; i < values.size(); ++i) {
++    values[i] = counters[i].exchange(0, std::memory_order_relaxed);
++  }
++  return values;
++}
++
++inline void LogSnapshot(const Snapshot& values, double seconds) {
++  const auto value = [&values](Counter counter) { return values[size_t(counter)]; };
++  REXGPU_INFO(
++      "D3D12STATS seconds={:.3f} frames={} draws={} draws_pipeline_pending={} "
++      "shaders_sync={} shaders_deferred={} pipelines={} guest_uploads={} guest_upload_bytes={} "
++      "memexport_fast={} memexport_full={} memexport_wait_us={} texture_loads={} "
++      "texture_allocations={} queue_waits={} queue_wait_us={}",
++      seconds, value(Counter::kFrames), value(Counter::kDraws),
++      value(Counter::kDrawsPipelinePending), value(Counter::kShadersSynchronous),
++      value(Counter::kShadersDeferred), value(Counter::kPipelines), value(Counter::kGuestUploads),
++      value(Counter::kGuestUploadBytes), value(Counter::kMemexportFast),
++      value(Counter::kMemexportFull), value(Counter::kMemexportWaitUs),
++      value(Counter::kTextureLoads), value(Counter::kTextureAllocations),
++      value(Counter::kQueueWaits), value(Counter::kQueueWaitUs));
++}
++
++inline void OnSwap() {
++  enum class WindowState { kInitial, kActive, kDisabled };
++  static WindowState state = WindowState::kInitial;
++  static std::chrono::steady_clock::time_point window_start;
++  if (!REXCVAR_GET(d3d12_stats_log)) {
++    if (state == WindowState::kActive) {
++      TakeSnapshot();
++    }
++    state = WindowState::kDisabled;
++    return;
++  }
++  const auto now = std::chrono::steady_clock::now();
++  if (state != WindowState::kActive) {
++    window_start = now;
++    state = WindowState::kActive;
++  }
++  counters[size_t(Counter::kFrames)].fetch_add(1, std::memory_order_relaxed);
++  if (now - window_start < std::chrono::seconds(5)) {
++    return;
++  }
++  LogSnapshot(TakeSnapshot(), std::chrono::duration<double>(now - window_start).count());
++  window_start = now;
++}
++
++}  // namespace rex::graphics::d3d12::stats
+diff --git a/src/graphics/d3d12/pipeline_cache.cpp b/src/graphics/d3d12/pipeline_cache.cpp
+index 8e6b854..91038e3 100644
+--- a/src/graphics/d3d12/pipeline_cache.cpp
++++ b/src/graphics/d3d12/pipeline_cache.cpp
+@@ -11,6 +11,8 @@
+ 
+ #include "thirdparty/dxbc/DXBCChecksum.h"
+ 
++#include "performance_stats.h"
++
+ #include <algorithm>
+ #include <atomic>
+ #include <cinttypes>
+@@ -417,11 +419,15 @@ void PipelineCache::InitializeShaderStorage(const std::filesystem::path& cache_r
+           // If it's a shader previously encountered in the game, translation of
+           // which has failed, and the shader storage is loaded later, keep it
+           // this way not to try to translate it again.
+-          if (!translation->is_translated() &&
+-              !TranslateAnalyzedShader(translator, *translation, dxbc_converter, dxc_utils,
++          if (translation->is_translated()) {
++            continue;
++          }
++          if (!TranslateAnalyzedShader(translator, *translation, dxbc_converter, dxc_utils,
+                                        dxc_compiler)) {
+             std::lock_guard<std::mutex> lock(shaders_failed_to_translate_mutex);
+             shaders_failed_to_translate.push_back(translation);
++          } else {
++            stats::Record(stats::Counter::kShadersDeferred);
+           }
+         }
+         {
+@@ -933,6 +939,7 @@ bool PipelineCache::ConfigurePipeline(
+         REXGPU_ERROR("Failed to translate the vertex shader!");
+         return false;
+       }
++      stats::Record(stats::Counter::kShadersSynchronous);
+       if (shader_storage_file_ &&
+           vertex_shader->shader().ucode_storage_index() != shader_storage_index_) {
+         vertex_shader->shader().set_ucode_storage_index(shader_storage_index_);
+@@ -960,6 +967,7 @@ bool PipelineCache::ConfigurePipeline(
+           REXGPU_ERROR("Failed to translate the pixel shader!");
+           return false;
+         }
++        stats::Record(stats::Counter::kShadersSynchronous);
+         if (shader_storage_file_ &&
+             pixel_shader->shader().ucode_storage_index() != shader_storage_index_) {
+           pixel_shader->shader().set_ucode_storage_index(shader_storage_index_);
+@@ -3040,6 +3048,7 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
+     }
+     return nullptr;
+   }
++  stats::Record(stats::Counter::kPipelines);
+   std::u16string name;
+   if (runtime_description.pixel_shader != nullptr) {
+     name = rex::string::to_utf16(fmt::format(
+@@ -3150,6 +3159,7 @@ bool PipelineCache::PrepareRuntimeDescriptionForQueuedCreation(
+           REXGPU_ERROR("Failed to translate queued {} shader", shader_type);
+           return false;
+         }
++        stats::Record(stats::Counter::kShadersDeferred);
+         if (shader_storage_file_ &&
+             translation->shader().ucode_storage_index() != shader_storage_index_) {
+           translation->shader().set_ucode_storage_index(shader_storage_index_);
+diff --git a/src/graphics/d3d12/shared_memory.cpp b/src/graphics/d3d12/shared_memory.cpp
+index a5c97a0..cbeabec 100644
+--- a/src/graphics/d3d12/shared_memory.cpp
++++ b/src/graphics/d3d12/shared_memory.cpp
+@@ -17,6 +17,8 @@
+ #include <rex/cvar.h>
+ #include <rex/graphics/d3d12/command_processor.h>
+ #include <rex/graphics/d3d12/shared_memory.h>
++
++#include "performance_stats.h"
+ #include <rex/logging.h>
+ #include <rex/math.h>
+ #include <rex/ui/d3d12/d3d12_util.h>
+@@ -330,6 +332,8 @@ bool D3D12SharedMemory::UploadRanges(
+       command_list.D3DCopyBufferRegion(buffer_, upload_range_start << page_size_log2(),
+                                        upload_buffer, UINT64(upload_buffer_offset),
+                                        UINT64(upload_buffer_size));
++      stats::Record(stats::Counter::kGuestUploads);
++      stats::Record(stats::Counter::kGuestUploadBytes, upload_buffer_size);
+       uint32_t upload_buffer_pages = uint32_t(upload_buffer_size >> page_size_log2());
+       upload_range_start += upload_buffer_pages;
+       upload_range_length -= upload_buffer_pages;
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 8ab1c24..729d5b0 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -9,6 +9,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include "performance_stats.h"
++
+ #include <algorithm>
+ #include <array>
+ #include <cfloat>
+@@ -1712,6 +1714,7 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
+                                              resource_state, nullptr, IID_PPV_ARGS(&resource)))) {
+     return nullptr;
+   }
++  stats::Record(stats::Counter::kTextureAllocations);
+   return std::unique_ptr<Texture>(new D3D12Texture(*this, key, resource.Get(), resource_state));
+ }
+ 
+@@ -1821,6 +1824,7 @@ void D3D12TextureCache::MaybeUpdateReplacement(D3D12Texture& texture) {
+     LogReplacementFailureOnce(hash, "failed to create the replacement resource");
+     return;
+   }
++  stats::Record(stats::Counter::kTextureAllocations);
+   if (!texture_replacement_->UploadReplacement(command_processor_, replacement_resource.Get(),
+                                                *image)) {
+     LogReplacementFailureOnce(hash, "failed to upload the replacement image");
+@@ -2211,6 +2215,7 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+ 
+   // The guest resource and its normal load are untouched - a pack replacement
+   // is an extra resource chosen from the content hash.
++  stats::Record(stats::Counter::kTextureLoads);
+   MaybeUpdateReplacement(d3d12_texture);
+ 
+   return true;
+@@ -2296,6 +2301,7 @@ ID3D12Resource* D3D12TextureCache::D3D12Texture::GetOrCreate3DAs2DResource(
+     return nullptr;
+   }
+ 
++  stats::Record(stats::Counter::kTextureAllocations);
+   TextureKey key_2d = key();
+   key_2d.depth_or_array_size_minus_1 = 0;
+   key_2d.mip_max_level = 0;
