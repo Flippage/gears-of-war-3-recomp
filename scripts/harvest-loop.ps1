@@ -5,13 +5,15 @@
 
 .PARAMETER MaxRuns
   Stop after this many boots.
+.PARAMETER GameData
+  Your extracted game folder (the one with default.xex and GearGame).
 .PARAMETER Seconds
   How long one boot may run; a boot still alive at the end counts as "got further" and stops the loop.
 #>
 param(
     [int]$MaxRuns = 15,
     [int]$Seconds = 90,
-    [string]$GameData = 'C:\Users\flipp\GearsRecomps\Gears3-GameFiles'
+    [Parameter(Mandatory)][string]$GameData
 )
 
 $ErrorActionPreference = 'Stop'

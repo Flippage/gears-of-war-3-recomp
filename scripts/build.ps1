@@ -9,7 +9,7 @@
   Reuse the existing generated\ output.
 #>
 param(
-    [string]$Sdk = $(if ($env:REXGLUE_SDK) { $env:REXGLUE_SDK } else { 'C:\Users\flipp\GearsRecomps\tools\rexglue-sdk\win-amd64' }),
+    [string]$Sdk = $env:REXGLUE_SDK,
     [ValidateSet('Release', 'RelWithDebInfo', 'Debug')][string]$Config = 'Release',
     [switch]$SkipCodegen
 )
@@ -22,6 +22,7 @@ function Fail($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
 function Step($msg) { Write-Host "`n== $msg" -ForegroundColor Cyan }
 
 $rexglue = Join-Path $Sdk 'bin\rexglue.exe'
+if (-not $Sdk) { Fail 'Give the ReXGlue SDK folder with -Sdk <folder> or set REXGLUE_SDK.' }
 if (-not (Test-Path $rexglue)) { Fail "rexglue.exe not found in $Sdk\bin." }
 if (-not (Test-Path 'game\default.xex')) { Fail 'game\default.xex is missing.' }
 

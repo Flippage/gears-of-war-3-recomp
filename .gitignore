@@ -1,9 +1,49 @@
-# Game files and everything generated from them stay local (never commit or share).
+# ============================================================================================
+# NEVER COMMIT GAME FILES. Gears of War 3 belongs to Microsoft; this repository only holds our own
+# code. Every player brings their own copy of the game (see README.md).
+# ============================================================================================
+
+# Your copy of the game: the default.xex goes in game\, the extracted disc anywhere outside the repo.
 game/
+GearGame/
+$SystemUpdate/
+AvatarAssetPack/
+AvatarAwards/
+nxeart/
+*.xex
+*.xexp
+*.iso
+*.god
+*.xcp
+*.xxx
+*.upk
+*.tfc
+*.bik
+*.xma
+*.xwb
+Coalesced*.bin
+Xbox360TOC.txt
+
+# Everything generated from the game: C++ from codegen, image dumps, traces, logs, screenshots.
 generated/
 out/
-*.xex
+*.xtr
+image.bin
 *.log
 
-# Downloaded/compiled SDK trees (scripts\build-sdk.ps1)
-out/sdk-build/
+# Third-party binaries we do not redistribute (fetched or built locally by scripts\build-sdk.ps1).
+*.dll
+*.exe
+*.pdb
+*.lib
+nvngx*
+
+# Local settings and tooling.
+/gow3.toml
+debug_skip_ps.txt
+gow2_trace.now
+gow2_dump.now
+gow2_shot.now
+.vs/
+.vscode/
+__pycache__/
