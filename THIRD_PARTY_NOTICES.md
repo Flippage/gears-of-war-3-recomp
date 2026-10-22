@@ -54,4 +54,4 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## Xenia (canary)
 
 - Project: [xenia-canary/xenia-canary](https://github.com/xenia-canary/xenia-canary), BSD 3-Clause.
-- `sdk/patches/0030-scalar-swizzle-three-source.patch` ports its commit 92ada8ebc0 to the ReXGlue SDK.
+- `sdk/patches/0030-scalar-swizzle-three-source.patch` ports its commit 92ada8ebc0 and `0031-memexport-signed-round-bias.patch` its commit da47dfaacf to the ReXGlue SDK.

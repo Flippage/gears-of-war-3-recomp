@@ -70,3 +70,4 @@ Then check the whole series: every patch from 0002 to the last one must apply in
 
 `scripts/build-sdk-android.ps1` builds the SDK alone for Android (bring-up); see `docs/ANDROID.md`.
 | `0030-scalar-swizzle-three-source.patch` | Gears of War 3: Xenia canary 92ada8ebc0. A single-source two-component scalar ALU operation co-issued with a three-source vector operation reads its `b` operand from Z, not X; the old X read gave those shaders wrong values (suspected for the black blotches on skin in in-engine cutscenes). |
+| `0031-memexport-signed-round-bias.patch` | Gears of War 3: Xenia canary da47dfaacf. Signed memexport packing wrote the rounding bias over the exported value and added an unwritten temp, so every signed memexport came out as garbage; suspected for the black blotches on faces (where they deform) in in-engine cutscenes. |
