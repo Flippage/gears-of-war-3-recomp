@@ -5,88 +5,173 @@ tools/patch_game_patches.py: a patch in a recompile has to land on the C++ that 
 instruction, not on bytes, and each site keeps the original behaviour behind a host switch,
 `Gow3GamePatch(id)` (src/gow3_game_patches.cpp), so every patch is a cvar.
 
-  id 1 Black Shading Fix   82960B84 stw r11,-29808(r6) -> stores 0 (GUseTilingMode = FALSE)
-                           (GameFixes/gow3_black_shading_fix=true)
+Sources
+  id 1 is the Gears of War 2 community patch "Black Shading Fix" (illusion, boma), located in
+  Gears 3 by hand: the GoW2 site, stw r11,11940(r6) in the render defaults function sub_828069F8
+  (the function just before its back-buffer setup), matches Gears 3's sub_82960B50 store by store
+  (same "initialised" guard, same run of flags; GUseTilingMode is the fourth store, the third flag
+  set to 1, stored from r11). The back-buffer setup sub_82960BE8 reads it; nothing else writes it.
 
-     The Gears of War 2 community patch (illusion, boma) writes `li r11,0` over
-     `stw r11,11940(r6)` in that game's render defaults function, sub_828069F8, the function just
-     before its back-buffer setup. Gears 3's matching pair is sub_82960B50 (defaults) and
-     sub_82960BE8 (back buffer, which calls it while uninitialised). Both defaults functions guard
-     on the same "initialised" global and set the same run of flags; GUseTilingMode is the fourth
-     store in each, the third flag set to 1, and the one stored from r11 - here -29808(r6). The
-     back-buffer function reads it while laying out the EDRAM targets, and nothing else writes it.
-     With tiling off, the in-engine cutscene shadows lose the black blocks that MSAA resolves left.
+  ids 2-10 come from xenia-canary/game-patches, patches/4D5308AB - Gears of War 3.patch.toml
+  (the base disc; its media list includes 58122AD6, this disc, and its 21:9 patch edits the
+  `li r11,720` at 82960C78 of the back-buffer setup above). Every site's original instruction was
+  checked with tools/find_site.py against out/image/image.bin and the generated comment.
 
-    python tools/patch_game_patches.py "generated/default/*.cpp"
+  id  name (cvar)                          site       original              -> patched
+  1   Black Shading Fix                    82960B84   stw r11,-29808(r6)    -> stores 0
+      (gow3_black_shading_fix)
+  2   Unlock FPS (gow3_unlock_fps)         8253D9B0   lfs f1,1224(r3)       -> nop
+                                           82AF66BC   li r11,2              -> li r11,1
+  3   Occlusion Query Fix                  827B2BD0   lwz r11,2700(r28)     -> li r11,0
+      (gow3_occlusion_query_fix)           827B6C58   lwz r11,2700(r14)     -> li r11,0
+  4   Disable Lens Flares                  82861FD0   lwz r10,96(r11)       -> li r10,0
+      (gow3_disable_lens_flares)
+  5   Disable Ambient Occlusion            82762C54   lwz r11,1040(r10)     -> li r11,0
+      (gow3_disable_ao)                    827C9628   lwz r11,1040(r10)     -> li r11,0
+  6   Disable Motion Blur                  82430640   lwz r11,56(r10)       -> li r11,0
+      (gow3_disable_motion_blur)           827A2BCC   lwz r11,128(r10)      -> li r11,0
+  7   16x Anisotropic Filtering            82969614   lwz r5,836(r30)       -> li r5,16
+      (gow3_aniso16)
+  8   Resolution Scaling Fix / Disable     827B8764   bl 0x827b92c8         -> li r5,1
+      All Post-Processing                  827B88C0   bl 0x827b92c8         -> li r5,0
+      (gow3_resolution_scaling_fix)        827B8BA8   bl 0x827b92c8         -> li r4,4
+  9   Disable Depth of Field               824BAA50   lwz r11,64(r10)       -> li r11,0
+      (gow3_disable_dof)                   82593DC4   lwz r11,64(r11)       -> li r11,0
+  10  Disable Bloom (gow3_disable_bloom)   82593DC0   lwz r10,72(r11)       -> li r10,0
 
-Idempotent (marker GOW3 GAMEPATCH). Fails closed if a site's function, disassembly comment or
-C++ body differs from what is asserted below.
+  Not ported yet: the Performance patches (Option A edits a code byte whose effect needs a closer
+  look; Option B adds a code cave), Show FPS (data bytes) and 21:9.
+
+    python tools/patch_game_patches.py
+
+Idempotent (marker GOW3 GAMEPATCH). Fails closed if a site's disassembly comment or C++ body
+differs from what is asserted.
 """
 from __future__ import annotations
 
+import bisect
 import glob
 import re
 import sys
+from pathlib import Path
 
 MARK = "GOW3 GAMEPATCH"
 DECL = f'extern "C" int Gow3GamePatch(int id);  // {MARK}\n'
+GEN = "generated/default"
 
-# (function, expected comment, expected C++ body, patched C++ body, id)
+# (address, expected disassembly, patched form, id). Patched forms:
+#   ("li", "r11", 0)   the instruction becomes li rD,imm
+#   ("nop",)           the instruction is skipped
+#   ("store0",)        a store writes 0 instead of the register
 SITES = [
-    ("sub_82960B50", "stw r11,-29808(r6)",
-     "REX_STORE_U32(ctx.r6.u32 + -29808, ctx.r11.u32);",
-     f"REX_STORE_U32(ctx.r6.u32 + -29808, Gow3GamePatch(1) ? 0u : ctx.r11.u32);  // {MARK} 1", 1),
+    (0x82960B84, "stw r11,-29808(r6)", ("store0",), 1),
+    (0x8253D9B0, "lfs f1,1224(r3)", ("nop",), 2),
+    (0x82AF66BC, "li r11,2", ("li", "r11", 1), 2),
+    (0x827B2BD0, "lwz r11,2700(r28)", ("li", "r11", 0), 3),
+    (0x827B6C58, "lwz r11,2700(r14)", ("li", "r11", 0), 3),
+    (0x82861FD0, "lwz r10,96(r11)", ("li", "r10", 0), 4),
+    (0x82762C54, "lwz r11,1040(r10)", ("li", "r11", 0), 5),
+    (0x827C9628, "lwz r11,1040(r10)", ("li", "r11", 0), 5),
+    (0x82430640, "lwz r11,56(r10)", ("li", "r11", 0), 6),
+    (0x827A2BCC, "lwz r11,128(r10)", ("li", "r11", 0), 6),
+    (0x82969614, "lwz r5,836(r30)", ("li", "r5", 16), 7),
+    (0x827B8764, "bl 0x827b92c8", ("li", "r5", 1), 8),
+    (0x827B88C0, "bl 0x827b92c8", ("li", "r5", 0), 8),
+    (0x827B8BA8, "bl 0x827b92c8", ("li", "r4", 4), 8),
+    (0x824BAA50, "lwz r11,64(r10)", ("li", "r11", 0), 9),
+    (0x82593DC4, "lwz r11,64(r11)", ("li", "r11", 0), 9),
+    (0x82593DC0, "lwz r10,72(r11)", ("li", "r10", 0), 10),
 ]
 
 
-def function_span(text: str, name: str) -> tuple[int, int] | None:
-    start = text.find(f"DEFINE_REX_FUNC({name})")
-    if start < 0:
-        return None
-    nxt = text.find("DEFINE_REX_FUNC(", start + 1)
-    return start, (nxt if nxt >= 0 else len(text))
+def load_functions():
+    funcs = []
+    for path in glob.glob(f"{GEN}/gow3_recomp.*.cpp"):
+        for m in re.finditer(r"^DEFINE_REX_FUNC\(sub_([0-9A-F]{8})\) \{",
+                             Path(path).read_text(encoding="utf-8"), re.M):
+            funcs.append((int(m.group(1), 16), path))
+    funcs.sort()
+    return funcs
 
 
-def main(pattern: str) -> int:
-    files = sorted(glob.glob(pattern))
-    if not files:
-        print(f"no files match {pattern}", file=sys.stderr)
-        return 1
-    done = 0
-    for func, comment, body, patched, sid in SITES:
-        hit = None
-        for path in files:
-            with open(path, encoding="utf-8") as f:
-                text = f.read()
-            span = function_span(text, func)
-            if span:
-                hit = (path, text, span)
-                break
-        if not hit:
-            print(f"error: {func} not found (patch {sid})", file=sys.stderr)
-            return 1
-        path, text, (start, end) = hit
-        region = text[start:end]
-        if f"{MARK} {sid}" in region:
-            done += 1
+def locate(lines: list[str], fstart: int, addr: int):
+    """(index of the comment line, index past its code) for addr inside the function at fstart."""
+    head = next(i for i, l in enumerate(lines) if l.startswith(f"DEFINE_REX_FUNC(sub_{fstart:08X})"))
+    cur = fstart
+    i = head + 1
+    while i < len(lines) and not lines[i].startswith("DEFINE_REX_FUNC("):
+        s = lines[i].strip()
+        lab = re.match(r"loc_([0-9A-F]{8}):", s)
+        if lab:
+            cur = int(lab.group(1), 16)
+            i += 1
             continue
-        site = re.search(rf"// {re.escape(comment)}\n(\s*){re.escape(body)}\n", region)
-        if not site:
-            print(f"error: {func}: '{comment}' / '{body}' not found as expected (patch {sid});"
-                  " refusing to guess", file=sys.stderr)
+        if s.startswith("// "):
+            j = i + 1
+            while j < len(lines) and not lines[j].strip().startswith("//") \
+                    and not re.match(r"\s*loc_[0-9A-F]{8}:", lines[j]) \
+                    and not lines[j].startswith("DEFINE_REX_FUNC(") and lines[j].strip() != "}":
+                j += 1
+            if cur == addr:
+                return i, j
+            cur += 4
+            i = j
+            continue
+        i += 1
+    return None
+
+
+def patched_code(form, code: list[str], sid: int, indent: str) -> list[str]:
+    orig = " ".join(c.strip() for c in code if c.strip())
+    cond = f"Gow3GamePatch({sid})"
+    if form[0] == "li":
+        return [f"{indent}if ({cond}) {{ ctx.{form[1]}.s64 = {form[2]}; }} else {{ {orig} }}  // {MARK} {sid}"]
+    if form[0] == "nop":
+        return [f"{indent}if (!{cond}) {{ {orig} }}  // {MARK} {sid}"]
+    if form[0] == "store0":
+        m = re.fullmatch(r"REX_STORE_U32\((.+), (ctx\.r\d+\.u32)\);", orig)
+        if not m:
+            raise ValueError(f"store0 expects one REX_STORE_U32, got: {orig}")
+        return [f"{indent}REX_STORE_U32({m.group(1)}, {cond} ? 0u : {m.group(2)});  // {MARK} {sid}"]
+    raise ValueError(form)
+
+
+def main() -> int:
+    funcs = load_functions()
+    starts = [f[0] for f in funcs]
+    changed: dict[str, list[str]] = {}
+    count = 0
+    for addr, expect, form, sid in SITES:
+        fstart, path = funcs[bisect.bisect_right(starts, addr) - 1]
+        lines = changed.get(path) or Path(path).read_text(encoding="utf-8").split("\n")
+        where = locate(lines, fstart, addr)
+        if not where:
+            print(f"error: {addr:08X} not found in sub_{fstart:08X}", file=sys.stderr)
             return 1
-        new_region = region[:site.start()] + f"// {comment}\n{site.group(1)}{patched}\n" + region[site.end():]
-        text = text[:start] + new_region + text[end:]
+        i, j = where
+        comment = lines[i].strip()[3:]
+        if comment != expect:
+            print(f"error: {addr:08X} is '{comment}', expected '{expect}' (patch {sid}); refusing to guess",
+                  file=sys.stderr)
+            return 1
+        code = lines[i + 1:j]
+        if any(f"{MARK} {sid}" in c for c in code):
+            count += 1
+            continue
+        indent = re.match(r"\s*", lines[i]).group(0)
+        lines[i + 1:j] = patched_code(form, code, sid, indent)
+        changed[path] = lines
+        count += 1
+        print(f"patch {sid}: {addr:08X} {expect} in {Path(path).name}")
+    for path, lines in changed.items():
+        text = "\n".join(lines)
         if DECL not in text:
             first = text.find("DEFINE_REX_FUNC(")
             text = text[:first] + DECL + "\n" + text[first:]
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(text)
-        done += 1
-        print(f"patch {sid}: {func} {comment} in {path}")
-    print(f"game patches: {done}/{len(SITES)} sites patched")
+        Path(path).write_text(text, encoding="utf-8", newline="\n")
+    print(f"game patches: {count}/{len(SITES)} sites patched")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1] if len(sys.argv) > 1 else "generated/default/*.cpp"))
+    sys.exit(main())

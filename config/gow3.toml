@@ -30,7 +30,17 @@ gow2_upscaler = "off"
 # (draws_pipeline_pending), shaders translated on the draw thread (shaders_sync), memexport waits.
 d3d12_stats_log = true
 
-# ---------- Game fixes (tools\patch_game_patches.py; read when the renderer starts) ----------
-# Black Shading Fix (GUseTilingMode = FALSE): no black blocks in character shadows in in-engine
-# cutscenes. Ported from the Gears of War 2 community patch by illusion and boma.
-gow3_black_shading_fix = true
+# ---------- Game fixes (tools\patch_game_patches.py; restart after changing) ----------
+# Community patches: the Gears of War 2 "Black Shading Fix" (illusion, boma), located in Gears 3 by
+# hand, and xenia-canary/game-patches "4D5308AB - Gears of War 3" for this disc. The defaults follow
+# your Xenia selection for this game.
+gow3_black_shading_fix = true       # GUseTilingMode = FALSE (black blocks in character shadows)
+gow3_disable_ao = true              # Disable Ambient Occlusion
+gow3_unlock_fps = true              # Unlock FPS (the engine's 30 fps cap)
+gow3_disable_motion_blur = true     # Disable Motion Blur (ghosting when panning)
+gow3_disable_lens_flares = true     # Disable Lens Flares
+gow3_disable_bloom = true           # Disable Bloom
+gow3_aniso16 = true                 # 16x Anisotropic Filtering
+gow3_resolution_scaling_fix = true  # Resolution Scaling Fix / Disable All Post-Processing (changes the look)
+gow3_disable_dof = false            # Disable Depth of Field
+gow3_occlusion_query_fix = false    # Occlusion Query Fix (less geometry popping)

@@ -2,17 +2,41 @@
 //
 // Switches for the patch sites tools/patch_game_patches.py writes into the generated code.
 // Each one is a cvar (gow3.toml or --name=value), so a patch can be A/B'd without a rebuild.
+// Defaults follow the player's Xenia selection for this game where there was one.
 
 #include <rex/cvar.h>
 
 REXCVAR_DEFINE_BOOL(gow3_black_shading_fix, true, "GameFixes",
-                    "Black Shading Fix: GUseTilingMode=FALSE, which removes the black blocks that "
-                    "MSAA resolves leave in character shadows (in-engine cutscenes). Read when "
-                    "the renderer starts.");
+                    "Black Shading Fix: GUseTilingMode=FALSE, against the black blocks MSAA "
+                    "resolves leave in character shadows. Read when the renderer starts.");
+REXCVAR_DEFINE_BOOL(gow3_unlock_fps, true, "GameFixes",
+                    "Unlock FPS: skips the engine frame-rate cap and its frame mode.");
+REXCVAR_DEFINE_BOOL(gow3_occlusion_query_fix, false, "GameFixes",
+                    "Occlusion Query Fix: occlusion tests against full-resolution depth, less "
+                    "geometry popping.");
+REXCVAR_DEFINE_BOOL(gow3_disable_lens_flares, true, "GameFixes", "Disable Lens Flares.");
+REXCVAR_DEFINE_BOOL(gow3_disable_ao, true, "GameFixes", "Disable Ambient Occlusion.");
+REXCVAR_DEFINE_BOOL(gow3_disable_motion_blur, true, "GameFixes",
+                    "Disable Motion Blur: no ghosting and artifacts when the camera pans quickly.");
+REXCVAR_DEFINE_BOOL(gow3_aniso16, true, "GameFixes", "16x Anisotropic Filtering.");
+REXCVAR_DEFINE_BOOL(gow3_resolution_scaling_fix, true, "GameFixes",
+                    "Resolution Scaling Fix / Disable All Post-Processing: changes the overall "
+                    "look, but no edge-detection overcorrection or colour smearing.");
+REXCVAR_DEFINE_BOOL(gow3_disable_dof, false, "GameFixes", "Disable Depth of Field.");
+REXCVAR_DEFINE_BOOL(gow3_disable_bloom, true, "GameFixes", "Disable Bloom.");
 
 extern "C" int Gow3GamePatch(int id) {
   switch (id) {
     case 1: return REXCVAR_GET(gow3_black_shading_fix);
+    case 2: return REXCVAR_GET(gow3_unlock_fps);
+    case 3: return REXCVAR_GET(gow3_occlusion_query_fix);
+    case 4: return REXCVAR_GET(gow3_disable_lens_flares);
+    case 5: return REXCVAR_GET(gow3_disable_ao);
+    case 6: return REXCVAR_GET(gow3_disable_motion_blur);
+    case 7: return REXCVAR_GET(gow3_aniso16);
+    case 8: return REXCVAR_GET(gow3_resolution_scaling_fix);
+    case 9: return REXCVAR_GET(gow3_disable_dof);
+    case 10: return REXCVAR_GET(gow3_disable_bloom);
     default: return 0;
   }
 }
