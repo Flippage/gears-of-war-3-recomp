@@ -29,3 +29,8 @@ gow2_upscaler = "off"
 # One D3D12STATS line every five seconds in the log: draws skipped while a pipeline compiles
 # (draws_pipeline_pending), shaders translated on the draw thread (shaders_sync), memexport waits.
 d3d12_stats_log = true
+
+# ---------- Game fixes (tools\patch_game_patches.py; read when the renderer starts) ----------
+# Black Shading Fix (GUseTilingMode = FALSE): no black blocks in character shadows in in-engine
+# cutscenes. Ported from the Gears of War 2 community patch by illusion and boma.
+gow3_black_shading_fix = true

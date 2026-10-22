@@ -56,6 +56,10 @@ Step 'Patching switch traps in generated code'
 python -I tools\patch_switch_traps.py 'generated/default/*.cpp'
 if ($LASTEXITCODE -ne 0) { Fail 'tools\patch_switch_traps.py failed.' }
 
+Step 'Applying the game patches'
+python -I tools\patch_game_patches.py 'generated/default/*.cpp'
+if ($LASTEXITCODE -ne 0) { Fail 'tools\patch_game_patches.py failed.' }
+
 $build = Join-Path $root "out\build\$($Config.ToLower())"
 Step "Configuring ($Config)"
 cmake -S . -B $build -G Ninja "-DCMAKE_BUILD_TYPE=$Config" `

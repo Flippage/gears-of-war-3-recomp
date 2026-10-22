@@ -1,4 +1,4 @@
-﻿# gow3 - ReXGlue Recompiled Project
+# gow3 - ReXGlue Recompiled Project
 #
 # SDK boilerplate lives in generated/rexglue.cmake.
 
@@ -17,6 +17,7 @@ set(GOW3_SOURCES
     src/gow3_xam_input_guard.cpp
     src/gow3_xam_trace.cpp
     src/gow3_content_fix.cpp
+    src/gow3_game_patches.cpp
 )
 
 if(WIN32)
