@@ -20,10 +20,15 @@ readback_memexport = false
 
 # ---------- Upscaling (patched SDK DLLs in out\sdk; the gow2_ names come from the Gears 2 port) ----------
 # Temporal upscaling: "dlss" (NVIDIA RTX), "fsr4" (Radeon RX 7000/9000), "fsr3", or "off".
-# Off until it is calibrated for Gears 3: its camera/motion-vector capture was measured on
-# Gears of War 2 and Judgment, and on Gears 3 it smears the picture while turning.
+# Calibrated for Gears 3 (see below); needs gow2_temporal = true. Camera motion only: characters
+# that move on their own get no motion vectors of their own, so they can ghost slightly.
 gow2_temporal = false
 gow2_upscaler = "off"
+# Gears 3 camera, measured from dumps: c0-c3 is a camera-relative ViewProjection (the view
+# rotation included), c5 the camera position, and the depth buffer stores plain z (0 near).
+gow2_vp_register = 0
+gow2_campos_register = 5
+gow2_depth_reversed = false
 
 # ---------- Diagnostics ----------
 # One D3D12STATS line every five seconds in the log: draws skipped while a pipeline compiles

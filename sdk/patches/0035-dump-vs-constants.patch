@@ -1,0 +1,31 @@
+Diagnostics for Gears of War 3 DLSS calibration: on dump frames (gow2_dump.now, GOW2_DEV_TOOLS),
+the first 8 scene draws also write all 256 VS float constants, to find where the title keeps its
+view transform (Gears 3's c0-c3 is the projection only).
+
+--- a/src/graphics/d3d12/gow2_temporal.cpp
++++ b/src/graphics/d3d12/gow2_temporal.cpp
+@@ -308,6 +308,24 @@
+ 
+ void NoteSceneDraw(const float* vs_consts, uint32_t color_fmt, uint32_t index_count) {
+   if (color_fmt != 3 || index_count < 30) return;
++  // Dump frames: the first scene draws also write all 256 VS float constants (gow2_dump/f<k>_vs<n>.bin:
++  // u32 index count, then 1024 floats), to find where a title keeps its view transform.
++  static uint32_t vs_dump_frame = ~0u, vs_dump_count = 0;
++  if (g_dump_this_frame) {
++    if (vs_dump_frame != g_state.frame) {
++      vs_dump_frame = g_state.frame;
++      vs_dump_count = 0;
++    }
++    if (vs_dump_count < 8) {
++      char name[96];
++      std::snprintf(name, sizeof name, "gow2_dump/f%u_vs%u.bin", g_dump_seq, vs_dump_count++);
++      if (FILE* f = std::fopen(name, "wb")) {
++        std::fwrite(&index_count, sizeof index_count, 1, f);
++        std::fwrite(vs_consts, sizeof(float), 1024, f);
++        std::fclose(f);
++      }
++    }
++  }
+   const int vp = std::clamp<int>(REXCVAR_GET(gow2_vp_register), 0, 240);
+   const float* rows = vs_consts + vp * 4;
+   for (int i = 0; i < 16; ++i) {

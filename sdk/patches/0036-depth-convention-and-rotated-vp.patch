@@ -1,0 +1,138 @@
+Gears of War 3 DLSS calibration: gow2_depth_reversed (default true, the Gears of War 2 behaviour)
+says whether the scene depth holds 1 - z; it drives the motion vector shader and the DLSS/FSR
+depth-inverted flags. Gears of War 3 stores plain z. The vertical FOV and near plane are read
+from the ViewProjection columns, so a matrix that includes the view rotation (Gears of War 3's
+camera-relative ViewProjection) gives the right values.
+
+--- a/src/graphics/d3d12/gow2_temporal.cpp
++++ b/src/graphics/d3d12/gow2_temporal.cpp
+@@ -32,6 +32,9 @@
+                      "First VS float constant holding the scene ViewProjection matrix (4 rows)");
+ REXCVAR_DEFINE_INT32(gow2_campos_register, 13, "gfx",
+                      "VS float constant row holding the camera world position");
++REXCVAR_DEFINE_BOOL(gow2_depth_reversed, true, "gfx",
++                    "The scene depth buffer holds 1 - z (Gears of War 2); false for titles that store "
++                    "plain z, 0 at the near plane (Gears of War 3). Read when the upscaler starts");
+ 
+ namespace rex::graphics::d3d12::gow2 {
+ 
+--- a/src/graphics/d3d12/gow2_upscale.cpp
++++ b/src/graphics/d3d12/gow2_upscale.cpp
+@@ -39,6 +39,7 @@
+ 
+ REXCVAR_DECLARE(int32_t, gow2_vp_register);
+ REXCVAR_DECLARE(int32_t, gow2_campos_register);
++REXCVAR_DECLARE(bool, gow2_depth_reversed);
+ 
+ namespace rex::graphics::d3d12::gow2 {
+ 
+@@ -50,7 +51,7 @@
+ cbuffer C : register(b0) {
+   row_major float4x4 invVP;
+   row_major float4x4 prevVP;
+-  float3 tdelta; float pad0;
++  float3 tdelta; float reversed;
+   uint2 size; uint2 pad1;
+ };
+ Texture2D<float> depthTex : register(t0);
+@@ -59,7 +60,7 @@
+ void main(uint3 id : SV_DispatchThreadID) {
+   if (id.x >= size.x || id.y >= size.y) return;
+   float d = depthTex[id.xy];
+-  float z = 1.0 - d;
++  float z = reversed > 0.5 ? 1.0 - d : d;
+   float2 ndc = float2((id.x + 0.5) / size.x * 2.0 - 1.0, 1.0 - (id.y + 0.5) / size.y * 2.0);
+   float4 q = mul(float4(ndc, z, 1.0), invVP);
+   float3 p = q.xyz / q.w;
+@@ -379,7 +380,9 @@
+   std::memcpy(consts, j.inv_vp, 64);
+   std::memcpy(consts + 16, j.prev_vp, 64);
+   std::memcpy(consts + 32, j.tdelta, 12);
+-  // layout: invVP 0..15, prevVP 16..31, tdelta 32..34, pad 35, size 36..37
++  const float reversed = REXCVAR_GET(gow2_depth_reversed) ? 1.0f : 0.0f;
++  std::memcpy(consts + 35, &reversed, 4);
++  // layout: invVP 0..15, prevVP 16..31, tdelta 32..34, depth reversed 35, size 36..37
+   consts[36] = j.rw;
+   consts[37] = j.rh;
+ 
+@@ -667,9 +670,18 @@
+     LogTypedColorCopyOnce(cd.Format, color_format, rw, rh);
+   }
+   {
+-    const float f = cam.c[2][1] > 1e-3f ? cam.c[2][1] : 2.0f;  // world-z scale of clip.y
++    // The rows may include the view rotation (Gears of War 3 sends a camera-relative
++    // ViewProjection), so read the projection from the columns: the length of the clip.y column is
++    // the y scale, and along the view axis clip.z = a * clip.w + b.
++    float yy = 0.0f, ww = 0.0f, zw = 0.0f;
++    for (int r = 0; r < 3; ++r) {
++      yy += cam.c[r][1] * cam.c[r][1];
++      ww += cam.c[r][3] * cam.c[r][3];
++      zw += cam.c[r][2] * cam.c[r][3];
++    }
++    const float f = yy > 1e-6f ? std::sqrt(yy) : 2.0f;
+     job->fov_y = 2.0f * std::atan(1.0f / f);
+-    const float a = std::fabs(cam.c[0][3]) > 1e-6f ? cam.c[0][2] / cam.c[0][3] : 1.0f;
++    const float a = ww > 1e-12f ? zw / ww : 1.0f;
+     const float b = -(cam.c[3][2] - a * cam.c[3][3]);
+     if (b > 0.0f && a > 0.5f && a < 1.0f) {
+       job->cam_near = b / a;
+--- a/src/graphics/d3d12/gow2_dlss.cpp
++++ b/src/graphics/d3d12/gow2_dlss.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include <filesystem>
+ 
++#include <rex/cvar.h>
+ #include <rex/logging.h>
+ 
+ #ifdef GOW2_HAS_DLSS
+@@ -14,6 +15,8 @@
+ #include <nvsdk_ngx_helpers_d3d.h>
+ #include <nvsdk_ngx_params.h>
+ #endif
++
++REXCVAR_DECLARE(bool, gow2_depth_reversed);
+ 
+ namespace rex::graphics::d3d12::gow2 {
+ 
+@@ -136,8 +139,9 @@
+     cp.Feature.InTargetHeight = e.out_h;
+     cp.Feature.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value(e.quality);
+     cp.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+-                              NVSDK_NGX_DLSS_Feature_Flags_DepthInverted |
+                               NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
++    if (REXCVAR_GET(gow2_depth_reversed))
++      cp.InFeatureCreateFlags |= NVSDK_NGX_DLSS_Feature_Flags_DepthInverted;
+     if (e.hdr) cp.InFeatureCreateFlags |= NVSDK_NGX_DLSS_Feature_Flags_IsHDR;
+     NVSDK_NGX_Result r = NGX_D3D12_CREATE_DLSS_EXT(list, 1, 1, &g_feature, g_params, &cp);
+     if (NVSDK_NGX_FAILED(r)) {
+--- a/src/graphics/d3d12/gow2_fsr.cpp
++++ b/src/graphics/d3d12/gow2_fsr.cpp
+@@ -9,6 +9,7 @@
+ #include <string>
+ #include <vector>
+ 
++#include <rex/cvar.h>
+ #include <rex/logging.h>
+ 
+ #ifdef GOW2_HAS_FFX
+@@ -19,6 +20,8 @@
+ #include <dx12/ffx_api_dx12.h>
+ #include <ffx_upscale.h>
+ #endif
++
++REXCVAR_DECLARE(bool, gow2_depth_reversed);
+ 
+ namespace rex::graphics::d3d12::gow2 {
+ 
+@@ -128,8 +131,8 @@
+ static bool CreateCtx(const FsrEval& e) {
+   Chain c;
+   c.up.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+-  c.up.flags = FFX_UPSCALE_ENABLE_DEPTH_INVERTED | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE |
+-               FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;
++  c.up.flags = FFX_UPSCALE_ENABLE_AUTO_EXPOSURE | FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE;
++  if (REXCVAR_GET(gow2_depth_reversed)) c.up.flags |= FFX_UPSCALE_ENABLE_DEPTH_INVERTED;
+   if (std::getenv("GOW2_FSR_DEBUG")) c.up.flags |= FFX_UPSCALE_ENABLE_DEBUG_CHECKING;
+   c.up.maxRenderSize = {e.render_w, e.render_h};
+   c.up.maxUpscaleSize = {e.out_w, e.out_h};
