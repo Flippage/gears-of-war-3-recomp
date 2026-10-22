@@ -24,6 +24,10 @@ REXCVAR_DEFINE_BOOL(gow3_resolution_scaling_fix, true, "GameFixes",
                     "look, but no edge-detection overcorrection or colour smearing.");
 REXCVAR_DEFINE_BOOL(gow3_disable_dof, false, "GameFixes", "Disable Depth of Field.");
 REXCVAR_DEFINE_BOOL(gow3_disable_bloom, true, "GameFixes", "Disable Bloom.");
+REXCVAR_DEFINE_INT32(gow3_texture_pool_mb, 196, "GameFixes",
+                     "Texture streaming pool in MB (the game's own is 145; 0 keeps it). A bigger "
+                     "pool evicts and reloads fewer textures while moving through a level; the "
+                     "Gears of War 2 port uses 196.");
 
 extern "C" int Gow3GamePatch(int id) {
   switch (id) {
@@ -37,6 +41,7 @@ extern "C" int Gow3GamePatch(int id) {
     case 8: return REXCVAR_GET(gow3_resolution_scaling_fix);
     case 9: return REXCVAR_GET(gow3_disable_dof);
     case 10: return REXCVAR_GET(gow3_disable_bloom);
+    case 11: return REXCVAR_GET(gow3_texture_pool_mb);
     default: return 0;
   }
 }

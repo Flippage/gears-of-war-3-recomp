@@ -38,6 +38,15 @@ Sources
   9   Disable Depth of Field               824BAA50   lwz r11,64(r10)       -> li r11,0
       (gow3_disable_dof)                   82593DC4   lwz r11,64(r11)       -> li r11,0
   10  Disable Bloom (gow3_disable_bloom)   82593DC0   lwz r10,72(r11)       -> li r10,0
+  11  Texture pool size                    82967858   lwz r26,80(r1)        -> r26 = pool MB
+      (gow3_texture_pool_mb)
+      The Gears of War 2 port's gow2_texture_streaming_fix sets PoolSize=196 at the load after
+      GConfig->GetInt(TextureStreaming, PoolSize) (8280D534 lwz r4,80(r1)). Gears 3's matching
+      read is in sub_829677A8: bl 0x822a7920 with r3 = L"TextureStreaming" (8212F730), r4 =
+      L"PoolSize" (8212F9D8), r5 = 80(r1); then the -POOLSIZE= command-line check (821CAD60), and
+      without it r26 = the configured value (145 in Xbox360-GearEngine.ini). The Gears 2 patch's
+      second half (RHIGetTextureMemoryStats returning early, FudgeFactor locked at 1.0) has no
+      counterpart found in Gears 3 and is not ported.
 
   Not ported yet: the Performance patches (Option A edits a code byte whose effect needs a closer
   look; Option B adds a code cave), Show FPS (data bytes) and 21:9.
@@ -63,6 +72,7 @@ GEN = "generated/default"
 #   ("li", "r11", 0)   the instruction becomes li rD,imm
 #   ("nop",)           the instruction is skipped
 #   ("store0",)        a store writes 0 instead of the register
+#   ("value", "r26")   the register gets Gow3GamePatch(id) when that is above 0, else the original
 SITES = [
     (0x82960B84, "stw r11,-29808(r6)", ("store0",), 1),
     (0x8253D9B0, "lfs f1,1224(r3)", ("nop",), 2),
@@ -81,6 +91,7 @@ SITES = [
     (0x824BAA50, "lwz r11,64(r10)", ("li", "r11", 0), 9),
     (0x82593DC4, "lwz r11,64(r11)", ("li", "r11", 0), 9),
     (0x82593DC0, "lwz r10,72(r11)", ("li", "r10", 0), 10),
+    (0x82967858, "lwz r26,80(r1)", ("value", "r26"), 11),
 ]
 
 
@@ -128,6 +139,8 @@ def patched_code(form, code: list[str], sid: int, indent: str) -> list[str]:
         return [f"{indent}if ({cond}) {{ ctx.{form[1]}.s64 = {form[2]}; }} else {{ {orig} }}  // {MARK} {sid}"]
     if form[0] == "nop":
         return [f"{indent}if (!{cond}) {{ {orig} }}  // {MARK} {sid}"]
+    if form[0] == "value":
+        return [f"{indent}if (const int v = {cond}; v > 0) {{ ctx.{form[1]}.u64 = uint32_t(v); }} else {{ {orig} }}  // {MARK} {sid}"]
     if form[0] == "store0":
         m = re.fullmatch(r"REX_STORE_U32\((.+), (ctx\.r\d+\.u32)\);", orig)
         if not m:
