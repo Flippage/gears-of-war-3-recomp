@@ -27,9 +27,3 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-This license covers this repository's own code only. Files derived from other
-projects keep their original copyright notices and licenses, listed in
-THIRD_PARTY_NOTICES.md. Gears of War 3 itself is not part of this repository
-and is not covered by this license: it is (c) Microsoft Corporation (originally
-(c) 2011 Epic Games, Inc.), and every user must supply their own copy.
