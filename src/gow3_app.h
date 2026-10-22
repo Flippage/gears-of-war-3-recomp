@@ -124,13 +124,19 @@ class Gow3App : public rex::ReXApp {
   void OnConfigurePaths(rex::PathConfig& paths) override {
     paths.game_data_root = ResolveGameFolder(paths.game_data_root);
     paths.update_data_root = paths.game_data_root / "$SystemUpdate";
+    // An explicit --user_data_root / --cache_root (test runs, several installs) wins.
+    const bool own_user_root = IsSetByPlayer("user_data_root");
     if (const char* local = std::getenv("LOCALAPPDATA"); local && *local) {
       const std::filesystem::path base = std::filesystem::path(local) / "GearsOfWar3PC";
-      paths.user_data_root = base / "user";
-      paths.cache_root = base / "cache";
-      std::error_code ec;
-      std::filesystem::create_directories(paths.user_data_root, ec);
-      std::filesystem::create_directories(paths.cache_root, ec);
+      if (!own_user_root) paths.user_data_root = base / "user";
+      if (!own_user_root && !IsSetByPlayer("cache_root")) paths.cache_root = base / "cache";
     }
+    std::error_code ec;
+    std::filesystem::create_directories(paths.user_data_root, ec);
+    std::filesystem::create_directories(paths.cache_root, ec);
+  }
+
+  static bool IsSetByPlayer(const char* name) {
+    return rex::cvar::GetFlagSource(name) != rex::cvar::Source::kDefault;
   }
 };
