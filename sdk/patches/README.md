@@ -43,6 +43,7 @@ Both SDK builds apply every patch here in file-name order on top of ReXGlue comm
 | `0037-validate-depth-candidate.patch` | Gears of War 3: the upscaler finds its scene depth by guest address, and streaming can reuse a depth resolve address for an ordinary texture; the R32_FLOAT view of that removed the device (`DXGI_ERROR_INVALID_CALL`) a few minutes into play with DLSS on. Only a single-layer 2D R32 texture is taken now, and the first rejects are logged. |
 | `0038-far-plane-and-camera-cuts.patch` | Gears of War 3: pixels at or past the far plane (cleared depth, sky) are treated as points at infinity in the motion vector shader instead of dividing by ~0, and NaN/inf vectors become 0 (blocky white DLSS flashes in cutscenes). The upscaler history is reset on a camera cut (a turn of more than ~20 degrees, a 5% lens change or a 300 unit jump in one frame); the first 10 are logged. |
 | `0039-ui-paint-on-demand.patch` | From the Gears of War 2 port (its 0031, v0.2.10): the presenter repaints only when an ImGui dialog drew something, instead of at the display rate whenever a dialog exists, so each game frame is shown once (smoother frame pacing). |
+| `0040-depth-candidate-scene-size.patch` | Gears of War 3: the upscaler took the largest depth candidate of the frame, and some areas resolve a 1344x1344 shadow map to a depth address; it won, did not match the 1280x720 frame, and those frames were not upscaled (raw 720p, jaggies). Only a candidate of the scene's size is taken now. |
 
 ## Working on a patch
 

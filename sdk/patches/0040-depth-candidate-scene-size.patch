@@ -1,0 +1,18 @@
+Gears of War 3: the scene depth was the largest depth candidate of the frame, and some areas resolve
+a 1344x1344 shadow map to a depth address; it won, did not match the 1280x720 frame, and the
+upscaler skipped those frames (raw 720p, jaggies). Only a candidate of the scene's size is taken.
+
+--- a/src/graphics/d3d12/gow2_upscale.cpp
++++ b/src/graphics/d3d12/gow2_upscale.cpp
+@@ -534,6 +534,11 @@
+                   uint32_t(d.Width), d.Height, uint32_t(d.Format), uint32_t(d.Dimension), d.DepthOrArraySize);
+     return;
+   }
++  // Shadow maps are resolved to depth addresses too, and some are larger than the scene (1344x1344 in
++  // parts of Gears of War 3), so "largest" picked them and the frame was skipped for the size mismatch.
++  // Once the scene size is known, take only a depth texture of exactly that size.
++  const FrameState& st = State();
++  if (st.guest_w && (d.Width != st.guest_w || d.Height != st.guest_h)) return;
+   const uint64_t area = d.Width * uint64_t(d.Height);
+   if (!g.depth_tex || area >= g.depth_area) {
+     g.depth_tex = depth;

@@ -30,6 +30,8 @@ CPU code (ReXGlue codegen) or the GPU runtime (ReXGlue's Xenia-derived Xenos ren
 | Unsigned-biased integer texture scaling (Xenia `2ddc5ef737`) | not applicable: the SDK lacks that feature |
 | Texture streaming pool size | `gow3_texture_pool_mb` 145 / 196 |
 | Shader cache staleness | caches cleared and rebuilt |
+| Stale CPU-written data (facial animation vertices) | `clear_memory_page_state = true` (re-upload every CPU-written page each frame) |
+| Lighting and post-processing patches | AO, bloom, lens flares, all post-processing and Option B off at once |
 
 ### What the frame traces show
 
