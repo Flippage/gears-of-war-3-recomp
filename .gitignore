@@ -1,0 +1,6 @@
+# Game files and everything generated from them stay local (never commit or share).
+game/
+generated/
+out/
+*.xex
+*.log
