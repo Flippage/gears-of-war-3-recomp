@@ -20,6 +20,7 @@
 
 #include "gow3_content_fix.h"
 #include "gow3_options_actions.h"
+#include "gow3_mouse_aim.h"
 #include "gow3_options_overlay.h"
 #include "gow3_utf8_guard.h"
 #include "gow3_xam_input_guard.h"
@@ -49,6 +50,8 @@ class Gow3App : public rex::ReXApp {
     // so the trace wraps the fixed call).
     rex::glue::InstallContentFix();
     rex::glue::InstallXamTrace();  // dev tool, GOW3_XAM_TRACE=1
+    // Native mouse look replaces the mouse-to-right-stick emulation (gow3_mouse_aim).
+    rex::glue::PrepareNativeMouseAim();
     SetUpscaleTarget();
   }
 
@@ -77,7 +80,7 @@ class Gow3App : public rex::ReXApp {
     const auto* bytes = runtime()->memory()->TranslateVirtual<const char*>(kBase);
     out.write(bytes, kEnd - kBase);
   }
-  // void OnPostSetup() override {}
+  void OnPostSetup() override { rex::glue::InstallNativeMouseAim(window()); }
   void OnConfigureFonts(ImFontAtlas* atlas) override {
     rex::glue::AddOptionsFonts(atlas);
   }

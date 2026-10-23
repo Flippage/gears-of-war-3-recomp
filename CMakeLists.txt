@@ -26,6 +26,7 @@ set(GOW3_SOURCES
     src/gow3_options_values.cpp
     src/gow3_options_values_text.cpp
     src/gow3_toml_edit.cpp
+    src/gow3_mouse_aim.cpp
 )
 
 if(WIN32)
