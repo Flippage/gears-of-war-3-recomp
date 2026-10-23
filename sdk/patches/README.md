@@ -50,6 +50,7 @@ Both SDK builds apply every patch here in file-name order on top of ReXGlue comm
 | `0044-trace-vertex-buffers.patch` | Gears of War 3 diagnostics (`-Dev`): the DRAW trace also lists each vertex buffer the vertex shader fetches (address/size/stride) and the index buffer base, to see where a draw's vertex data comes from (XPS investigation). |
 | `0045-ui-mask.patch` | Gears of War 3: keeps DLSS/FSR from warping the HUD, subtitles and chapter titles. Draws after the full-screen tonemap pass are UI; their screen rectangles (vertex shader run on the CPU) become a mask: zero camera motion, DLSS bias-current-colour mask, FSR reactive mask. `gow2_ui_mask` (default true) turns it off. Written by Gemini 4 Argon from a brief, reviewed and adjusted. |
 | `0046-dump-vertex-data.patch` | Gears of War 3 diagnostics (`-Dev`): `gow2_dump_vs` lists vertex shader hashes; on a dump frame their draws write their vertex buffers, a stream/format index and the shader disassembly to `gow2_dump/`. For the face morph streams. |
+| `0047-dump-draw-constants.patch` | Gears of War 3 diagnostics (`-Dev`): the `gow2_dump_vs` dump also writes each matching draw's 512 float shader constants, its pixel shader, textures and the pixel shader's disassembly (face material parameters). |
 
 ## Working on a patch
 

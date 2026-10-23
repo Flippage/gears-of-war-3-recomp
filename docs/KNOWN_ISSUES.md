@@ -34,8 +34,16 @@ CPU code (ReXGlue codegen) or the GPU runtime (ReXGlue's Xenia-derived Xenos ren
 | Lighting and post-processing patches | AO, bloom, lens flares, all post-processing and Option B off at once |
 | Out-of-bounds vertex fetch reads, negative constant addresses | `sdk/patches/0041` (Xenia `9e9d3cdd3f`), `0042` (Xenia `674870d881`) |
 | Xenos `0 * x = 0` rule in mul/mad/dp | already matches Xenia's translator |
+| Bad shader constants (NaN/inf) | `debug_constant_nan` (patch 0043): none; only Unreal's FLT_MAX / 1e8 sentinels |
+| XPS (CPU-to-GPU vertex streaming at 0x7F100000) | the game uses it, but the face draws read ordinary memory (trace with patch 0044) |
+| Morph vertex data and its decoding | dumped with patch 0046: finite, small offsets; big-endian byte order confirmed from the base normals' sign byte |
+| CPU vector pack/convert instructions (`vpk*`, `vct*`, `vcfp*`, `vcsx/vcux*`, `vupkd3d128`, `vpkd3d128`) | generated code checked against their semantics |
 
 ### What the frame traces show
+
+- While a cutscene plays, the face materials switch to morph-target vertex shaders (e.g. `D9D22C06...`,
+  `90E49469...`; paused: `BCAC0D1E...`, `B4D9A140...`). They read a double-buffered, CPU-written morph stream
+  (16 bytes a vertex: position offset as three floats, normal offset as 8:8:8:8).
 
 Captured with the `-Dev` runtime (`gow2_trace.now`) during the Act 1 "Troubled Past" opening
 cutscene (Marcus close-up):

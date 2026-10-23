@@ -1,0 +1,83 @@
+Gears of War 3 diagnostics (-Dev builds): the gow2_dump_vs dump also writes each matching draw's 512 float
+shader constants (VS then PS), its pixel shader and that shader's textures to the index, and the pixel
+shader's disassembly, to read the per-draw face material parameters behind the black blotches.
+
+--- a/include/rex/graphics/d3d12/gow2_temporal.h
++++ b/include/rex/graphics/d3d12/gow2_temporal.h
+@@ -120,7 +120,8 @@
+ bool UpscaleEnabled();
+ void NoteDepthTexture(ID3D12Resource* depth);
+ // Dump frames: the vertex buffers and disassembly of draws whose vertex shader is listed in gow2_dump_vs.
+-void DumpVertexData(const RegisterFile& regs, const memory::Memory& memory, const Shader& vertex_shader);
++void DumpVertexData(const RegisterFile& regs, const memory::Memory& memory, const Shader& vertex_shader,
++                    const Shader* pixel_shader);
+ // Typed view format both upscalers read the finished frame with: the frame texture is TYPELESS
+ // (Gears of War 2: R8G8B8A8_TYPELESS) and neither NGX nor FidelityFX can view that.
+ // DXGI_FORMAT_UNKNOWN = a frame format the upscalers do not take.
+--- a/src/graphics/d3d12/gow2_temporal.cpp
++++ b/src/graphics/d3d12/gow2_temporal.cpp
+@@ -512,7 +512,8 @@
+   }
+ }
+ 
+-void DumpVertexData(const RegisterFile& regs, const memory::Memory& memory, const Shader& vertex_shader) {
++void DumpVertexData(const RegisterFile& regs, const memory::Memory& memory, const Shader& vertex_shader,
++                    const Shader* pixel_shader) {
+   if (!g_dump_this_frame) return;
+   const std::string list = REXCVAR_GET(gow2_dump_vs);
+   if (list.empty()) return;
+@@ -539,8 +540,43 @@
+       std::fclose(f);
+     }
+   }
++  // Every draw: all 512 float constants (VS c0-c255, then PS c0-c255, host floats), and the pixel
++  // shader's disassembly once, to read the per-draw material parameters (face region weights).
++  static uint32_t draw_number = 0;
++  if (first_time(0x200000000ull)) draw_number = 0;
++  char ps_hex[24] = "none";
++  if (pixel_shader) {
++    std::snprintf(ps_hex, sizeof ps_hex, "%016llX",
++                  static_cast<unsigned long long>(pixel_shader->ucode_data_hash()));
++    if (first_time(pixel_shader->ucode_data_hash())) {
++      std::snprintf(name, sizeof name, "gow2_dump/f%u_ps%s.txt", g_dump_seq, ps_hex);
++      if (FILE* f = std::fopen(name, "wb")) {
++        std::fwrite(pixel_shader->ucode_disassembly().data(), 1, pixel_shader->ucode_disassembly().size(),
++                    f);
++        std::fclose(f);
++      }
++    }
++  }
++  std::snprintf(name, sizeof name, "gow2_dump/f%u_d%03u_vs%s_ps%s.consts", g_dump_seq, draw_number++,
++                hex, ps_hex);
++  if (FILE* f = std::fopen(name, "wb")) {
++    std::fwrite(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X], sizeof(uint32_t), 512 * 4, f);
++    std::fclose(f);
++  }
+   std::snprintf(name, sizeof name, "gow2_dump/f%u_vbindex.txt", g_dump_seq);
+   FILE* index = std::fopen(name, "ab");
++  if (index) {
++    std::fprintf(index, "draw %u vs=%s ps=%s", draw_number - 1, hex, ps_hex);
++    if (pixel_shader) {
++      for (const auto& t : pixel_shader->texture_bindings()) {
++        xenos::xe_gpu_texture_fetch_t tf = regs.GetTextureFetch(t.fetch_constant);
++        std::fprintf(index, " tf%u=%08X/%ux%u/f%u", t.fetch_constant, uint32_t(tf.base_address) << 12,
++                     uint32_t(tf.size_2d.width) + 1, uint32_t(tf.size_2d.height) + 1,
++                     uint32_t(tf.format));
++      }
++    }
++    std::fputc(10, index);
++  }
+   for (const auto& b : vertex_shader.vertex_bindings()) {
+     xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(b.fetch_constant);
+     const uint32_t address = uint32_t(vf.address) << 2, size = uint32_t(vf.size) << 2;
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -2478,7 +2478,7 @@
+         reinterpret_cast<const float*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]),
+         uint32_t(regs.Get<reg::RB_COLOR_INFO>().color_format), index_count);
+   }
+-  gow2::DumpVertexData(regs, *memory_, *vertex_shader);
++  gow2::DumpVertexData(regs, *memory_, *vertex_shader, pixel_shader);
+ #ifdef GOW2_DEV_TOOLS
+   if (Gow2TraceActive() && pixel_shader) {
+     // One line per draw: shaders, primitive, targets and the textures the pixel shader samples.
