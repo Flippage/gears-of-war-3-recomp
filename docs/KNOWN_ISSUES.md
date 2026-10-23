@@ -38,6 +38,8 @@ CPU code (ReXGlue codegen) or the GPU runtime (ReXGlue's Xenia-derived Xenos ren
 | XPS (CPU-to-GPU vertex streaming at 0x7F100000) | the game uses it, but the face draws read ordinary memory (trace with patch 0044) |
 | Morph vertex data and its decoding | dumped with patch 0046: finite, small offsets; big-endian byte order confirmed from the base normals' sign byte |
 | CPU vector pack/convert instructions (`vpk*`, `vct*`, `vcfp*`, `vcsx/vcux*`, `vupkd3d128`, `vpkd3d128`) | generated code checked against their semantics |
+| Facial bone matrices and bone streams | Marcus's face (`F6C624B7...` lit, `DD51252A...` base; vertex shaders `ECFC0798...`, `9DD09713...`) skins from up to 70 facial bones (extra stream `vf2`) plus a morph stream (`vf3`); all 70 matrices sane in every dumped draw |
+| The face vertex shader's output | run on the CPU interpreter (patch 0048) over all 13,869 vertices with the real inputs: every output finite and in range, so the inputs and shader logic are fine and the GPU translation of these shaders is the suspect |
 
 ### What the frame traces show
 

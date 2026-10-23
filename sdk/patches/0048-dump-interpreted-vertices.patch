@@ -1,0 +1,61 @@
+Gears of War 3 diagnostics (-Dev builds): the gow2_dump_vs dump also runs each matching draw's vertex
+shader on the CPU (the Xenia-derived ShaderInterpreter) over every vertex of its first stream and saves
+the position and all 16 interpolators, to check the face shader's output independently of the GPU
+translation.
+
+--- a/src/graphics/d3d12/gow2_temporal.cpp
++++ b/src/graphics/d3d12/gow2_temporal.cpp
+@@ -21,6 +21,7 @@
+ #include <rex/graphics/util/draw_extent_estimator.h>
+ #include <algorithm>
+ #include <rex/cvar.h>
++#include <rex/graphics/pipeline/shader/interpreter.h>
+ #include <rex/graphics/pipeline/shader/shader.h>
+ #include <rex/logging.h>
+ #include <rex/system/xmemory.h>
+@@ -597,6 +598,45 @@
+       std::fclose(f);
+     }
+   }
++  // Also run the vertex shader on the CPU (the Xenia-derived interpreter) over every vertex of its
++  // first stream and save the position and the 16 interpolators: f<k>_d<n>_interp.bin holds a u32
++  // vertex count, then per vertex 17 float4 (o0-o15, oPos; 1e30 where not exported).
++  if (ShaderInterpreter::CanInterpretShader(vertex_shader) && !vertex_shader.vertex_bindings().empty()) {
++    const auto& b0 = vertex_shader.vertex_bindings().front();
++    xenos::xe_gpu_vertex_fetch_t vf0 = regs.GetVertexFetch(b0.fetch_constant);
++    const uint32_t stride_bytes = b0.stride_words * 4;
++    const uint32_t count = stride_bytes ? std::min<uint32_t>((uint32_t(vf0.size) << 2) / stride_bytes, 200000) : 0;
++    struct Sink : ShaderInterpreter::ExportSink {
++      float out[17][4];
++      void Reset() {
++        for (auto& r : out)
++          for (float& x : r) x = 1e30f;
++      }
++      void Export(ucode::ExportRegister reg, const float* value, uint32_t mask) override {
++        uint32_t slot = uint32_t(reg) < 16 ? uint32_t(reg)
++                        : reg == ucode::ExportRegister::kVSPosition ? 16u : 99u;
++        if (slot > 16) return;
++        for (int k = 0; k < 4; ++k)
++          if (mask & (1u << k)) out[slot][k] = value[k];
++      }
++    } sink;
++    std::snprintf(name, sizeof name, "gow2_dump/f%u_d%03u_interp.bin", g_dump_seq, draw_number - 1);
++    if (FILE* f = count ? std::fopen(name, "wb") : nullptr) {
++      std::fwrite(&count, sizeof count, 1, f);
++      ShaderInterpreter interpreter(regs, memory);
++      interpreter.SetShader(vertex_shader);
++      interpreter.SetExportSink(&sink);
++      for (uint32_t i = 0; i < count; ++i) {
++        sink.Reset();
++        std::memset(interpreter.temp_registers(), 0, sizeof(float) * 4);
++        interpreter.temp_registers()[0] = float(i);
++        interpreter.Execute();
++        std::fwrite(sink.out, sizeof sink.out, 1, f);
++      }
++      interpreter.SetExportSink(nullptr);
++      std::fclose(f);
++    }
++  }
+   if (index) std::fclose(index);
+ }
+ 
