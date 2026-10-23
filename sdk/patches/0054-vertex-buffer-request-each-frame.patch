@@ -1,0 +1,39 @@
+Gears of War 3: the black blotches on animated faces. A vertex buffer whose fetch constant kept the same
+address and size was never requested again, even after the swap cleared its in-sync bit, so a buffer
+the CPU rewrites in place each frame (the facial morph buffer) reached the face depth pre-pass with
+the previous frame's data, while the base and lighting passes - after another buffer had used the
+slot - got the current frame's. Where the face moved away from the camera both colour passes failed
+their depth test against the pre-pass. Every out-of-sync vertex buffer is now requested, as in Xenia.
+gpu_vertex_buffer_state_skip (default false) restores the old skip. Found by Gemini 4 Argon from the
+investigation handoff.
+
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -82,6 +82,10 @@
+   }
+ }
+ }  // namespace
++
++REXCVAR_DEFINE_BOOL(gpu_vertex_buffer_state_skip, false, "GPU",
++                    "Old behaviour: skip requesting a vertex buffer whose address and size match the last "
++                    "draw on that slot, even in a new frame (stale CPU-written data)");
+ 
+ REXCVAR_DEFINE_BOOL(d3d12_readback_memexport, false, "GPU/D3D12",
+                     "Read data written by memory export in shaders on the CPU")
+@@ -2840,7 +2844,15 @@
+           return false;
+       }
+       VertexBufferState& state = vertex_buffer_states_[vfetch_index];
+-      if (state.address == vfetch_constant.address && state.size == vfetch_constant.size) {
++      // The in-sync bit is cleared at every swap so each buffer is requested again in a new frame
++      // (the CPU may have rewritten it in place, like Gears of War 3's facial morph buffer). Skipping
++      // the request because the address and size are unchanged defeated that: the first draw of a
++      // frame then used the previous frame's data from shared memory, and later draws (after another
++      // buffer had been bound to the slot) the current frame's - the face depth pre-pass and colour
++      // passes disagreed and the colour passes failed their depth test (black blotches). Xenia
++      // requests every vertex buffer of every draw.
++      if (REXCVAR_GET(gpu_vertex_buffer_state_skip) && state.address == vfetch_constant.address &&
++          state.size == vfetch_constant.size) {
+         vertex_buffers_in_sync_[vfetch_index >> 6] |= vfetch_bit;
+         continue;
+       }

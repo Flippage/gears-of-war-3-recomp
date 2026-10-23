@@ -33,7 +33,8 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
       post-processing / shadow cuts toggles (off by default: the game runs well with its original look)
 - [x] DLSS temporal upscaling calibrated for Gears 3 (camera, depth convention, camera cuts), with
       the HUD, subtitles and chapter titles masked out so they do not warp
-- [ ] **Black blotches on character faces in in-engine cutscenes** (see [Known issues](#known-issues))
+- [x] Faces render cleanly in in-engine cutscenes (the black blotches are fixed, see
+      [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md))
 - [ ] FSR 3.1 / FSR 4 on AMD cards: built in and calibrated the same way, but untested
 - [ ] Full campaign play-through; Horde, Beast and Versus untested
 - [ ] PC options menu, mouse aim, ultrawide
@@ -100,12 +101,6 @@ build; your edits are kept). Every setting also works on the command line as `--
 
 ## Known issues
 
-- **Black blotches on faces in in-engine cutscenes.** Close-up faces get hard-edged black patches
-  where the face deforms while the cutscene plays; they vanish when the game is paused. Xenia
-  renders the same scene of the same base executable cleanly, so the cause is in this project's
-  emulation. It is the face's lighting pass failing its depth test against the earlier depth
-  pre-pass and base pass, although all three get identical inputs; what has been tested and ruled
-  out is in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 - The first launch after updating, or after changing a graphics setting, recompiles the shader
   pipelines: the window can show "Not responding" for a few minutes. Let it finish; later launches
   load them from the cache.

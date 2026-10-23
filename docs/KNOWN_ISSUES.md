@@ -1,6 +1,21 @@
 # Known issues
 
-## Black blotches on faces in in-engine cutscenes (open)
+## Black blotches on faces in in-engine cutscenes (fixed)
+
+**Cause and fix (2026-10-23, `sdk/patches/0054`).** The runtime skipped requesting a vertex buffer
+when its fetch constant kept the same address and size, even after the swap had cleared the buffer's
+in-sync bit. Gears 3 rewrites each face's morph buffer in place every frame, so the face's depth-only
+pre-pass (the first draw of the frame to use it) read the previous frame's morph data from the GPU's
+copy of guest memory, while the base and lighting passes - after another buffer had been bound to
+that slot, forcing a request - read the current frame's. Wherever the face moved away from the camera
+between frames, both colour passes failed their LESS_EQUAL depth test against the pre-pass and stayed
+black. Xenia requests every vertex buffer on every draw. Every out-of-sync vertex buffer is requested
+now; `gpu_vertex_buffer_state_skip = true` restores the old behaviour. Found by Gemini 4 Argon from the
+handoff of this investigation; confirmed in play.
+
+The investigation is kept below for reference.
+
+## Investigation record
 
 **Symptom.** In in-engine cutscenes, close-up faces (Marcus, Anya, Cole...) get hard-edged black
 patches on the brows, around the eyes, cheeks, mouth, jaw and neck: the parts that deform while a

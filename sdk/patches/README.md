@@ -56,6 +56,7 @@ Both SDK builds apply every patch here in file-name order on top of ReXGlue comm
 | `0050-trace-vertex-checksums.patch` | Gears of War 3 diagnostics (`-Dev`): the DRAW trace also prints a checksum of each vertex buffer's guest contents as the draw is processed, to see whether the CPU rewrites a buffer between two draws of a frame. |
 | `0052-debug-depth-bias.patch` | Gears of War 3 diagnostics: `debug_depth_bias.txt` holds a polygon offset given to every draw that tests LESS_EQUAL / EQUAL without writing depth, for that draw only (is a later pass rejected by a rounding-level depth mismatch?). |
 | `0053-trace-depth-only-draws.patch` | Gears of War 3 diagnostics (`-Dev`): the DRAW trace also logs draws without a pixel shader (depth-only passes, `ps=0000000000000000`). |
+| `0054-vertex-buffer-request-each-frame.patch` | Gears of War 3: the black blotches on animated faces. A vertex buffer keeping the same address and size was never requested again after a swap, so the facial morph buffer (rewritten in place each frame) reached the face depth pre-pass a frame stale while the colour passes got the current data and failed their depth test. Every out-of-sync vertex buffer is requested now, as in Xenia. `gpu_vertex_buffer_state_skip` restores the old skip. Found by Gemini 4 Argon. |
 
 ## Working on a patch
 
