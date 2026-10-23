@@ -1,0 +1,62 @@
+Gears of War 3 diagnostics: debug_depth_bias.txt holds a polygon offset given to every draw that tests
+LESS_EQUAL / EQUAL without writing depth (a later pass over an earlier pass's surface), for that draw
+only, to see whether such a pass is rejected by a rounding-level depth mismatch (face blotches).
+
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -2517,6 +2517,55 @@
+     }
+   }
+ 
++  // debug_depth_bias.txt (working directory, read about once a second): one number, a polygon offset
++  // (in the guest's depth units) given to every draw that tests LESS_EQUAL / EQUAL without writing
++  // depth - a later pass over an earlier pass's surface - for that draw only. Diagnostics: shows
++  // whether such a pass is being rejected by a rounding-level depth mismatch. Negative = nearer.
++  struct PolyOffsetRestore {
++    RegisterFile* register_file;
++    uint32_t mode = 0, front = 0, back = 0;
++    bool active = false;
++    ~PolyOffsetRestore() {
++      if (!active) return;
++      register_file->values[XE_GPU_REG_PA_SU_SC_MODE_CNTL] = mode;
++      register_file->values[XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET] = front;
++      register_file->values[XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_OFFSET] = back;
++    }
++  } poly_offset_restore{register_file_};
++  {
++    static float bias = 0.0f;
++    static auto next_check = std::chrono::steady_clock::time_point{};
++    const auto now = std::chrono::steady_clock::now();
++    if (now >= next_check) {
++      next_check = now + std::chrono::seconds(1);
++      bias = 0.0f;
++      if (FILE* f = std::fopen("debug_depth_bias.txt", "rb")) {
++        char buf[64] = {};
++        std::fread(buf, 1, sizeof(buf) - 1, f);
++        std::fclose(f);
++        bias = float(std::strtod(buf, nullptr));
++      }
++    }
++    auto depth_control = regs.Get<reg::RB_DEPTHCONTROL>();
++    auto mode_control = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
++    if (bias != 0.0f && depth_control.z_enable && !depth_control.z_write_enable &&
++        (depth_control.zfunc == xenos::CompareFunction::kLessEqual ||
++         depth_control.zfunc == xenos::CompareFunction::kEqual) &&
++        !mode_control.poly_offset_front_enable && !mode_control.poly_offset_back_enable) {
++      poly_offset_restore.mode = register_file_->values[XE_GPU_REG_PA_SU_SC_MODE_CNTL];
++      poly_offset_restore.front = register_file_->values[XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET];
++      poly_offset_restore.back = register_file_->values[XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_OFFSET];
++      poly_offset_restore.active = true;
++      mode_control.poly_offset_front_enable = 1;
++      mode_control.poly_offset_back_enable = 1;
++      register_file_->values[XE_GPU_REG_PA_SU_SC_MODE_CNTL] = mode_control.value;
++      uint32_t bias_bits;
++      std::memcpy(&bias_bits, &bias, sizeof(bias_bits));
++      register_file_->values[XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET] = bias_bits;
++      register_file_->values[XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_OFFSET] = bias_bits;
++    }
++  }
++
+   if (pixel_shader) {
+     gow2::NoteSceneDraw(
+         reinterpret_cast<const float*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]),

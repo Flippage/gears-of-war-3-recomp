@@ -40,6 +40,9 @@ CPU code (ReXGlue codegen) or the GPU runtime (ReXGlue's Xenia-derived Xenos ren
 | CPU vector pack/convert instructions (`vpk*`, `vct*`, `vcfp*`, `vcsx/vcux*`, `vupkd3d128`, `vpkd3d128`) | generated code checked against their semantics |
 | Facial bone matrices and bone streams | Marcus's face (`F6C624B7...` lit, `DD51252A...` base; vertex shaders `ECFC0798...`, `9DD09713...`) skins from up to 70 facial bones (extra stream `vf2`) plus a morph stream (`vf3`); all 70 matrices sane in every dumped draw |
 | The face vertex shader's output | run on the CPU interpreter (patch 0048) over all 13,869 vertices with the real inputs: every output finite and in range, so the inputs and shader logic are fine and the GPU translation of these shaders is the suspect |
+| Render target path, re-tested | RTV after the depth pre-pass was found: no change |
+| Driver fusing multiply-adds | all vertex shader arithmetic marked precise in DXBC: no change |
+| A CPU/GPU race on the morph buffer | vertex buffer checksums identical for every pass of a frame |
 
 ### What the frame traces show
 
@@ -58,6 +61,17 @@ cutscene (Marcus close-up):
 - No single pixel shader in the shot is responsible (skipping them did not remove the blotches),
   which points at the data a draw reads (vertex data from the CPU, or a texture/resolve) rather
   than at a shader translation.
+
+### Where it stands (2026-10-23)
+
+- It is a **depth-test rejection**: the face's lighting pass (`F6C624B7...`, LESS_EQUAL, no write) is
+  rejected in the blotch regions; forcing its depth test to ALWAYS (`debug_depth_always.txt`) removes
+  almost all of them. Its depth is compared with a depth-only pre-pass (`0856804D...`, EDRAM mode 5)
+  and the base pass (`9DD09713...`).
+- The mismatch is larger than rounding: a polygon offset of ~256 24-bit steps only reduces it.
+- Vertex data, index buffers, bone matrices and position constants are identical for all three
+  passes, and the CPU interpreter gives bit-identical positions for all of them. So the GPU produces
+  a different depth from identical inputs for at least one pass.
 
 ### Ideas not yet tried
 

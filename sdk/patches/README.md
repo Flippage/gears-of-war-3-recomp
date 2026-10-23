@@ -52,6 +52,10 @@ Both SDK builds apply every patch here in file-name order on top of ReXGlue comm
 | `0046-dump-vertex-data.patch` | Gears of War 3 diagnostics (`-Dev`): `gow2_dump_vs` lists vertex shader hashes; on a dump frame their draws write their vertex buffers, a stream/format index and the shader disassembly to `gow2_dump/`. For the face morph streams. |
 | `0047-dump-draw-constants.patch` | Gears of War 3 diagnostics (`-Dev`): the `gow2_dump_vs` dump also writes each matching draw's 512 float shader constants, its pixel shader, textures and the pixel shader's disassembly (face material parameters). |
 | `0048-dump-interpreted-vertices.patch` | Gears of War 3 diagnostics (`-Dev`): the `gow2_dump_vs` dump also runs each matching vertex shader on the CPU interpreter over all its vertices and saves position and interpolators (checks the face shader's output independently of the GPU translation). |
+| `0049-debug-depth-always.patch` | Gears of War 3 diagnostics: `debug_depth_always.txt` lists pixel shader hashes whose draws get their depth test forced to "always" (shows whether a pass is lost to depth rejection); the `-Dev` DRAW trace also prints each draw's depth test, function, write flag and polygon offset. |
+| `0050-trace-vertex-checksums.patch` | Gears of War 3 diagnostics (`-Dev`): the DRAW trace also prints a checksum of each vertex buffer's guest contents as the draw is processed, to see whether the CPU rewrites a buffer between two draws of a frame. |
+| `0052-debug-depth-bias.patch` | Gears of War 3 diagnostics: `debug_depth_bias.txt` holds a polygon offset given to every draw that tests LESS_EQUAL / EQUAL without writing depth, for that draw only (is a later pass rejected by a rounding-level depth mismatch?). |
+| `0053-trace-depth-only-draws.patch` | Gears of War 3 diagnostics (`-Dev`): the DRAW trace also logs draws without a pixel shader (depth-only passes, `ps=0000000000000000`). |
 
 ## Working on a patch
 
