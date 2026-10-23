@@ -1,0 +1,108 @@
+Gears of War 3 diagnostics (-Dev builds): gow2_dump_vs lists vertex shader hashes; on a dump frame
+(gow2_dump.now) every draw with one of them writes its vertex buffers (raw guest bytes, once per address),
+an index of the streams and attribute formats, and the shader's disassembly to gow2_dump/. For the face
+morph streams behind the black blotches.
+
+--- a/include/rex/graphics/d3d12/gow2_temporal.h
++++ b/include/rex/graphics/d3d12/gow2_temporal.h
+@@ -114,6 +114,8 @@
+ // Upscaler (DLSS) hooks. UpscaleEnabled(): cvar gow2_dlss && temporal pipeline on.
+ bool UpscaleEnabled();
+ void NoteDepthTexture(ID3D12Resource* depth);
++// Dump frames: the vertex buffers and disassembly of draws whose vertex shader is listed in gow2_dump_vs.
++void DumpVertexData(const RegisterFile& regs, const memory::Memory& memory, const Shader& vertex_shader);
+ // Typed view format both upscalers read the finished frame with: the frame texture is TYPELESS
+ // (Gears of War 2: R8G8B8A8_TYPELESS) and neither NGX nor FidelityFX can view that.
+ // DXGI_FORMAT_UNKNOWN = a frame format the upscalers do not take.
+--- a/src/graphics/d3d12/gow2_temporal.cpp
++++ b/src/graphics/d3d12/gow2_temporal.cpp
+@@ -19,8 +19,11 @@
+ #include <rex/graphics/d3d12/texture_cache.h>
+ #include <rex/graphics/register_file.h>
+ #include <rex/graphics/util/draw_extent_estimator.h>
++#include <algorithm>
+ #include <rex/cvar.h>
++#include <rex/graphics/pipeline/shader/shader.h>
+ #include <rex/logging.h>
++#include <rex/system/xmemory.h>
+ 
+ REXCVAR_DEFINE_BOOL(gow2_temporal, false, "gfx",
+                     "Temporal pipeline: sub-pixel jitter of the scene (foundation for DLSS/FSR)");
+@@ -38,6 +41,10 @@
+                     "plain z, 0 at the near plane (Gears of War 3). Read when the upscaler starts");
+ REXCVAR_DEFINE_BOOL(gow2_ui_mask, true, "gfx",
+                     "Mask post-tonemap UI draws (HUD, subtitles) out of camera motion and temporal history");
++
++REXCVAR_DEFINE_STRING(gow2_dump_vs, "", "gfx",
++                      "Dev dumps: comma-separated vertex shader hashes whose draws write their vertex "
++                      "buffers and disassembly to gow2_dump/ on a dump frame");
+ 
+ namespace rex::graphics::d3d12::gow2 {
+ 
+@@ -465,4 +472,56 @@
+   }
+ }
+ 
++void DumpVertexData(const RegisterFile& regs, const memory::Memory& memory, const Shader& vertex_shader) {
++  if (!g_dump_this_frame) return;
++  const std::string list = REXCVAR_GET(gow2_dump_vs);
++  if (list.empty()) return;
++  const uint64_t hash = vertex_shader.ucode_data_hash();
++  char hex[24];
++  std::snprintf(hex, sizeof hex, "%016llX", static_cast<unsigned long long>(hash));
++  if (list.find(hex) == std::string::npos) return;
++  static uint32_t seq_seen = ~0u;
++  static std::vector<uint64_t> done;  // shader hashes and buffer addresses already written this dump
++  if (seq_seen != g_dump_seq) {
++    seq_seen = g_dump_seq;
++    done.clear();
++  }
++  auto first_time = [](uint64_t key) {
++    if (std::find(done.begin(), done.end(), key) != done.end()) return false;
++    done.push_back(key);
++    return true;
++  };
++  char name[128];
++  if (first_time(hash)) {
++    std::snprintf(name, sizeof name, "gow2_dump/f%u_vs%s.txt", g_dump_seq, hex);
++    if (FILE* f = std::fopen(name, "wb")) {
++      std::fwrite(vertex_shader.ucode_disassembly().data(), 1, vertex_shader.ucode_disassembly().size(), f);
++      std::fclose(f);
++    }
++  }
++  std::snprintf(name, sizeof name, "gow2_dump/f%u_vbindex.txt", g_dump_seq);
++  FILE* index = std::fopen(name, "ab");
++  for (const auto& b : vertex_shader.vertex_bindings()) {
++    xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(b.fetch_constant);
++    const uint32_t address = uint32_t(vf.address) << 2, size = uint32_t(vf.size) << 2;
++    if (index) {
++      std::fprintf(index, "vs=%s vb%u addr=%08X size=%u stride=%u", hex, b.fetch_constant, address,
++                   size, b.stride_words);
++      for (const auto& a : b.attributes) {
++        const auto& at = a.fetch_instr.attributes;
++        std::fprintf(index, " [fmt=%u off=%d signed=%d int=%d exp=%d]", uint32_t(at.data_format),
++                     at.offset, int(at.is_signed), int(at.is_integer), at.exp_adjust);
++      }
++      std::fprintf(index, "\n");
++    }
++    if (!size || size > (64u << 20) || !first_time(0x100000000ull | address)) continue;
++    std::snprintf(name, sizeof name, "gow2_dump/f%u_vb%08X.bin", g_dump_seq, address);
++    if (FILE* f = std::fopen(name, "wb")) {
++      std::fwrite(memory.TranslatePhysical<const uint8_t*>(address), 1, size, f);
++      std::fclose(f);
++    }
++  }
++  if (index) std::fclose(index);
++}
++
+ }  // namespace rex::graphics::d3d12::gow2
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -2478,6 +2478,7 @@
+         reinterpret_cast<const float*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]),
+         uint32_t(regs.Get<reg::RB_COLOR_INFO>().color_format), index_count);
+   }
++  gow2::DumpVertexData(regs, *memory_, *vertex_shader);
+ #ifdef GOW2_DEV_TOOLS
+   if (Gow2TraceActive() && pixel_shader) {
+     // One line per draw: shaders, primitive, targets and the textures the pixel shader samples.

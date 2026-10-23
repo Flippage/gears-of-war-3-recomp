@@ -47,6 +47,9 @@ Both SDK builds apply every patch here in file-name order on top of ReXGlue comm
 | `0041-vfetch-out-of-bounds-zero.patch` | Xenia canary 9e9d3cdd3f: vertex fetch words past the end of the fetch constant's buffer read as 0, as on the hardware, instead of unrelated guest memory. Suspected for the black blotches on animated faces. `gpu_vfetch_bounds` (default true) turns it off. |
 | `0042-maxas-clamp-zero.patch` | Xenia canary 674870d881: the address register from the scalar maxas/maxasf is clamped to 0 and above, not -256 (a negative address indexed constants out of range). Suspected for the face blotches. `gpu_maxas_clamp_zero` (default true) turns it off. |
 | `0043-debug-constant-nan.patch` | Gears of War 3 diagnostics: `debug_constant_nan` checks every float shader constant as it is copied for a draw; 1 logs each NaN/infinite (stage, shader, register) once as `CONSTNAN` lines, 2 also replaces them with 0. Off by default. |
+| `0044-trace-vertex-buffers.patch` | Gears of War 3 diagnostics (`-Dev`): the DRAW trace also lists each vertex buffer the vertex shader fetches (address/size/stride) and the index buffer base, to see where a draw's vertex data comes from (XPS investigation). |
+| `0045-ui-mask.patch` | Gears of War 3: keeps DLSS/FSR from warping the HUD, subtitles and chapter titles. Draws after the full-screen tonemap pass are UI; their screen rectangles (vertex shader run on the CPU) become a mask: zero camera motion, DLSS bias-current-colour mask, FSR reactive mask. `gow2_ui_mask` (default true) turns it off. Written by Gemini 4 Argon from a brief, reviewed and adjusted. |
+| `0046-dump-vertex-data.patch` | Gears of War 3 diagnostics (`-Dev`): `gow2_dump_vs` lists vertex shader hashes; on a dump frame their draws write their vertex buffers, a stream/format index and the shader disassembly to `gow2_dump/`. For the face morph streams. |
 
 ## Working on a patch
 

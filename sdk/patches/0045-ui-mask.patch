@@ -1,0 +1,832 @@
+Gears of War 3: keep DLSS/FSR from warping the HUD, subtitles and chapter titles. Every draw after the
+full-screen tonemap pass (a small full-screen draw sampling one of the frame's full-size colour resolves) is UI;
+its screen rectangle is estimated by running its vertex shader on the CPU
+(DrawExtentEstimator::EstimateVertexBounds), only for small draws and at most 64 a frame. The rectangles become
+an R8 mask: zero camera motion there, DLSS bias-current-colour mask, FSR reactive mask. gow2_ui_mask (default
+true) turns it off. Written by Gemini 4 Argon (Antigravity CLI) from a brief, reviewed and adjusted.
+
+diff --git a/include/rex/graphics/d3d12/gow2_dlss.h b/include/rex/graphics/d3d12/gow2_dlss.h
+index 79c2c7b..9fda8bc 100644
+--- a/include/rex/graphics/d3d12/gow2_dlss.h
++++ b/include/rex/graphics/d3d12/gow2_dlss.h
+@@ -11,6 +11,7 @@ struct DlssEval {
+   ID3D12Resource* color = nullptr;
+   ID3D12Resource* depth = nullptr;   // SRV state (inverted depth)
+   ID3D12Resource* motion = nullptr;  // SRV state, RG16F pixels, current -> previous
++  ID3D12Resource* bias_mask = nullptr;  // SRV state, R8_UNORM current-colour bias mask (optional)
+   ID3D12Resource* output = nullptr;  // UAV state
+   uint32_t render_w = 0, render_h = 0, out_w = 0, out_h = 0;
+   float jitter_x = 0, jitter_y = 0;  // render pixels
+diff --git a/include/rex/graphics/d3d12/gow2_fsr.h b/include/rex/graphics/d3d12/gow2_fsr.h
+index 6b0f165..ba7559f 100644
+--- a/include/rex/graphics/d3d12/gow2_fsr.h
++++ b/include/rex/graphics/d3d12/gow2_fsr.h
+@@ -11,6 +11,7 @@ struct FsrEval {
+   DXGI_FORMAT color_format = DXGI_FORMAT_UNKNOWN;  // typed view of color (UpscalerColorFormat)
+   ID3D12Resource* depth = nullptr;   // SRV state, inverted depth (1 - z)
+   ID3D12Resource* motion = nullptr;  // SRV state, render-size RG16F pixels, current -> previous
++  ID3D12Resource* reactive = nullptr;  // SRV state, render-size R8_UNORM reactive mask (optional)
+   ID3D12Resource* output = nullptr;  // UAV state, full output size
+   uint32_t render_w = 0, render_h = 0, out_w = 0, out_h = 0;
+   float jitter_x = 0, jitter_y = 0;  // render pixels
+diff --git a/include/rex/graphics/d3d12/gow2_temporal.h b/include/rex/graphics/d3d12/gow2_temporal.h
+index eb01b2f..412cadc 100644
+--- a/include/rex/graphics/d3d12/gow2_temporal.h
++++ b/include/rex/graphics/d3d12/gow2_temporal.h
+@@ -15,8 +15,13 @@
+ #include <rex/graphics/d3d12/gow2_trace.h>
+ #include <rex/ui/d3d12/d3d12_api.h>
+ 
++namespace rex::memory {
++class Memory;
++}
++
+ namespace rex::graphics {
+ class RegisterFile;
++class Shader;
+ }
+ 
+ namespace rex::graphics::d3d12 {
+@@ -26,6 +31,11 @@ class D3D12TextureCache;
+ 
+ namespace gow2 {
+ 
++struct UiRect {
++  uint16_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
++};
++constexpr uint32_t kMaxUiRects = 256;
++
+ // Floats of VS constants cN..cN+15 (N = cvar gow2_vp_register) captured from the first
+ // qualifying scene draw of a frame.
+ struct SceneCamera {
+@@ -62,6 +72,17 @@ struct FrameState {
+   // when the previous frame went through the upscaler, so menus and loading screens are left alone.
+   bool shrink_this_frame = false;
+   uint32_t guest_w = 0, guest_h = 0;  // scene colour resolve size of the last finished frame
++  // Every colour resolve of the frame as large as the largest so far (the scene colour and, in Gears
++  // of War 3, the 1280x720 shadow mask before it): the tonemap samples one of them.
++  uint32_t full_color_dsts[8] = {};
++  uint32_t full_color_dst_count = 0;
++  uint32_t full_color_area = 0;
++  bool in_ui = false;
++  bool ui_rects_overflow = false;
++  uint32_t ui_rect_count = 0;
++  UiRect ui_rects[kMaxUiRects] = {};
++  uint32_t ended_ui_rect_count = 0;
++  UiRect ended_ui_rects[kMaxUiRects] = {};
+ };
+ 
+ FrameState& State();
+@@ -117,6 +138,9 @@ int FindCameraMatrix(const float* vs_consts);
+ // Called after textures for the draw were requested. fetch constants listed in used_mask.
+ void OnDrawTextures(D3D12CommandProcessor& cp, D3D12TextureCache& tc,
+                     const RegisterFile& regs, uint32_t used_mask);
++// Tracks the post-tonemap UI phase and estimates screen-space rectangles of UI draws.
++void NoteUiDraw(const RegisterFile& regs, const memory::Memory& memory,
++                const Shader& vertex_shader, uint32_t ps_texture_mask, uint32_t index_count);
+ 
+ }  // namespace gow2
+ }  // namespace rex::graphics::d3d12
+diff --git a/include/rex/graphics/util/draw_extent_estimator.h b/include/rex/graphics/util/draw_extent_estimator.h
+index e5e4908..e34013d 100644
+--- a/include/rex/graphics/util/draw_extent_estimator.h
++++ b/include/rex/graphics/util/draw_extent_estimator.h
+@@ -29,6 +29,8 @@ class DrawExtentEstimator {
+ 
+   // The shader must have its ucode analyzed.
+   uint32_t EstimateVertexMaxY(const Shader& vertex_shader);
++  bool EstimateVertexBounds(const Shader& vertex_shader, uint32_t& min_x, uint32_t& min_y,
++                            uint32_t& max_x, uint32_t& max_y);
+   uint32_t EstimateMaxY(bool try_to_estimate_vertex_max_y, const Shader& vertex_shader);
+ 
+  private:
+@@ -38,18 +40,21 @@ class DrawExtentEstimator {
+                 uint32_t value_mask) override;
+ 
+     void Reset() {
++      position_x_.reset();
+       position_y_.reset();
+       position_w_.reset();
+       point_size_.reset();
+       vertex_kill_.reset();
+     }
+ 
++    const std::optional<float>& position_x() const { return position_x_; }
+     const std::optional<float>& position_y() const { return position_y_; }
+     const std::optional<float>& position_w() const { return position_w_; }
+     const std::optional<float>& point_size() const { return point_size_; }
+     const std::optional<uint32_t>& vertex_kill() const { return vertex_kill_; }
+ 
+    private:
++    std::optional<float> position_x_;
+     std::optional<float> position_y_;
+     std::optional<float> position_w_;
+     std::optional<float> point_size_;
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 4959404..252d8f4 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -2557,6 +2557,10 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
+       (pixel_shader != nullptr ? pixel_shader->GetUsedTextureMaskAfterTranslation() : 0);
+   texture_cache_->RequestTextures(used_texture_mask);
+   gow2::OnDrawTextures(*this, *texture_cache_, regs, used_texture_mask);
++  if (pixel_shader) {
++    gow2::NoteUiDraw(regs, *memory_, *vertex_shader,
++                     pixel_shader->GetUsedTextureMaskAfterTranslation(), index_count);
++  }
+ 
+   // Bind the pipeline after configuring it and doing everything that may bind
+   // other pipelines.
+diff --git a/src/graphics/d3d12/gow2_dlss.cpp b/src/graphics/d3d12/gow2_dlss.cpp
+index b4467ed..0c23af2 100644
+--- a/src/graphics/d3d12/gow2_dlss.cpp
++++ b/src/graphics/d3d12/gow2_dlss.cpp
+@@ -164,6 +164,7 @@ bool DlssEvaluate(ID3D12GraphicsCommandList* list, const DlssEval& e) {
+   ep.Feature.InSharpness = 0.0f;
+   ep.pInDepth = e.depth;
+   ep.pInMotionVectors = e.motion;
++  ep.pInBiasCurrentColorMask = e.bias_mask;
+   ep.InJitterOffsetX = e.jitter_x;
+   ep.InJitterOffsetY = e.jitter_y;
+   ep.InRenderSubrectDimensions.Width = e.render_w;
+diff --git a/src/graphics/d3d12/gow2_fsr.cpp b/src/graphics/d3d12/gow2_fsr.cpp
+index dd799e8..1b8b3e8 100644
+--- a/src/graphics/d3d12/gow2_fsr.cpp
++++ b/src/graphics/d3d12/gow2_fsr.cpp
+@@ -198,6 +198,9 @@ bool FsrEvaluate(ID3D12GraphicsCommandList* list, const FsrEval& e) {
+   d.color = ffxApiGetResourceDX12(e.color, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+   d.depth = ffxApiGetResourceDX12(e.depth, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+   d.motionVectors = ffxApiGetResourceDX12(e.motion, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
++  if (e.reactive) {
++    d.reactive = ffxApiGetResourceDX12(e.reactive, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
++  }
+   d.output = ffxApiGetResourceDX12(e.output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+   d.color.description.format = ffxApiGetSurfaceFormatDX12(e.color_format);
+   d.jitterOffset = {e.jitter_x, e.jitter_y};
+diff --git a/src/graphics/d3d12/gow2_temporal.cpp b/src/graphics/d3d12/gow2_temporal.cpp
+index df0e966..5730c70 100644
+--- a/src/graphics/d3d12/gow2_temporal.cpp
++++ b/src/graphics/d3d12/gow2_temporal.cpp
+@@ -18,6 +18,7 @@
+ #include <rex/graphics/d3d12/deferred_command_list.h>
+ #include <rex/graphics/d3d12/texture_cache.h>
+ #include <rex/graphics/register_file.h>
++#include <rex/graphics/util/draw_extent_estimator.h>
+ #include <rex/cvar.h>
+ #include <rex/logging.h>
+ 
+@@ -35,6 +36,8 @@ REXCVAR_DEFINE_INT32(gow2_campos_register, 13, "gfx",
+ REXCVAR_DEFINE_BOOL(gow2_depth_reversed, true, "gfx",
+                     "The scene depth buffer holds 1 - z (Gears of War 2); false for titles that store "
+                     "plain z, 0 at the near plane (Gears of War 3). Read when the upscaler starts");
++REXCVAR_DEFINE_BOOL(gow2_ui_mask, true, "gfx",
++                    "Mask post-tonemap UI draws (HUD, subtitles) out of camera motion and temporal history");
+ 
+ namespace rex::graphics::d3d12::gow2 {
+ 
+@@ -202,6 +205,14 @@ void BeginFrame(D3D12CommandProcessor& cp, uint32_t front_ptr) {
+   g_state.ended_prev_camera = g_state.prev_camera;
+   g_state.ended_frame = g_state.frame;
+   g_state.ended_jittered = g_state.jitter_this_frame;
++  g_state.ended_ui_rect_count = g_state.in_ui ? g_state.ui_rect_count : 0;
++  if (g_state.ended_ui_rect_count) {
++    std::memcpy(g_state.ended_ui_rects, g_state.ui_rects,
++                g_state.ended_ui_rect_count * sizeof(UiRect));
++  }
++  g_state.in_ui = false;
++  g_state.ui_rect_count = 0;
++  g_state.ui_rects_overflow = false;
+   g_state.prev_camera = g_state.camera;
+   g_state.camera = SceneCamera();
+   // The scene size comes from the finished frame: inside a frame, smaller colour resolves come
+@@ -215,6 +226,8 @@ void BeginFrame(D3D12CommandProcessor& cp, uint32_t front_ptr) {
+   g_state.depth_dst_count = 0;
+   g_state.color_resolve_dst = 0;
+   g_state.color_resolve_area = 0;
++  g_state.full_color_dst_count = 0;
++  g_state.full_color_area = 0;
+   g_state.last_front = front_ptr;
+   ++g_state.frame;
+   g_state.shrink_this_frame = false;  // the whole guest frame is rendered at the render size now
+@@ -250,11 +263,27 @@ void NoteResolve(bool is_depth, uint32_t dst, uint32_t width, uint32_t height, u
+     bool known = false;
+     for (uint32_t i = 0; i < g_state.depth_dst_count; ++i) known |= g_state.depth_dsts[i] == dst;
+     if (!known && g_state.depth_dst_count < 4) g_state.depth_dsts[g_state.depth_dst_count++] = dst;
+-  } else if (dst != g_state.last_front && area > g_state.color_resolve_area) {
+-    g_state.color_resolve_dst = dst;
+-    g_state.color_resolve_area = area;
+-    g_state.color_resolve_w = width;
+-    g_state.color_resolve_h = height;
++  } else if (dst != g_state.last_front) {
++    if (area > g_state.color_resolve_area) {
++      g_state.color_resolve_dst = dst;
++      g_state.color_resolve_area = area;
++      g_state.color_resolve_w = width;
++      g_state.color_resolve_h = height;
++    }
++    // A full-size colour resolve means the scene is still being drawn: the UI phase (if a full-screen
++    // pass already looked like the tonemap) starts over.
++    if (area >= g_state.full_color_area) {
++      if (area > g_state.full_color_area) g_state.full_color_dst_count = 0;
++      g_state.full_color_area = area;
++      bool known = false;
++      for (uint32_t i = 0; i < g_state.full_color_dst_count; ++i)
++        known |= g_state.full_color_dsts[i] == dst;
++      if (!known && g_state.full_color_dst_count < 8)
++        g_state.full_color_dsts[g_state.full_color_dst_count++] = dst;
++      g_state.in_ui = false;
++      g_state.ui_rect_count = 0;
++      g_state.ui_rects_overflow = false;
++    }
+   }
+ }
+ 
+@@ -389,4 +418,91 @@ void OnDrawTextures(D3D12CommandProcessor& cp, D3D12TextureCache& tc, const Regi
+   }
+ }
+ 
++void NoteUiDraw(const RegisterFile& regs, const memory::Memory& memory,
++                const Shader& vertex_shader, uint32_t ps_texture_mask, uint32_t index_count) {
++  if (!Enabled() || !REXCVAR_GET(gow2_ui_mask)) return;
++  const uint32_t fw = g_state.color_resolve_w ? g_state.color_resolve_w : g_state.guest_w;
++  const uint32_t fh = g_state.color_resolve_h ? g_state.color_resolve_h : g_state.guest_h;
++  if (!fw || !fh) return;
++
++  bool samples_scene_color = false;
++  for (uint32_t i = 0; i < 32 && g_state.full_color_dst_count && !samples_scene_color; ++i) {
++    if (!(ps_texture_mask & (1u << i))) continue;
++    const uint32_t base = uint32_t(regs.GetTextureFetch(i).base_address) << 12;
++    for (uint32_t k = 0; k < g_state.full_color_dst_count; ++k)
++      samples_scene_color |= base == g_state.full_color_dsts[k];
++  }
++  if (!samples_scene_color && !g_state.in_ui) return;
++
++  // The tonemap test runs the cheap checks first: many scene draws (glass, water, distortion)
++  // also sample the scene colour, and running their vertex shaders on the CPU cost seconds a frame.
++  bool tonemap_candidate = false;
++  if (samples_scene_color && index_count <= 12 &&
++      regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == g_state.color_resolve_w) {
++    const float* vs_consts =
++        reinterpret_cast<const float*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]);
++    tonemap_candidate = FindCameraMatrix(vs_consts) < 0;
++  }
++  if (!tonemap_candidate && !g_state.in_ui) return;
++  if (!tonemap_candidate && g_state.ui_rects_overflow) return;
++
++  // UI draws are a few small draws: a big one, or more than kMaxEstimatedDraws in a frame (a
++  // false tonemap match before the last scene resolve), counts as the whole frame instead of
++  // being simulated vertex by vertex.
++  constexpr uint32_t kMaxEstimatedIndices = 1536;
++  constexpr uint32_t kMaxEstimatedDraws = 64;
++  static uint32_t estimate_frame = ~0u, estimates = 0;
++  if (estimate_frame != g_state.frame) {
++    estimate_frame = g_state.frame;
++    estimates = 0;
++  }
++  uint32_t vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
++  bool have_bounds = false;
++  if (index_count <= kMaxEstimatedIndices && estimates < kMaxEstimatedDraws) {
++    ++estimates;
++    DrawExtentEstimator estimator(regs, memory);
++    have_bounds = estimator.EstimateVertexBounds(vertex_shader, vx0, vy0, vx1, vy1);
++  }
++
++  if (tonemap_candidate) {
++    const bool full_screen =
++        !have_bounds || ((vx1 > vx0 && (vx1 - vx0) * 2 >= fw) &&
++                         (vy1 > vy0 && (vy1 - vy0) * 2 >= fh));
++    static int candidates_logged = 0;
++    if (candidates_logged < 6) {
++      ++candidates_logged;
++      REXGPU_WARN("GOW2 upscale: tonemap candidate n={} bounds={} ({}, {})..({}, {}) frame {}x{} -> {}",
++                  index_count, have_bounds, vx0, vy0, vx1, vy1, fw, fh,
++                  full_screen ? "UI phase starts" : "not full screen");
++    }
++    if (full_screen) {
++      g_state.in_ui = true;
++      g_state.ui_rect_count = 0;
++      g_state.ui_rects_overflow = false;
++      return;
++    }
++  }
++
++  if (!g_state.in_ui || g_state.ui_rects_overflow) return;
++
++  uint32_t x0 = 0, y0 = 0, x1 = fw, y1 = fh;
++  if (have_bounds) {
++    constexpr uint32_t kPad = 2;
++    x0 = std::min(fw, vx0 > kPad ? vx0 - kPad : 0u);
++    y0 = std::min(fh, vy0 > kPad ? vy0 - kPad : 0u);
++    x1 = std::min(fw, vx1 + kPad);
++    y1 = std::min(fh, vy1 + kPad);
++    if (x0 >= x1 || y0 >= y1) return;
++  }
++
++  if (g_state.ui_rect_count < kMaxUiRects) {
++    g_state.ui_rects[g_state.ui_rect_count++] = {
++        uint16_t(x0), uint16_t(y0), uint16_t(x1), uint16_t(y1)};
++  } else {
++    g_state.ui_rects[0] = {0, 0, uint16_t(fw), uint16_t(fh)};
++    g_state.ui_rect_count = 1;
++    g_state.ui_rects_overflow = true;
++  }
++}
++
+ }  // namespace rex::graphics::d3d12::gow2
+diff --git a/src/graphics/d3d12/gow2_upscale.cpp b/src/graphics/d3d12/gow2_upscale.cpp
+index b1f8117..6190798 100644
+--- a/src/graphics/d3d12/gow2_upscale.cpp
++++ b/src/graphics/d3d12/gow2_upscale.cpp
+@@ -40,6 +40,7 @@ REXCVAR_DEFINE_BOOL(gow2_upscale_typed_copy, false, "gfx",
+ REXCVAR_DECLARE(int32_t, gow2_vp_register);
+ REXCVAR_DECLARE(int32_t, gow2_campos_register);
+ REXCVAR_DECLARE(bool, gow2_depth_reversed);
++REXCVAR_DECLARE(bool, gow2_ui_mask);
+ 
+ namespace rex::graphics::d3d12::gow2 {
+ 
+@@ -47,18 +48,46 @@ namespace {
+ 
+ using Microsoft::WRL::ComPtr;
+ 
++const char kMaskHlsl[] = R"(
++cbuffer C : register(b0) {
++  uint4 rects[9];
++  uint2 size;
++  uint count;
++  uint clear;
++};
++RWTexture2D<unorm float> maskOut : register(u0);
++[numthreads(8, 8, 1)]
++void main(uint3 id : SV_DispatchThreadID) {
++  if (id.x >= size.x || id.y >= size.y) return;
++  float v = 0.0;
++  for (uint i = 0; i < count; ++i) {
++    uint2 p = (i & 1) ? rects[i >> 1].zw : rects[i >> 1].xy;
++    uint x0 = p.x & 0xFFFFu, y0 = p.x >> 16;
++    uint x1 = p.y & 0xFFFFu, y1 = p.y >> 16;
++    if (id.x >= x0 && id.x < x1 && id.y >= y0 && id.y < y1) v = 1.0;
++  }
++  if (clear != 0) maskOut[id.xy] = v;
++  else if (v > 0.0) maskOut[id.xy] = 1.0;
++}
++)";
++
+ const char kMotionHlsl[] = R"(
+ cbuffer C : register(b0) {
+   row_major float4x4 invVP;
+   row_major float4x4 prevVP;
+   float3 tdelta; float reversed;
+-  uint2 size; uint2 pad1;
++  uint2 size; uint useMask; uint pad1;
+ };
+ Texture2D<float> depthTex : register(t0);
++Texture2D<float> maskTex : register(t1);
+ RWTexture2D<float2> mvOut : register(u0);
+ [numthreads(8, 8, 1)]
+ void main(uint3 id : SV_DispatchThreadID) {
+   if (id.x >= size.x || id.y >= size.y) return;
++  if (useMask != 0 && maskTex[id.xy] > 0.0) {
++    mvOut[id.xy] = float2(0.0, 0.0);
++    return;
++  }
+   float d = depthTex[id.xy];
+   float z = reversed > 0.5 ? 1.0 - d : d;
+   float2 ndc = float2((id.x + 0.5) / size.x * 2.0 - 1.0, 1.0 - (id.y + 0.5) / size.y * 2.0);
+@@ -115,7 +144,11 @@ struct Job {
+   int backend = 0;  // 0 DLSS, 1 FSR
+   int fsr_major = 3;
+   float cam_near = 10.0f, cam_far = 8000.0f, fov_y = 0.9f;
+-  D3D12_GPU_DESCRIPTOR_HANDLE table_mv, table_wb;
++  bool use_mask = false;
++  uint32_t ui_rect_count = 0;
++  UiRect ui_rects[kMaxUiRects] = {};
++  D3D12_GPU_DESCRIPTOR_HANDLE table_mask, table_mv, table_wb;
++  ID3D12Resource* mask = nullptr;  // owned by g.mask
+   ID3D12Resource* mv = nullptr;   // owned by g_mv
+   ID3D12Resource* out = nullptr;     // owned by g.out
+   ID3D12Resource* final_ = nullptr;  // owned by g.final_: what the presenter shows
+@@ -127,11 +160,11 @@ struct Gpu {
+   bool tried = false, ok = false;
+   ComPtr<ID3D12Device> device;
+   ComPtr<ID3D12RootSignature> rs;
+-  ComPtr<ID3D12PipelineState> pso_mv, pso_wb;
++  ComPtr<ID3D12PipelineState> pso_mask, pso_mv, pso_wb;
+   ComPtr<ID3D12DescriptorHeap> heap;
+   UINT inc = 0;
+   bool keep_alpha = false;
+-  ComPtr<ID3D12Resource> mv, out, final_;
++  ComPtr<ID3D12Resource> mask, mv, out, final_;
+   uint32_t mv_w = 0, mv_h = 0, out_w = 0, out_h = 0;
+   ComPtr<ID3D12Resource> color_typed;
+   uint32_t color_typed_w = 0, color_typed_h = 0;
+@@ -149,7 +182,7 @@ struct Gpu {
+ };
+ Gpu g;
+ constexpr uint32_t kSlices = 8;
+-constexpr uint32_t kPerSlice = 4;
++constexpr uint32_t kPerSlice = 9;
+ 
+ typedef HRESULT(WINAPI* PFN_Compile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*,
+                                      LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+@@ -198,7 +231,7 @@ bool InitGpu(D3D12CommandProcessor& cp) {
+               (fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) != 0,
+               (fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) != 0, g.keep_alpha);
+ 
+-  D3D12_DESCRIPTOR_RANGE ranges[2] = {};
++  D3D12_DESCRIPTOR_RANGE ranges[3] = {};
+   ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+   ranges[0].NumDescriptors = 1;
+   ranges[0].BaseShaderRegister = 0;
+@@ -207,13 +240,17 @@ bool InitGpu(D3D12CommandProcessor& cp) {
+   ranges[1].NumDescriptors = 1;
+   ranges[1].BaseShaderRegister = 0;
+   ranges[1].OffsetInDescriptorsFromTableStart = 1;
++  ranges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++  ranges[2].NumDescriptors = 1;
++  ranges[2].BaseShaderRegister = 1;
++  ranges[2].OffsetInDescriptorsFromTableStart = 2;
+   D3D12_ROOT_PARAMETER params[2] = {};
+   params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+   params[0].Constants.ShaderRegister = 0;
+   params[0].Constants.Num32BitValues = 40;
+   params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+   params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+-  params[1].DescriptorTable.NumDescriptorRanges = 2;
++  params[1].DescriptorTable.NumDescriptorRanges = 3;
+   params[1].DescriptorTable.pDescriptorRanges = ranges;
+   params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+   D3D12_ROOT_SIGNATURE_DESC rsd = {};
+@@ -226,11 +263,12 @@ bool InitGpu(D3D12CommandProcessor& cp) {
+     REXGPU_WARN("GOW2 upscale: root signature failed");
+     return false;
+   }
++  g.pso_mask = MakePso(dev, g.rs.Get(), kMaskHlsl, "gow2_mask", nullptr);
+   g.pso_mv = MakePso(dev, g.rs.Get(), kMotionHlsl, "gow2_motion", nullptr);
+   D3D_SHADER_MACRO defs[] = {{"KEEP_ALPHA", "1"}, {nullptr, nullptr}};
+   (void)defs;
+   g.pso_wb = MakePso(dev, g.rs.Get(), kWritebackHlsl, "gow2_writeback", nullptr);  // alpha = 1: a fresh image
+-  if (!g.pso_mv || !g.pso_wb) return false;
++  if (!g.pso_mask || !g.pso_mv || !g.pso_wb) return false;
+ 
+   D3D12_DESCRIPTOR_HEAP_DESC hd = {};
+   hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+@@ -383,15 +421,49 @@ void RunJob(ID3D12GraphicsCommandList* list, void* user) {
+   list->SetDescriptorHeaps(1, heaps);
+   list->SetComputeRootSignature(g.rs.Get());
+ 
++  if (j.use_mask) {
++    // 0. UI / HUD mask (R8_UNORM: 1.0 inside post-tonemap UI rectangles, 0.0 elsewhere).
++    Barrier(list, j.mask, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
++            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
++    list->SetPipelineState(g.pso_mask.Get());
++    list->SetComputeRootDescriptorTable(1, j.table_mask);
++    uint32_t offset = 0;
++    do {
++      if (offset > 0) {
++        D3D12_RESOURCE_BARRIER uav_b = {};
++        uav_b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
++        uav_b.UAV.pResource = j.mask;
++        list->ResourceBarrier(1, &uav_b);
++      }
++      uint32_t mc[40] = {};
++      uint32_t batch = std::min<uint32_t>(j.ui_rect_count - offset, 18u);
++      for (uint32_t i = 0; i < batch; ++i) {
++        const UiRect& r = j.ui_rects[offset + i];
++        mc[i * 2 + 0] = uint32_t(r.x0) | (uint32_t(r.y0) << 16);
++        mc[i * 2 + 1] = uint32_t(r.x1) | (uint32_t(r.y1) << 16);
++      }
++      mc[36] = j.rw;
++      mc[37] = j.rh;
++      mc[38] = batch;
++      mc[39] = offset == 0 ? 1u : 0u;
++      list->SetComputeRoot32BitConstants(0, 40, mc, 0);
++      list->Dispatch((j.rw + 7) / 8, (j.rh + 7) / 8, 1);
++      offset += batch;
++    } while (offset < j.ui_rect_count);
++    Barrier(list, j.mask, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
++            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++  }
++
+   uint32_t consts[40] = {};
+   std::memcpy(consts, j.inv_vp, 64);
+   std::memcpy(consts + 16, j.prev_vp, 64);
+   std::memcpy(consts + 32, j.tdelta, 12);
+   const float reversed = REXCVAR_GET(gow2_depth_reversed) ? 1.0f : 0.0f;
+   std::memcpy(consts + 35, &reversed, 4);
+-  // layout: invVP 0..15, prevVP 16..31, tdelta 32..34, depth reversed 35, size 36..37
++  // layout: invVP 0..15, prevVP 16..31, tdelta 32..34, depth reversed 35, size 36..37, useMask 38
+   consts[36] = j.rw;
+   consts[37] = j.rh;
++  consts[38] = j.use_mask ? 1u : 0u;
+ 
+   // 1. Camera motion vectors.
+   Barrier(list, j.mv, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+@@ -417,6 +489,7 @@ void RunJob(ID3D12GraphicsCommandList* list, void* user) {
+       e.color_format = j.color_format;
+       e.depth = j.depth.Get();
+       e.motion = j.mv;
++      e.reactive = j.use_mask ? j.mask : nullptr;
+       e.output = j.out;
+       e.render_w = j.rw;
+       e.render_h = j.rh;
+@@ -435,6 +508,7 @@ void RunJob(ID3D12GraphicsCommandList* list, void* user) {
+       e.color = color;
+       e.depth = j.depth.Get();
+       e.motion = j.mv;
++      e.bias_mask = j.use_mask ? j.mask : nullptr;
+       e.output = j.out;
+       e.render_w = j.rw;
+       e.render_h = j.rh;
+@@ -654,10 +728,12 @@ bool UpscaleFinal(D3D12CommandProcessor& cp, ID3D12Resource* color, uint32_t in_
+   oh = std::max(oh, in_h);
+   const uint32_t rw = in_w, rh = in_h;
+ 
+-  // (Re)create the motion-vector, upscaler-output and final images.
+-  if (!g.mv || g.mv_w != rw || g.mv_h != rh) {
++  // (Re)create the motion-vector, UI-mask, upscaler-output and final images.
++  if (!g.mv || !g.mask || g.mv_w != rw || g.mv_h != rh) {
+     if (g.mv) g.graveyard.emplace_back(cp.GetCurrentSubmission(), g.mv);
++    if (g.mask) g.graveyard.emplace_back(cp.GetCurrentSubmission(), g.mask);
+     g.mv = MakeTex(g.device.Get(), rw, rh, DXGI_FORMAT_R16G16_FLOAT, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
++    g.mask = MakeTex(g.device.Get(), rw, rh, DXGI_FORMAT_R8_UNORM, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+     g.mv_w = rw;
+     g.mv_h = rh;
+   }
+@@ -670,7 +746,7 @@ bool UpscaleFinal(D3D12CommandProcessor& cp, ID3D12Resource* color, uint32_t in_
+     g.out_w = ow;
+     g.out_h = oh;
+   }
+-  if (!g.mv || !g.out || !g.final_) return false;
++  if (!g.mv || !g.mask || !g.out || !g.final_) return false;
+ 
+   auto job = std::make_unique<Job>();
+   job->color = color;
+@@ -679,9 +755,22 @@ bool UpscaleFinal(D3D12CommandProcessor& cp, ID3D12Resource* color, uint32_t in_
+   job->rh = rh;
+   job->ow = ow;
+   job->oh = oh;
++  job->mask = g.mask.Get();
+   job->mv = g.mv.Get();
+   job->out = g.out.Get();
+   job->final_ = g.final_.Get();
++  job->use_mask = REXCVAR_GET(gow2_ui_mask);
++  if (job->use_mask && st.ended_ui_rect_count) {
++    job->ui_rect_count = std::min<uint32_t>(st.ended_ui_rect_count, kMaxUiRects);
++    std::memcpy(job->ui_rects, st.ended_ui_rects, job->ui_rect_count * sizeof(UiRect));
++    static bool ui_logged = false;
++    if (!ui_logged) {
++      ui_logged = true;
++      const UiRect& r = job->ui_rects[0];
++      REXGPU_WARN("GOW2 upscale: UI mask active, {} rect(s), first ({}, {})..({}, {})",
++                  job->ui_rect_count, r.x0, r.y0, r.x1, r.y1);
++    }
++  }
+   const int mode = ModeFromRatio(double(rh) / double(oh));
+   job->quality = mode;
+   job->backend = backend_sel == 1 ? 0 : 1;
+@@ -788,12 +877,19 @@ bool UpscaleFinal(D3D12CommandProcessor& cp, ID3D12Resource* color, uint32_t in_
+     g.device->CreateUnorderedAccessView(r, nullptr, &d, h);
+   };
+   srv(job->depth.Get(), DXGI_FORMAT_R32_FLOAT, 0);
+-  uav(job->mv, DXGI_FORMAT_R16G16_FLOAT, 1);
+-  srv(job->out, DXGI_FORMAT_R16G16B16A16_FLOAT, 2);
+-  uav(job->final_, DXGI_FORMAT_R10G10B10A2_UNORM, 3);
++  uav(job->mask, DXGI_FORMAT_R8_UNORM, 1);
++  srv(job->depth.Get(), DXGI_FORMAT_R32_FLOAT, 2);
++  srv(job->depth.Get(), DXGI_FORMAT_R32_FLOAT, 3);
++  uav(job->mv, DXGI_FORMAT_R16G16_FLOAT, 4);
++  srv(job->mask, DXGI_FORMAT_R8_UNORM, 5);
++  srv(job->out, DXGI_FORMAT_R16G16B16A16_FLOAT, 6);
++  uav(job->final_, DXGI_FORMAT_R10G10B10A2_UNORM, 7);
++  srv(job->mask, DXGI_FORMAT_R8_UNORM, 8);
++  job->table_mask = gpu;
+   job->table_mv = gpu;
++  job->table_mv.ptr += 3ull * g.inc;
+   job->table_wb = gpu;
+-  job->table_wb.ptr += 2ull * g.inc;
++  job->table_wb.ptr += 6ull * g.inc;
+ 
+   {
+     static const char* kNames[] = {"Performance", "Balanced", "Quality", "Ultra Performance", "Ultra Quality", "Native"};
+diff --git a/src/graphics/util/draw_extent_estimator.cpp b/src/graphics/util/draw_extent_estimator.cpp
+index 3027dc8..639fc41 100644
+--- a/src/graphics/util/draw_extent_estimator.cpp
++++ b/src/graphics/util/draw_extent_estimator.cpp
+@@ -62,6 +62,9 @@ namespace rex::graphics {
+ void DrawExtentEstimator::PositionYExportSink::Export(ucode::ExportRegister export_register,
+                                                       const float* value, uint32_t value_mask) {
+   if (export_register == ucode::ExportRegister::kVSPosition) {
++    if (value_mask & 0b0001) {
++      position_x_ = value[0];
++    }
+     if (value_mask & 0b0010) {
+       position_y_ = value[1];
+     }
+@@ -250,6 +253,206 @@ uint32_t DrawExtentEstimator::EstimateVertexMaxY(const Shader& vertex_shader) {
+          8;
+ }
+ 
++bool DrawExtentEstimator::EstimateVertexBounds(const Shader& vertex_shader, uint32_t& min_x_out,
++                                               uint32_t& min_y_out, uint32_t& max_x_out,
++                                               uint32_t& max_y_out) {
++  SCOPE_profile_cpu_f("gpu");
++
++  const RegisterFile& regs = register_file_;
++
++  auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
++  if (!vgt_draw_initiator.num_indices) {
++    return false;
++  }
++  if (vgt_draw_initiator.source_select != xenos::SourceSelect::kDMA &&
++      vgt_draw_initiator.source_select != xenos::SourceSelect::kAutoIndex) {
++    return false;
++  }
++
++  // Not reproducing tessellation.
++  if (xenos::IsMajorModeExplicit(vgt_draw_initiator.major_mode, vgt_draw_initiator.prim_type) &&
++      regs.Get<reg::VGT_OUTPUT_PATH_CNTL>().path_select ==
++          xenos::VGTOutputPath::kTessellationEnable) {
++    return false;
++  }
++
++  assert_true(vertex_shader.type() == xenos::ShaderType::kVertex);
++  assert_true(vertex_shader.is_ucode_analyzed());
++  if (!ShaderInterpreter::CanInterpretShader(vertex_shader)) {
++    return false;
++  }
++
++  auto vgt_dma_size = regs.Get<reg::VGT_DMA_SIZE>();
++  union {
++    const void* index_buffer;
++    const uint16_t* index_buffer_16;
++    const uint32_t* index_buffer_32;
++  };
++  xenos::Endian index_endian = vgt_dma_size.swap_mode;
++  if (vgt_draw_initiator.source_select == xenos::SourceSelect::kDMA) {
++    uint32_t index_buffer_base = regs[XE_GPU_REG_VGT_DMA_BASE];
++    if (vgt_draw_initiator.index_size == xenos::IndexFormat::kInt16) {
++      if (index_endian == xenos::Endian::k8in32) {
++        index_endian = xenos::Endian::k8in16;
++      } else if (index_endian == xenos::Endian::k16in32) {
++        index_endian = xenos::Endian::kNone;
++      }
++      index_buffer_base &= ~uint32_t(sizeof(uint16_t) - 1);
++    } else {
++      assert_true(vgt_draw_initiator.index_size == xenos::IndexFormat::kInt32);
++      index_buffer_base &= ~uint32_t(sizeof(uint32_t) - 1);
++    }
++    index_buffer = memory_.TranslatePhysical(index_buffer_base);
++    if (!index_buffer) {
++      return false;
++    }
++  }
++  auto pa_su_sc_mode_cntl = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
++  uint32_t reset_index = regs.Get<reg::VGT_MULTI_PRIM_IB_RESET_INDX>().reset_indx;
++  uint32_t index_offset = regs.Get<reg::VGT_INDX_OFFSET>().indx_offset;
++  uint32_t min_index = regs.Get<reg::VGT_MIN_VTX_INDX>().min_indx;
++  uint32_t max_index = regs.Get<reg::VGT_MAX_VTX_INDX>().max_indx;
++
++  auto pa_cl_vte_cntl = regs.Get<reg::PA_CL_VTE_CNTL>();
++  float viewport_x_scale =
++      pa_cl_vte_cntl.vport_x_scale_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE) : 1.0f;
++  float viewport_x_offset =
++      pa_cl_vte_cntl.vport_x_offset_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XOFFSET) : 0.0f;
++  float viewport_y_scale =
++      pa_cl_vte_cntl.vport_y_scale_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YSCALE) : 1.0f;
++  float viewport_y_offset =
++      pa_cl_vte_cntl.vport_y_offset_ena ? regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YOFFSET) : 0.0f;
++
++  int32_t point_vertex_min_diameter_float = 0;
++  int32_t point_vertex_max_diameter_float = 0;
++  float point_constant_radius_x = 0.0f;
++  float point_constant_radius_y = 0.0f;
++  if (vgt_draw_initiator.prim_type == xenos::PrimitiveType::kPointList) {
++    auto pa_su_point_minmax = regs.Get<reg::PA_SU_POINT_MINMAX>();
++    point_vertex_min_diameter_float =
++        rex::memory::Reinterpret<int32_t>(float(pa_su_point_minmax.min_size) * (2.0f / 16.0f));
++    point_vertex_max_diameter_float =
++        rex::memory::Reinterpret<int32_t>(float(pa_su_point_minmax.max_size) * (2.0f / 16.0f));
++    auto pa_su_point_size = regs.Get<reg::PA_SU_POINT_SIZE>();
++    point_constant_radius_x = float(pa_su_point_size.width) * (1.0f / 16.0f);
++    point_constant_radius_y = float(pa_su_point_size.height) * (1.0f / 16.0f);
++  }
++
++  float min_x = FLT_MAX;
++  float min_y = FLT_MAX;
++  float max_x = -FLT_MAX;
++  float max_y = -FLT_MAX;
++
++  shader_interpreter_.SetShader(vertex_shader);
++
++  PositionYExportSink position_y_export_sink;
++  shader_interpreter_.SetExportSink(&position_y_export_sink);
++  for (uint32_t i = 0; i < vgt_draw_initiator.num_indices; ++i) {
++    uint32_t vertex_index;
++    if (vgt_draw_initiator.source_select == xenos::SourceSelect::kDMA) {
++      if (i < vgt_dma_size.num_words) {
++        if (vgt_draw_initiator.index_size == xenos::IndexFormat::kInt16) {
++          vertex_index = index_buffer_16[i];
++        } else {
++          vertex_index = index_buffer_32[i];
++        }
++        vertex_index = xenos::GpuSwap(vertex_index, index_endian) & 0xFFFFFF;
++      } else {
++        vertex_index = 0;
++      }
++      if (pa_su_sc_mode_cntl.multi_prim_ib_ena && vertex_index == reset_index) {
++        continue;
++      }
++    } else {
++      assert_true(vgt_draw_initiator.source_select == xenos::SourceSelect::kAutoIndex);
++      vertex_index = i;
++    }
++    vertex_index =
++        std::min(max_index, std::max(min_index, (vertex_index + index_offset) & 0xFFFFFF));
++
++    position_y_export_sink.Reset();
++
++    shader_interpreter_.temp_registers()[0] = float(vertex_index);
++    shader_interpreter_.Execute();
++
++    if (position_y_export_sink.vertex_kill().has_value() &&
++        (position_y_export_sink.vertex_kill().value() & ~(UINT32_C(1) << 31))) {
++      continue;
++    }
++    if (!position_y_export_sink.position_x().has_value() ||
++        !position_y_export_sink.position_y().has_value()) {
++      continue;
++    }
++    float vertex_x = position_y_export_sink.position_x().value();
++    float vertex_y = position_y_export_sink.position_y().value();
++    if (!pa_cl_vte_cntl.vtx_xy_fmt) {
++      if (!position_y_export_sink.position_w().has_value()) {
++        continue;
++      }
++      float w = position_y_export_sink.position_w().value();
++      vertex_x /= w;
++      vertex_y /= w;
++    }
++
++    vertex_x = vertex_x * viewport_x_scale + viewport_x_offset;
++    vertex_y = vertex_y * viewport_y_scale + viewport_y_offset;
++
++    float point_radius_x = 0.0f;
++    float point_radius_y = 0.0f;
++    if (vgt_draw_initiator.prim_type == xenos::PrimitiveType::kPointList) {
++      if (position_y_export_sink.point_size().has_value()) {
++        float point_radius =
++            0.5f * rex::memory::Reinterpret<float>(std::min(
++                       point_vertex_max_diameter_float,
++                       std::max(point_vertex_min_diameter_float,
++                                rex::memory::Reinterpret<int32_t>(
++                                    position_y_export_sink.point_size().value()))));
++        point_radius_x = point_radius;
++        point_radius_y = point_radius;
++      } else {
++        point_radius_x = point_constant_radius_x;
++        point_radius_y = point_constant_radius_y;
++      }
++    }
++
++    min_x = std::min(min_x, vertex_x - point_radius_x);
++    min_y = std::min(min_y, vertex_y - point_radius_y);
++    max_x = std::max(max_x, vertex_x + point_radius_x);
++    max_y = std::max(max_y, vertex_y + point_radius_y);
++  }
++  shader_interpreter_.SetExportSink(nullptr);
++
++  if (min_x > max_x || min_y > max_y) {
++    return false;
++  }
++
++  int32_t min_x_24p8 = ui::FloatToD3D11Fixed16p8(min_x);
++  int32_t min_y_24p8 = ui::FloatToD3D11Fixed16p8(min_y);
++  int32_t max_x_24p8 = ui::FloatToD3D11Fixed16p8(max_x);
++  int32_t max_y_24p8 = ui::FloatToD3D11Fixed16p8(max_y);
++  if (regs.Get<reg::PA_SU_VTX_CNTL>().pix_center == xenos::PixelCenter::kD3DZero) {
++    min_x_24p8 += 128;
++    min_y_24p8 += 128;
++    max_x_24p8 += 128;
++    max_y_24p8 += 128;
++  }
++  if (pa_su_sc_mode_cntl.vtx_window_offset_enable) {
++    auto pa_sc_window_offset = regs.Get<reg::PA_SC_WINDOW_OFFSET>();
++    min_x_24p8 += pa_sc_window_offset.window_x_offset * 256;
++    max_x_24p8 += pa_sc_window_offset.window_x_offset * 256;
++    min_y_24p8 += pa_sc_window_offset.window_y_offset * 256;
++    max_y_24p8 += pa_sc_window_offset.window_y_offset * 256;
++  }
++  auto rb_surface_info = regs.Get<reg::RB_SURFACE_INFO>();
++  uint32_t round_up =
++      (rb_surface_info.msaa_samples == xenos::MsaaSamples::k1X) ? 127 : 255;
++  min_x_out = uint32_t(std::max(int32_t(0), min_x_24p8)) >> 8;
++  min_y_out = uint32_t(std::max(int32_t(0), min_y_24p8)) >> 8;
++  max_x_out = (uint32_t(std::max(int32_t(0), max_x_24p8)) + round_up) >> 8;
++  max_y_out = (uint32_t(std::max(int32_t(0), max_y_24p8)) + round_up) >> 8;
++  return true;
++}
++
+ uint32_t DrawExtentEstimator::EstimateMaxY(bool try_to_estimate_vertex_max_y,
+                                            const Shader& vertex_shader) {
+   SCOPE_profile_cpu_f("gpu");

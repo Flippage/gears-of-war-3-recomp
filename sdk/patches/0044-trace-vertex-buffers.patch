@@ -1,0 +1,32 @@
+Gears of War 3 diagnostics (-Dev builds): the DRAW trace also lists each vertex buffer the vertex
+shader fetches (byte address, size, stride) and the index buffer base, to see where a draw's
+vertex data comes from, including CPU-written XPS rings (face blotch investigation).
+
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -2494,14 +2494,23 @@
+                          uint32_t(tf.size_2d.width) + 1, uint32_t(tf.size_2d.height) + 1,
+                          uint32_t(tf.format));
+     }
++    // The vertex buffers the vertex shader fetches (byte address/size/stride in words) and the
++    // index buffer, to see where a draw's vertex data comes from (CPU-written XPS rings included).
++    std::string vb;
++    for (const auto& b : vertex_shader->vertex_bindings()) {
++      xenos::xe_gpu_vertex_fetch_t vf = regs.GetVertexFetch(b.fetch_constant);
++      vb += fmt::format(" vb{}={:08X}/{}/s{}", b.fetch_constant, uint32_t(vf.address) << 2,
++                        uint32_t(vf.size) << 2, b.stride_words);
++    }
++    if (index_buffer_info) vb += fmt::format(" ib={:08X}", index_buffer_info->guest_base);
+     int vp_at = gow2::FindCameraMatrix(
+         reinterpret_cast<const float*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]));
+     REXGPU_WARN(
+         "DRAW f={} vs={:016X} ps={:016X} prim={} n={} rt0={:X}/f{} z={:X} edram_mode={} pitch={} "
+-        "vp@{}{}",
++        "vp@{}{}{}",
+         gow2_trace_frame.load(), vertex_shader->ucode_data_hash(), pixel_shader->ucode_data_hash(),
+         uint32_t(primitive_type), index_count, color0, color_fmt, depth_base, uint32_t(edram_mode),
+-        uint32_t(regs.Get<reg::RB_SURFACE_INFO>().surface_pitch), vp_at, tex);
++        uint32_t(regs.Get<reg::RB_SURFACE_INFO>().surface_pitch), vp_at, tex, vb);
+   }
+ #endif
+ 
