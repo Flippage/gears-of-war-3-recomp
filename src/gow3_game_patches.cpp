@@ -14,22 +14,22 @@ REXCVAR_DEFINE_BOOL(gow3_unlock_fps, true, "GameFixes",
 REXCVAR_DEFINE_BOOL(gow3_occlusion_query_fix, false, "GameFixes",
                     "Occlusion Query Fix: occlusion tests against full-resolution depth, less "
                     "geometry popping.");
-REXCVAR_DEFINE_BOOL(gow3_disable_lens_flares, true, "GameFixes", "Disable Lens Flares.");
-REXCVAR_DEFINE_BOOL(gow3_disable_ao, true, "GameFixes", "Disable Ambient Occlusion.");
+REXCVAR_DEFINE_BOOL(gow3_disable_lens_flares, false, "GameFixes", "Disable Lens Flares.");
+REXCVAR_DEFINE_BOOL(gow3_disable_ao, false, "GameFixes", "Disable Ambient Occlusion.");
 REXCVAR_DEFINE_BOOL(gow3_disable_motion_blur, true, "GameFixes",
                     "Disable Motion Blur: no ghosting and artifacts when the camera pans quickly.");
 REXCVAR_DEFINE_BOOL(gow3_aniso16, true, "GameFixes", "16x Anisotropic Filtering.");
-REXCVAR_DEFINE_BOOL(gow3_resolution_scaling_fix, true, "GameFixes",
+REXCVAR_DEFINE_BOOL(gow3_resolution_scaling_fix, false, "GameFixes",
                     "Resolution Scaling Fix / Disable All Post-Processing: changes the overall "
                     "look, but no edge-detection overcorrection or colour smearing.");
 REXCVAR_DEFINE_BOOL(gow3_disable_dof, false, "GameFixes", "Disable Depth of Field.");
-REXCVAR_DEFINE_BOOL(gow3_disable_bloom, true, "GameFixes", "Disable Bloom.");
+REXCVAR_DEFINE_BOOL(gow3_disable_bloom, false, "GameFixes", "Disable Bloom.");
 REXCVAR_DEFINE_INT32(gow3_texture_pool_mb, 196, "GameFixes",
                      "Texture streaming pool in MB (the game's own is 145; 0 keeps it). A bigger "
                      "pool evicts and reloads fewer textures while moving through a level; the "
                      "Gears of War 2 port uses 196.");
 
-REXCVAR_DEFINE_BOOL(gow3_shadow_perf_b, true, "GameFixes",
+REXCVAR_DEFINE_BOOL(gow3_shadow_perf_b, false, "GameFixes",
                     "Performance Patch Option B (Smart Shadow Cuts): at most 20 per-object shadow "
                     "depth draws a frame, no pre-allocated shadow caching (which breaks on NVIDIA), "
                     "OneFrameRenderLag off.");

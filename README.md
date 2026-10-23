@@ -24,14 +24,17 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
 - [x] Campaign: loads into missions and plays (tested through the first chapters)
 - [x] Saving and loading checkpoints, Continue, across game restarts
 - [x] Controller (tested with a DualSense); keyboard through the runtime's `--mnk_mode=true`
-- [x] Shader pipelines compiled off the draw thread and cached between runs (no shader stutter
-      after the first run of an area)
-- [x] Community game patches as settings: Unlock FPS (60 fps), Black Shading Fix, AO / motion
-      blur / bloom / lens flares / depth of field toggles, 16x AF, Resolution Scaling Fix,
-      Performance Patch Option B, texture streaming pool
+- [x] Shader pipelines compiled off the draw thread and cached between runs; models and textures
+      no longer pop in late or hitch while streaming
+- [x] Smooth frame pacing (one present per game frame) and faster EDRAM clears, both from the
+      Gears of War 2 port
+- [x] Community game patches as settings: Unlock FPS (60 fps and above), Black Shading Fix, 16x AF,
+      texture streaming pool, and optional AO / motion blur / bloom / lens flares / depth of field /
+      post-processing / shadow cuts toggles (off by default: the game runs well with its original look)
+- [x] DLSS temporal upscaling calibrated for Gears 3 (camera, depth convention, camera cuts), with
+      the HUD, subtitles and chapter titles masked out so they do not warp
 - [ ] **Black blotches on character faces in in-engine cutscenes** (see [Known issues](#known-issues))
-- [ ] DLSS / FSR temporal upscaling: runs, but its camera/motion-vector capture is not yet
-      calibrated for Gears 3 (it smears while turning), so it is off by default
+- [ ] FSR 3.1 / FSR 4 on AMD cards: built in and calibrated the same way, but untested
 - [ ] Full campaign play-through; Horde, Beast and Versus untested
 - [ ] PC options menu, mouse aim, ultrawide
 
@@ -84,25 +87,30 @@ build; your edits are kept). Every setting also works on the command line as `--
 |---|---|---|
 | `gow3_unlock_fps` | on | Removes the engine's 30 fps cap |
 | `gow3_black_shading_fix` | on | `GUseTilingMode = FALSE`; removes MSAA resolve artifacts |
-| `gow3_disable_ao`, `gow3_disable_motion_blur`, `gow3_disable_bloom`, `gow3_disable_lens_flares` | on | Community quality patches |
+| `gow3_disable_motion_blur` | on | Removes motion blur (ghosting when panning) |
+| `gow3_disable_ao`, `gow3_disable_bloom`, `gow3_disable_lens_flares` | off | Community patches that trade the original look for speed |
 | `gow3_disable_dof`, `gow3_occlusion_query_fix` | off | Community quality patches |
 | `gow3_aniso16` | on | 16x anisotropic filtering |
-| `gow3_resolution_scaling_fix` | on | Disables all post-processing (changes the look) |
-| `gow3_shadow_perf_b` | on | Performance Patch Option B (smart shadow cuts) |
+| `gow3_resolution_scaling_fix` | off | Disables all post-processing (changes the look) |
+| `gow3_shadow_perf_b` | off | Performance Patch Option B (smart shadow cuts) |
 | `gow3_texture_pool_mb` | 196 | Texture streaming pool (the game's own is 145) |
 | `readback_memexport` | off | CPU readback of memexport (on = long load stalls) |
-| `gow2_temporal`, `gow2_upscaler` | off | DLSS / FSR (not yet calibrated for Gears 3) |
+| `gow2_temporal`, `gow2_upscaler` | off | Temporal upscaling: set `gow2_temporal = true` and `gow2_upscaler = "dlss"` (NVIDIA RTX), `"fsr4"`, `"fsr3"` or `"auto"` |
+| `gow2_ui_mask` | on | Keeps the upscaler from warping the HUD and subtitles |
 
 ## Known issues
 
 - **Black blotches on faces in in-engine cutscenes.** Close-up faces get hard-edged black patches
   where the face deforms while the cutscene plays; they vanish when the game is paused. Xenia
   renders the same scene of the same base executable cleanly, so the cause is in this project's
-  emulation (recompiled CPU code or the GPU runtime). What has been ruled out so far is in
-  [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
-- The first time through an area, models can appear late while their shader pipelines compile in
-  the background; later runs load them from the cache.
-- Small hitches remain when many new textures stream in.
+  emulation. It is the face's lighting pass failing its depth test against the earlier depth
+  pre-pass and base pass, although all three get identical inputs; what has been tested and ruled
+  out is in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
+- The first launch after updating, or after changing a graphics setting, recompiles the shader
+  pipelines: the window can show "Not responding" for a few minutes. Let it finish; later launches
+  load them from the cache.
+- With an upscaler on, characters that move by themselves can ghost slightly (only camera motion
+  vectors are available).
 
 ## Finding the functions codegen misses
 
