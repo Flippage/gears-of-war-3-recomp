@@ -36,6 +36,8 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
 - [x] Faces render cleanly in in-engine cutscenes (the black blotches are fixed, see
       [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md))
 - [ ] FSR 3.1 / FSR 4 on AMD cards: built in and calibrated the same way, but untested
+- [x] Two-player campaign co-op over System Link, tested with two instances on one PC
+      (see [Co-op](#co-op)); over the internet not yet tested
 - [ ] Full campaign play-through; Horde, Beast and Versus untested
 - [ ] PC options menu, mouse aim, ultrawide
 
@@ -98,6 +100,27 @@ build; your edits are kept). Every setting also works on the command line as `--
 | `readback_memexport` | off | CPU readback of memexport (on = long load stalls) |
 | `gow2_temporal`, `gow2_upscaler` | off | Temporal upscaling: set `gow2_temporal = true` and `gow2_upscaler = "dlss"` (NVIDIA RTX), `"fsr4"`, `"fsr3"` or `"auto"` |
 | `gow2_ui_mask` | on | Keeps the upscaler from warping the HUD and subtitles |
+
+## Co-op
+
+System Link campaign co-op works between instances of this recomp. To try it on one PC:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\coop-local.ps1        # two windowed instances
+powershell -ExecutionPolicy Bypass -File scripts\coop-local.ps1 -Stop  # close both
+```
+
+Each instance gets its own profile, saves, shader cache and System Link identity under
+`out\coop-local`. Player 1 uses the controller, player 2 the keyboard (Tab = Back, Enter = Start,
+Space = A, WASD = move, arrows = look); a window only gets input while it has the focus.
+
+In both windows, press **Back** on the main menu to switch the party from Local to **System Link**.
+Player 2 joins player 1's System Link party, then player 1 starts the campaign as usual (the
+campaign's own lobby is the Xbox Live one and asks for a subscription; the party is what links them).
+
+Playing over the internet uses the same System Link with the runtime's `net_peers` (from the Gears of
+War 2 port's patch 0011); a guide for Gears 3 is still to come. Every player needs their own copy of
+the game, dumped from their own disc.
 
 ## Known issues
 
