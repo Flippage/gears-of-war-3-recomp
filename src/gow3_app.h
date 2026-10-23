@@ -16,8 +16,11 @@
 #include <rex/rex_app.h>
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
+#include <rex/ui/flags.h>
 
 #include "gow3_content_fix.h"
+#include "gow3_options_actions.h"
+#include "gow3_options_overlay.h"
 #include "gow3_utf8_guard.h"
 #include "gow3_xam_input_guard.h"
 #include "gow3_xam_trace.h"
@@ -35,6 +38,7 @@ class Gow3App : public rex::ReXApp {
   // Override virtual hooks for customization:
   // void OnPostInitLogging() override {}
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    rex::glue::options_actions::WaitForPreviousInstance();
     config.gpu_plugin = "xenos";
     // Guest content names are raw bytes; the runtime's UTF-8 decoder throws on a bad lead byte.
     rex::glue::InstallUtf8Guard();
@@ -74,11 +78,20 @@ class Gow3App : public rex::ReXApp {
     out.write(bytes, kEnd - kBase);
   }
   // void OnPostSetup() override {}
-  // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
+  void OnConfigureFonts(ImFontAtlas* atlas) override {
+    rex::glue::AddOptionsFonts(atlas);
+  }
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    ApplyConfigUserRoot(options_paths_);
+    options_overlay_ = rex::glue::CreateOptionsOverlay(drawer, options_paths_);
+  }
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
   // CreateAchievementNotificationDialog() override;
-  // void OnShutdown() override {}
+  void OnShutdown() override {
+    rex::glue::ClosePcOptionsForShutdown();
+    options_overlay_.reset();
+  }
 
   // A game folder holds default.xex and GearGame\.
   static bool IsGameFolder(const std::filesystem::path& dir) {
@@ -134,9 +147,36 @@ class Gow3App : public rex::ReXApp {
     std::error_code ec;
     std::filesystem::create_directories(paths.user_data_root, ec);
     std::filesystem::create_directories(paths.cache_root, ec);
+    options_paths_ = paths;
+  }
+
+  // gow3.toml is loaded after OnConfigurePaths; apply a user_data_root saved by the PC Options
+  // menu (or written in gow3.toml) before the runtime mounts the save devices.
+  std::optional<rex::PathConfig> OnFinalizePaths(
+      const rex::PathConfig& defaults,
+      std::function<void(rex::PathConfig)> /*resume*/) override {
+    rex::PathConfig p = defaults;
+    ApplyConfigUserRoot(p);
+    options_paths_ = p;
+    return p;
+  }
+
+  static void ApplyConfigUserRoot(rex::PathConfig& paths) {
+    if (IsSetByPlayer("user_data_root")) {
+      const std::string custom = REXCVAR_GET(user_data_root);
+      if (!custom.empty()) {
+        paths.user_data_root = rex::to_path(custom);
+        std::error_code ec;
+        std::filesystem::create_directories(paths.user_data_root, ec);
+      }
+    }
   }
 
   static bool IsSetByPlayer(const char* name) {
     return rex::cvar::GetFlagSource(name) != rex::cvar::Source::kDefault;
   }
+
+ private:
+  rex::PathConfig options_paths_;
+  std::unique_ptr<rex::ui::ImGuiDialog> options_overlay_;
 };

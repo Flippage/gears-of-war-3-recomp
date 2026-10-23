@@ -41,8 +41,14 @@ Files in this repository derived from it:
   (themselves adapted from gears-judgement-recomp), names changed for gow3.
 - `src/gow3_xam_input_guard.cpp`, `src/gow3_xam_input_guard.h`: copied from its
   `src/gow2_xam_input_guard.*` (adapted from gears-judgement-recomp); its test-input hook removed.
-- `src/gow3_app.h`: `SetUpscaleTarget` adapted from its `src/gow2_app.h`; the game-folder lookup
-  and the `%LOCALAPPDATA%` save paths follow its `ResolveContentRoot` / `OnConfigurePaths`.
+- `src/gow3_options_actions.*`, `src/gow3_options_catalog.*`, `src/gow3_options_input.*`,
+  `src/gow3_options_model.*`, `src/gow3_options_overlay.*`, `src/gow3_options_values.*`,
+  `src/gow3_options_values_text.*`, `src/gow3_toml_edit.*`: adapted from its
+  `src/gow2_options_*.*`, `src/gow2_host_ui.*`, and `src/gow2_toml_edit.*` for Gears of War 3's
+  settings and cvars.
+- `src/gow3_app.h`: `SetUpscaleTarget` and PC options overlay hooks adapted from its
+  `src/gow2_app.h`; the game-folder lookup and the `%LOCALAPPDATA%` save paths follow its
+  `ResolveContentRoot` / `OnConfigurePaths`.
 - `scripts/build.ps1`, `scripts/harvest-loop.ps1`: modelled on its `scripts/build.ps1` and
   `scripts/run-harvest-loop.sh`.
 - `tools/patch_game_patches.py`: modelled on its `tools/patch_game_patches.py` (patching the

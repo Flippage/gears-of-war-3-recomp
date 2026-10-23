@@ -35,11 +35,12 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
       the HUD, subtitles and chapter titles masked out so they do not warp
 - [x] Faces render cleanly in in-engine cutscenes (the black blotches are fixed, see
       [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md))
+- [x] In-game PC options menu (`F10` on keyboard or `Back + Start` on a controller)
 - [ ] FSR 3.1 / FSR 4 on AMD cards: built in and calibrated the same way, but untested
 - [x] Two-player campaign co-op over System Link, tested with two instances on one PC
       (see [Co-op](#co-op)); over the internet not yet tested
 - [ ] Full campaign play-through; Horde, Beast and Versus untested
-- [ ] PC options menu, mouse aim, ultrawide
+- [ ] Mouse aim, ultrawide
 
 There is no binary release. Build it yourself as described below.
 
@@ -83,8 +84,25 @@ folder is never modified.
 
 ## Settings
 
+Press **`F10`** on the keyboard or hold **`Back + Start`** together on a controller at any time to
+open the in-game **PC Options** menu. Navigate with the arrow keys, mouse, or controller D-pad /
+left stick (`LB`/`RB` or `Tab` switches tabs; `A`/`Enter` toggles; `B`/`Esc`/`F10` closes and saves
+your changes back to `gow3.toml` while keeping its comments intact). Each row displays when it
+takes effect:
+
+- **Applies now**: window mode/size, monitor, V-Sync, Unlock 30 FPS Cap, temporal upscaler
+  (Off / Auto / DLSS / FSR 3 / FSR 4), upscaler quality and HUD mask, post-process/shadow game
+  patches, keyboard/mouse toggles, mouse sensitivity, controller dead zone, and controller button
+  remapping.
+- **Applies on next level load**: 16x Anisotropic Filtering (`gow3_aniso16`).
+- **Needs game restart**: GPU selection (`d3d12_adapter`), internal resolution scale, display
+  scaling/sharpening filter (`present_effect`), Black Shading Fix, texture streaming pool size,
+  System Link multiplayer settings, and the save folder (`user_data_root`). When any restart-only
+  setting has been changed, a **Restart Game Now** button appears at the bottom of the menu.
+
 `gow3.toml` next to `gow3.exe` (copied from [config/gow3.toml](config/gow3.toml) on the first
-build; your edits are kept). Every setting also works on the command line as `--name=value`.
+build; your edits are kept) can also be edited by hand, and every setting works on the command line
+as `--name=value`.
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -145,7 +163,7 @@ generated C++.
   recompiler and runtime.
 - [Gears of War 2 native PC port](https://github.com/santiquiroz/gears-of-war-2-pc-port)
   (BSD-3-Clause): SDK patch series `0002`-`0029`, build scripts, the hint harvester, the UTF-8 and
-  XamInput guards, and the overall approach.
+  XamInput guards, the in-game PC options menu, and the overall approach.
 - [Gears of War: Judgment recompilation](https://github.com/OverkillLabs3/gears-judgement-recomp)
   (BSD-3-Clause): the switch-trap patcher, the guards and the temporal upscaler code (by way of
   the Gears 2 port).

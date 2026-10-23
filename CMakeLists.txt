@@ -18,6 +18,14 @@ set(GOW3_SOURCES
     src/gow3_xam_trace.cpp
     src/gow3_content_fix.cpp
     src/gow3_game_patches.cpp
+    src/gow3_options_actions.cpp
+    src/gow3_options_catalog.cpp
+    src/gow3_options_input.cpp
+    src/gow3_options_model.cpp
+    src/gow3_options_overlay.cpp
+    src/gow3_options_values.cpp
+    src/gow3_options_values_text.cpp
+    src/gow3_toml_edit.cpp
 )
 
 if(WIN32)
@@ -27,3 +35,7 @@ else()
 endif()
 
 rexglue_setup_target(gow3 GPU_PLUGINS xenos)
+
+if(WIN32)
+    target_link_libraries(gow3 PRIVATE dxgi ole32 shell32 user32)
+endif()
