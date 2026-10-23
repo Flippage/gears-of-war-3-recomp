@@ -113,6 +113,8 @@ as `--name=value`.
 | `gow3_disable_dof`, `gow3_occlusion_query_fix` | off | Community quality patches |
 | `gow3_aniso16` | on | 16x anisotropic filtering |
 | `gow3_resolution_scaling_fix` | off | Disables all post-processing (changes the look) |
+| `resolution_scale` | 1 | Internal resolution: 2 = 2560x1440 (looks great with DLSS); 3 = 3840x2160 is experimental (wrong colours) |
+| `gpu_guest_pixel_center_ps`, `gpu_unscaled_resolve_max_pitch` | on | Keep the colour grading correct at `resolution_scale` 2 |
 | `gow3_shadow_perf_b` | off | Performance Patch Option B (smart shadow cuts) |
 | `gow3_texture_pool_mb` | 196 | Texture streaming pool (the game's own is 145) |
 | `readback_memexport` | off | CPU readback of memexport (on = long load stalls) |

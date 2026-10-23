@@ -1,0 +1,130 @@
+Gears of War 3: green speckle and off colours over the whole image at 2x internal resolution, part 1.
+The game builds its colour grading lookup table each frame (pixel shader 5FD384E4DE20CAC8) from a
+256x16 strip of 16 side-by-side slices, sampled bilinearly at coordinates derived from the pass's
+interpolants. At 1x every fetch lands on a strip texel centre. With resolution scaling the host pixels
+sit off the guest pixel centres: fetches at a slice edge blend in the neighbouring slice and the slice
+index can wrap, so table entries get wrong colours. Found with debug_point_ps.txt (0056).
+gpu_guest_pixel_center_ps (default 5FD384E4DE20CAC8, restart): for the listed pixel shaders, with
+resolution scaling, the interpolants are moved to the centre of the guest pixel (v + ddx(v) * dx +
+ddy(v) * dy), so every host pixel computes the 1x entry. 0059 then makes the table a 1x texture (a
+scaled copy of duplicated entries bands when filtered). No change at 1x or for other shaders.
+
+diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
+index c66b76a..9397475 100644
+--- a/include/rex/graphics/flags.h
++++ b/include/rex/graphics/flags.h
+@@ -18,6 +18,7 @@ REXCVAR_DECLARE(bool, vsync);
+ REXCVAR_DECLARE(bool, clear_memory_page_state);
+ REXCVAR_DECLARE(bool, half_pixel_offset);
+ REXCVAR_DECLARE(bool, gpu_edram_scaled_guest_samples);
++REXCVAR_DECLARE(std::string, gpu_guest_pixel_center_ps);
+ REXCVAR_DECLARE(bool, async_shader_compilation);
+ 
+ // GPU Resolution / Readback / Queries
+diff --git a/src/graphics/pipeline/shader/dxbc_translator.cpp b/src/graphics/pipeline/shader/dxbc_translator.cpp
+index 2c31a0e..89a48ee 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator.cpp
+@@ -19,6 +19,7 @@
+ #include <rex/assert.h>
+ #include <rex/cvar.h>
+ #include <rex/graphics/pipeline/shader/dxbc.h>
++#include <rex/graphics/flags.h>
+ #include <rex/graphics/pipeline/shader/dxbc_translator.h>
+ #include <rex/graphics/xenos.h>
+ #include <rex/math.h>
+@@ -639,6 +640,66 @@ void DxbcShaderTranslator::StartPixelShader() {
+                  : dxbc::Src::LF(0.0f));
+   }
+ 
++  // Gears of War 3 recomp: gpu_guest_pixel_center_ps. With resolution scaling,
++  // move the interpolants of the listed pixel shaders from the host pixel centre
++  // to the centre of its guest pixel (v + ddx(v) * dx + ddy(v) * dy, exact for
++  // the affine interpolants of full-screen passes), so every host pixel computes
++  // what the guest pixel computes at 1x. For passes that build tables from their
++  // coordinates; with gpu_unscaled_resolve_max_pitch the table is then read at 1x.
++  if ((draw_resolution_scale_x_ > 1 || draw_resolution_scale_y_ > 1) &&
++      !uses_register_dynamic_addressing && interpolator_mask) {
++    bool guest_pixel_center = false;
++    const std::string list = REXCVAR_GET(gpu_guest_pixel_center_ps);
++    size_t pos = 0;
++    while (pos < list.size() && !guest_pixel_center) {
++      size_t end = list.find(',', pos);
++      if (end == std::string::npos) end = list.size();
++      std::string item = list.substr(pos, end - pos);
++      if (!item.empty() &&
++          std::strtoull(item.c_str(), nullptr, 16) == current_shader().ucode_data_hash()) {
++        guest_pixel_center = true;
++      }
++      pos = end + 1;
++    }
++    if (guest_pixel_center) {
++      uint32_t offset_temp = PushSystemTemp();
++      uint32_t derivative_temp = PushSystemTemp();
++      float scale_x = float(draw_resolution_scale_x_);
++      float scale_y = float(draw_resolution_scale_y_);
++      in_position_used_ |= 0b0011;
++      // offset_temp.xy = host pixel index
++      a_.OpRoundNI(dxbc::Dest::R(offset_temp, 0b0011), dxbc::Src::V1D(in_reg_ps_position_));
++      // offset_temp.zw = guest pixel index
++      a_.OpMAd(dxbc::Dest::R(offset_temp, 0b1100), dxbc::Src::R(offset_temp, 0b01000100),
++               dxbc::Src::LF(0.0f, 0.0f, 1.0f / scale_x, 1.0f / scale_y),
++               dxbc::Src::LF(0.0f, 0.0f, 0.5f / scale_x, 0.5f / scale_y));
++      a_.OpRoundNI(dxbc::Dest::R(offset_temp, 0b1100), dxbc::Src::R(offset_temp));
++      // offset_temp.zw = guest pixel centre in host pixels, relative to the
++      // host pixel index
++      a_.OpMAd(dxbc::Dest::R(offset_temp, 0b1100), dxbc::Src::R(offset_temp),
++               dxbc::Src::LF(0.0f, 0.0f, scale_x, scale_y),
++               dxbc::Src::LF(0.0f, 0.0f, 0.5f * scale_x - 0.5f, 0.5f * scale_y - 0.5f));
++      // offset_temp.xy = offset from the host pixel centre to the guest pixel
++      // centre, in host pixels
++      a_.OpAdd(dxbc::Dest::R(offset_temp, 0b0011), dxbc::Src::R(offset_temp, 0b1110),
++               -dxbc::Src::R(offset_temp, 0b0100));
++      uint32_t derivative_y_temp = PushSystemTemp();
++      for (uint32_t i = 0; i < register_count() && i < xenos::kMaxInterpolators; ++i) {
++        if (i == param_gen_interpolator || !(interpolator_mask & (UINT32_C(1) << i))) {
++          continue;
++        }
++        a_.OpDerivRTXFine(dxbc::Dest::R(derivative_temp), dxbc::Src::R(i));
++        a_.OpDerivRTYFine(dxbc::Dest::R(derivative_y_temp), dxbc::Src::R(i));
++        a_.OpMAd(dxbc::Dest::R(i), dxbc::Src::R(derivative_temp),
++                 dxbc::Src::R(offset_temp, dxbc::Src::kXXXX), dxbc::Src::R(i));
++        a_.OpMAd(dxbc::Dest::R(i), dxbc::Src::R(derivative_y_temp),
++                 dxbc::Src::R(offset_temp, dxbc::Src::kYYYY), dxbc::Src::R(i));
++      }
++      // Release derivative_y_temp, derivative_temp and offset_temp.
++      PopSystemTemp(3);
++    }
++  }
++
+   // Write the pixel parameters to the specified interpolator register
+   // (PsParamGen). The negate modified in DXBC flips the sign bit, so it can be
+   // used to write the flags.
+diff --git a/src/graphics/util/draw.cpp b/src/graphics/util/draw.cpp
+index 9b43930..4999864 100644
+--- a/src/graphics/util/draw.cpp
++++ b/src/graphics/util/draw.cpp
+@@ -38,6 +38,23 @@ REXCVAR_DEFINE_BOOL(resolve_resolution_scale_fill_half_pixel_offset, true, "GPU"
+ // 4x surface for the depth of field downsample: fine speckle at 2x and 3x).
+ // Arranging the samples per guest pixel, carrying the host subpixel along, is
+ // the scaling part of Xenia 437a7280cf. No change at 1x or on the RTV path.
++// Gears of War 3 recomp. Gears 3 builds its colour grading lookup table each
++// frame (pixel shader 5FD384E4DE20CAC8) from a 256x16 strip of 16 side-by-side
++// slices, sampled bilinearly at coordinates derived from the pass's
++// interpolants. At 1x every fetch lands on a strip texel centre. With
++// resolution scaling the host pixels sit off the guest pixel centres: fetches at
++// a slice edge blend in the neighbouring slice (another blue level) and the
++// slice index can wrap, so table entries get wrong colours (green speckle over
++// the whole image at 2x). Evaluated at the guest pixel centre, every host pixel
++// computes the 1x entry; gpu_unscaled_resolve_max_pitch then makes the table a
++// 1x texture (a scaled copy of duplicated entries bands when filtered).
++REXCVAR_DEFINE_STRING(gpu_guest_pixel_center_ps, "5FD384E4DE20CAC8", "GPU",
++                      "With resolution scaling, pixel shaders (comma-separated ucode hashes) whose "
++                      "interpolants are evaluated at the centre of the guest pixel, as at 1x, instead "
++                      "of each host pixel. For passes that compute table indices from their "
++                      "coordinates (Gears of War 3's colour grading table)")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ REXCVAR_DEFINE_BOOL(gpu_edram_scaled_guest_samples, true, "GPU",
+                     "With resolution scaling on the ROV path, arrange EDRAM samples per guest "
+                     "pixel so views with different MSAA sample counts line up (fixes depth of "

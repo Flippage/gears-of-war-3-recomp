@@ -1,5 +1,36 @@
 # Known issues
 
+## Green speckle and off colours at 2x internal resolution (fixed); 3x still wrong
+
+**Symptom.** With `resolution_scale = 2`, the whole image (title screen, gameplay, cutscenes) gets a
+fine green / purple speckle on edges and in shadow, and the colour grading is off. 1x is clean.
+`gow3_disable_dof` hides it only because that patch turns off the game's whole combined
+post-process pass, colour grading included.
+
+**Cause and fix (2026-10-24, `sdk/patches/0058` and `0059`).** Gears 3 builds its colour grading
+lookup table every frame (pixel shader `5FD384E4DE20CAC8`): it samples a 256x16 strip of 16
+side-by-side slices with bilinear filtering, renders the 16x16x16 table into a 16-pixel wide target,
+and the final pass reads it as a 3D texture. At 1x every strip fetch lands on a texel centre. At 2x
+the host pixels sit off the guest pixel centres, so fetches at a slice edge blend in the
+neighbouring slice (another blue level) and the slice index can wrap: scattered table entries get
+wrong colours, and every pixel that uses them speckles. Two changes:
+- `0058` (`gpu_guest_pixel_center_ps`): that pass evaluates its interpolants at the guest pixel
+  centre, so every host pixel computes the 1x table entry.
+- `0059` (`gpu_unscaled_resolve_max_pitch`): narrow resolves like that table are also downscaled to
+  1x in shared memory and textures read the 1x copy, so the final pass filters the table as at 1x
+  (a scaled copy of duplicated entries bands). This uses a new downscale shader that follows the
+  scaled resolve layout; the SDK's `resolve_downscale` assumes a different one.
+
+Found by elimination: the pass sweep (`sweep-speckle.bat`), shader and constant dumps at 2x and 1x
+(`gow2_dump_vs`), and the per-shader point sampling switch `debug_point_ps.txt` (`0056`).
+
+**3x is still wrong** (green / purple patches): an open issue. Use 2x with DLSS.
+
+**Also in place, not proven necessary:** `0055` (`gpu_edram_scaled_guest_samples`) arranges EDRAM
+MSAA samples per guest pixel with resolution scaling (the scaling part of Xenia 437a7280cf), so 1x
+and 4x views of the same memory line up; it was the first attempt at this bug, made no visible
+difference on its own, and was active in the build that confirmed the fix.
+
 ## Black blotches on faces in in-engine cutscenes (fixed)
 
 **Cause and fix (2026-10-23, `sdk/patches/0054`).** The runtime skipped requesting a vertex buffer

@@ -192,7 +192,7 @@ std::vector<PageSpec> BuildCatalog() {
               {
                   {"1", {"1x (1280 x 720, Native)"}},
                   {"2", {"2x (2560 x 1440)"}},
-                  {"3", {"3x (3840 x 2160, 4K)"}},
+                  {"3", {"3x (3840 x 2160, experimental)"}},
               },
           },
           {

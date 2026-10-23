@@ -1,0 +1,205 @@
+Gears of War 3: speckled post-processing (depth of field) at 2x / 3x internal resolution. Gears 3
+draws its scene into a 1x render target and resolves the same EDRAM as a 4x MSAA surface of half
+the size, for a free 2x2 downsample that the depth of field passes blur and blend back. With
+resolution scaling, the ROV pixel shaders and the resolve shaders placed each MSAA sample by the
+host pixel index ((host_pixel << sample_count_log2) + sample bits), so the sample bit and the host
+subpixel bit traded places and the 1x and 4x views stopped lining up: the downsample averaged the
+wrong pixels (fine purple speckle in shadowed areas). The samples are now arranged per guest pixel
+with the host subpixel carried along (((host_pixel / scale) << sample_count_log2 + sample bits) *
+scale + host_pixel % scale), the scaling part of Xenia 437a7280cf, keeping this layout's sample order:
+- dxbc_translator_om.cpp: the ROV sample 0 position, and the steps to the other samples (scale rows /
+  scale columns instead of 1);
+- ResolveEdramInfo.guest_samples (bit 30): set for ROV resolves with scaling, read by the scaled
+  resolve shaders, which are replaced from sdk/shaders/d3d12_5_1 (see sdk/shaders/README.md).
+No change at 1x, on the RTV path or on Vulkan. gpu_edram_scaled_guest_samples (default true, restart)
+turns it off.
+
+diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
+index 023fe54..c66b76a 100644
+--- a/include/rex/graphics/flags.h
++++ b/include/rex/graphics/flags.h
+@@ -17,6 +17,7 @@
+ REXCVAR_DECLARE(bool, vsync);
+ REXCVAR_DECLARE(bool, clear_memory_page_state);
+ REXCVAR_DECLARE(bool, half_pixel_offset);
++REXCVAR_DECLARE(bool, gpu_edram_scaled_guest_samples);
+ REXCVAR_DECLARE(bool, async_shader_compilation);
+ 
+ // GPU Resolution / Readback / Queries
+diff --git a/include/rex/graphics/util/draw.h b/include/rex/graphics/util/draw.h
+index 3da182d..8d32cdc 100644
+--- a/include/rex/graphics/util/draw.h
++++ b/include/rex/graphics/util/draw.h
+@@ -353,6 +353,10 @@ union ResolveEdramInfo {
+     // of the resolve region with the contents of the first surely covered
+     // column / row with resolution scaling.
+     uint32_t fill_half_pixel_offset : 1;
++    // Gears of War 3 recomp: the EDRAM samples are arranged per guest pixel
++    // (see gpu_edram_scaled_guest_samples), read by the resolution-scaled copy
++    // shaders. Set only for the ROV path with resolution scaling.
++    uint32_t guest_samples : 1;
+   };
+   ResolveEdramInfo() : packed(0) { static_assert_size(*this, sizeof(packed)); }
+ };
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index 697e1ef..ca8814a 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -1395,6 +1395,13 @@ bool D3D12RenderTargetCache::ResolveImpl(const memory::Memory& memory,
+         resolve_info.GetCopyShader(draw_resolution_scale_x(), draw_resolution_scale_y(),
+                                    copy_shader_constants, copy_group_count_x, copy_group_count_y);
+     assert_true(copy_group_count_x && copy_group_count_y);
++    // Gears of War 3 recomp: the ROV pixel shaders arrange the samples per guest
++    // pixel with resolution scaling (gpu_edram_scaled_guest_samples), so tell
++    // the scaled copy shaders to read them that way.
++    if (draw_resolution_scaled && path_ == Path::kPixelShaderInterlock &&
++        REXCVAR_GET(gpu_edram_scaled_guest_samples)) {
++      copy_shader_constants.dest_relative.edram_info.guest_samples = 1;
++    }
+     if (copy_shader != draw_util::ResolveCopyShaderIndex::kUnknown) {
+       const draw_util::ResolveCopyShaderInfo& copy_shader_info =
+           draw_util::resolve_copy_shader_info[size_t(copy_shader)];
+diff --git a/src/graphics/pipeline/shader/dxbc_translator_om.cpp b/src/graphics/pipeline/shader/dxbc_translator_om.cpp
+index d9e45e0..106dfc2 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator_om.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_om.cpp
+@@ -22,6 +22,19 @@
+ namespace rex::graphics {
+ using namespace ucode;
+ 
++namespace {
++
++// Gears of War 3 recomp: gpu_edram_scaled_guest_samples (src/graphics/util/draw.cpp). With
++// resolution scaling, the samples of a pixel are placed next to the guest pixel, not the host
++// pixel, so views of the same EDRAM with different sample counts line up as on the Xbox 360. The
++// resolution-scaled resolve shaders read them the same way. No change without scaling.
++bool RovGuestSampleLayout(uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y) {
++  return (draw_resolution_scale_x > 1 || draw_resolution_scale_y > 1) &&
++         REXCVAR_GET(gpu_edram_scaled_guest_samples);
++}
++
++}  // namespace
++
+ void DxbcShaderTranslator::StartPixelShader_LoadROVParameters() {
+   bool any_color_targets_written = current_shader().writes_color_targets() != 0;
+ 
+@@ -51,9 +64,30 @@ void DxbcShaderTranslator::StartPixelShader_LoadROVParameters() {
+   // Convert the position from pixels to samples.
+   // system_temp_rov_params_.x = X sample 0 position
+   // system_temp_rov_params_.y = Y sample 0 position
+-  a_.OpIShL(dxbc::Dest::R(system_temp_rov_params_, 0b0011), dxbc::Src::R(system_temp_rov_params_),
+-            LoadSystemConstant(SystemConstants::Index::kSampleCountLog2,
+-                               offsetof(SystemConstants, sample_count_log2), 0b0100));
++  if (RovGuestSampleLayout(draw_resolution_scale_x_, draw_resolution_scale_y_)) {
++    // Gears of War 3 recomp: the samples go next to the guest pixel, and the
++    // host subpixel is carried along:
++    // ((host_pixel / scale) << sample_count_log2) * scale + host_pixel % scale.
++    uint32_t guest_sample_temp = PushSystemTemp();
++    // guest_sample_temp.xy = guest pixel position
++    // guest_sample_temp.zw = host subpixel position within the guest pixel
++    a_.OpUDiv(dxbc::Dest::R(guest_sample_temp, 0b0011), dxbc::Dest::R(guest_sample_temp, 0b1100),
++              dxbc::Src::R(system_temp_rov_params_, 0b01000100),
++              dxbc::Src::LU(draw_resolution_scale_x_, draw_resolution_scale_y_,
++                            draw_resolution_scale_x_, draw_resolution_scale_y_));
++    // guest_sample_temp.xy = guest sample 0 position
++    a_.OpIShL(dxbc::Dest::R(guest_sample_temp, 0b0011), dxbc::Src::R(guest_sample_temp),
++              LoadSystemConstant(SystemConstants::Index::kSampleCountLog2,
++                                 offsetof(SystemConstants, sample_count_log2), 0b0100));
++    a_.OpUMAd(dxbc::Dest::R(system_temp_rov_params_, 0b0011), dxbc::Src::R(guest_sample_temp),
++              dxbc::Src::LU(draw_resolution_scale_x_, draw_resolution_scale_y_, 0, 0),
++              dxbc::Src::R(guest_sample_temp, 0b1110));
++    PopSystemTemp();
++  } else {
++    a_.OpIShL(dxbc::Dest::R(system_temp_rov_params_, 0b0011), dxbc::Src::R(system_temp_rov_params_),
++              LoadSystemConstant(SystemConstants::Index::kSampleCountLog2,
++                                 offsetof(SystemConstants, sample_count_log2), 0b0100));
++  }
+   // For cases of both color and depth:
+   //   Get 40 x 16 x resolution scale 32bpp half-tile or 40x16 64bpp tile index
+   //   to system_temp_rov_params_.zw, and put the sample index within such a
+@@ -1010,10 +1044,17 @@ void DxbcShaderTranslator::ROV_DepthStencilTest() {
+     // Go to the next sample (samples are at +0, +(80*scale_x), +1,
+     // +(80*scale_x+1), so need to do +(80*scale_x), -(80*scale_x-1),
+     // +(80*scale_x) and -(80*scale_x+1) after each sample).
++    // Gears of War 3 recomp: with the guest pixel sample arrangement, the
++    // samples are scale_y rows and scale_x columns apart.
+     uint32_t tile_width = xenos::kEdramTileWidthSamples * draw_resolution_scale_x_;
++    int32_t sample_row = int32_t(tile_width), sample_column = 1;
++    if (RovGuestSampleLayout(draw_resolution_scale_x_, draw_resolution_scale_y_)) {
++      sample_row *= int32_t(draw_resolution_scale_y_);
++      sample_column = int32_t(draw_resolution_scale_x_);
++    }
+     a_.OpIAdd(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
+               dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kYYYY),
+-              dxbc::Src::LI((i & 1) ? -int32_t(tile_width) + 2 - i : int32_t(tile_width)));
++              dxbc::Src::LI((i & 1) ? -sample_row + (2 - int32_t(i)) * sample_column : sample_row));
+   }
+ 
+   if (ROV_IsDepthStencilEarly()) {
+@@ -1829,6 +1870,13 @@ void DxbcShaderTranslator::CompletePixelShader_WriteToROV() {
+   dxbc::Src temp_w_src(dxbc::Src::R(temp, dxbc::Src::kWWWW));
+ 
+   uint32_t tile_width = xenos::kEdramTileWidthSamples * draw_resolution_scale_x_;
++  // Gears of War 3 recomp: distance to the next sample row and column, scale_y
++  // rows and scale_x columns with the guest pixel sample arrangement.
++  int32_t sample_row = int32_t(tile_width), sample_column = 1;
++  if (RovGuestSampleLayout(draw_resolution_scale_x_, draw_resolution_scale_y_)) {
++    sample_row *= int32_t(draw_resolution_scale_y_);
++    sample_column = int32_t(draw_resolution_scale_x_);
++  }
+ 
+   // Do late depth/stencil test (which includes writing) if needed or deferred
+   // depth writing.
+@@ -1859,7 +1907,8 @@ void DxbcShaderTranslator::CompletePixelShader_WriteToROV() {
+       if (i < 3) {
+         a_.OpIAdd(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
+                   dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kYYYY),
+-                  dxbc::Src::LI((i & 1) ? -int32_t(tile_width) + 2 - i : int32_t(tile_width)));
++                  dxbc::Src::LI((i & 1) ? -sample_row + (2 - int32_t(i)) * sample_column
++                                        : sample_row));
+       }
+     }
+   } else {
+@@ -2600,15 +2649,15 @@ void DxbcShaderTranslator::CompletePixelShader_WriteToROV() {
+                    dxbc::Src::LU(RenderTargetCache::kPSIColorFormatFlag_64bpp));
+           // temp.z = offset from the current sample to the next.
+           a_.OpMovC(temp_z_dest, temp_z_src,
+-                    dxbc::Src::LI(-int32_t(tile_width) + 2 * (2 - int32_t(j))),
+-                    dxbc::Src::LI(-int32_t(tile_width) + (2 - int32_t(j))));
++                    dxbc::Src::LI(-sample_row + 2 * (2 - int32_t(j)) * sample_column),
++                    dxbc::Src::LI(-sample_row + (2 - int32_t(j)) * sample_column));
+           // temp.z = free.
+           a_.OpIAdd(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
+                     dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kYYYY), temp_z_src);
+         } else {
+           a_.OpIAdd(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
+                     dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kYYYY),
+-                    dxbc::Src::LU(tile_width));
++                    dxbc::Src::LI(sample_row));
+         }
+       }
+     }
+diff --git a/src/graphics/util/draw.cpp b/src/graphics/util/draw.cpp
+index 305380e..9b43930 100644
+--- a/src/graphics/util/draw.cpp
++++ b/src/graphics/util/draw.cpp
+@@ -31,6 +31,19 @@ REXCVAR_DEFINE_BOOL(half_pixel_offset, true, "GPU", "Enable half pixel offset");
+ REXCVAR_DEFINE_BOOL(resolve_resolution_scale_fill_half_pixel_offset, true, "GPU",
+                     "Fill half pixel offset during resolution scale resolve");
+ 
++// Gears of War 3 recomp. With resolution scaling, the ROV path and the resolve
++// shaders placed each MSAA sample by the host pixel index, so the sample bit and
++// the host subpixel bit traded places, and views of the same EDRAM with
++// different sample counts stopped lining up (Gears 3 resolves its 1x scene as a
++// 4x surface for the depth of field downsample: fine speckle at 2x and 3x).
++// Arranging the samples per guest pixel, carrying the host subpixel along, is
++// the scaling part of Xenia 437a7280cf. No change at 1x or on the RTV path.
++REXCVAR_DEFINE_BOOL(gpu_edram_scaled_guest_samples, true, "GPU",
++                    "With resolution scaling on the ROV path, arrange EDRAM samples per guest "
++                    "pixel so views with different MSAA sample counts line up (fixes depth of "
++                    "field speckle in Gears of War 3). Off: the old per-host-pixel arrangement")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ // Very prominent in 545407F2.
+ // DEFINE_bool(
+ //     resolve_resolution_scale_fill_half_pixel_offset, true,
