@@ -128,9 +128,13 @@ bool KeyDown(int vkey) {
 }
 #endif
 
-RawInput SampleRawInput(const ImGuiIO& io) {
+RawInput SampleRawInput(const ImGuiIO& io, bool menu_open) {
   RawInput r{};
-  const HostPadState pad = ReadHostPad();
+  // Reading the pad also drains the keyboard/mouse driver's accumulated mouse motion, which the
+  // game reads as the right stick. While the menu is closed and mouse look is on, leave it to the
+  // game (the Back + Start chord is then unavailable; F10 still opens the menu).
+  const bool mouse_look = rex::cvar::Query<bool>("mnk_mode") && rex::cvar::Query<bool>("mnk_mouse");
+  const HostPadState pad = (menu_open || !mouse_look) ? ReadHostPad() : HostPadState{};
   r.pad_buttons = pad.buttons;
   r.thumb_lx = pad.thumb_lx;
   r.thumb_ly = pad.thumb_ly;
@@ -195,7 +199,7 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
 
  protected:
   void OnDraw(ImGuiIO& io) override {
-    const RawInput raw = SampleRawInput(io);
+    const RawInput raw = SampleRawInput(io, open_);
 
     // Handle active controller-button capture modal on Page::kPadButtons.
     if (open_ && !pad_capture_cvar_.empty()) {
