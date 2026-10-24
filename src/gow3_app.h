@@ -20,6 +20,7 @@
 
 #include "gow3_content_fix.h"
 #include "gow3_options_actions.h"
+#include "gow3_coalesced.h"
 #include "gow3_mouse_aim.h"
 #include "gow3_options_overlay.h"
 #include "gow3_utf8_guard.h"
@@ -52,6 +53,8 @@ class Gow3App : public rex::ReXApp {
     rex::glue::InstallXamTrace();  // dev tool, GOW3_XAM_TRACE=1
     // Native mouse look replaces the mouse-to-right-stick emulation (gow3_mouse_aim).
     rex::glue::PrepareNativeMouseAim();
+    // Edited copies of the Coalesced bundles (menu mouse), served in place of the originals.
+    coalesced_hashes_ = rex::glue::PrepareCoalescedOverrides(game_data_root(), cache_root());
     SetUpscaleTarget();
   }
 
@@ -69,6 +72,8 @@ class Gow3App : public rex::ReXApp {
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
   void OnPostLoadXexImage() override {
+    // The edited Coalesced copies' hashes, before any game code checks them.
+    rex::glue::PatchCoalescedHashes(coalesced_hashes_);
     rex::glue::AllocateContentFixRing();
     // Dev tool: GOW3_DUMP_IMAGE=<dir> writes the loaded (decrypted, decompressed) image to
     // <dir>/image.bin for tools/make_image_blocks.py and the hint harvester.
@@ -181,5 +186,6 @@ class Gow3App : public rex::ReXApp {
 
  private:
   rex::PathConfig options_paths_;
+  std::vector<rex::glue::CoalescedHash> coalesced_hashes_;
   std::unique_ptr<rex::ui::ImGuiDialog> options_overlay_;
 };

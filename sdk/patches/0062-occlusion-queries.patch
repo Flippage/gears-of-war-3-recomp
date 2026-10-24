@@ -1,0 +1,236 @@
+Gears of War 3: host occlusion queries that work. The Xenos GPU writes a query's begin and end
+counters to two separate blocks, and D3D subtracts them; the end block carries the game's
+"finished" marker. The runtime paired an end only with a begin at the same address, so the first
+query of a session turned host queries off, and from then on every query answered "visible": the
+game culled nothing behind walls (about 2900 draws a frame in a room that needs a few hundred) and
+drew lights through them. An end now pairs with the open query, a begin over an open one drops it,
+and the begin block is cleared. Results are written once the GPU has finished the submission
+(polled at each query and swap, and all of them before the command processor waits), instead of a
+CPU wait on the GPU for every query. Every 5 seconds an OCCLUSION line counts host results,
+occluded ones, fake "visible" answers and packets handled with host queries off; each path that
+turns host queries off logs why.
+
+diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
+index d07721d..119e139 100644
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -212,6 +212,7 @@ class D3D12CommandProcessor : public CommandProcessor {
+   std::string GetWindowTitleText() const;
+ 
+  protected:
++  void PrepareForWait() override;
+   bool SetupContext() override;
+   void ShutdownContext() override;
+ 
+@@ -427,6 +428,7 @@ class D3D12CommandProcessor : public CommandProcessor {
+                               xenos::xe_gpu_depth_sample_counts* sample_counts);
+   bool AcquireOcclusionQueryIndex(uint32_t& host_index_out);
+   void DisableHostOcclusionQueries();
++  void WritePendingOcclusionResults(bool wait_all);
+   uint64_t NormalizeOcclusionSamples(uint64_t samples) const;
+   void WriteGuestOcclusionResult(xenos::xe_gpu_depth_sample_counts* sample_counts,
+                                  uint64_t samples);
+@@ -679,6 +681,12 @@ class D3D12CommandProcessor : public CommandProcessor {
+     uint32_t host_index = UINT32_MAX;
+     bool valid = false;
+   } active_occlusion_query_;
++  struct PendingOcclusionResult {
++    uint32_t sample_count_address;
++    uint32_t host_index;
++    uint64_t submission;
++  };
++  std::deque<PendingOcclusionResult> occlusion_pending_;
+   struct VertexBufferState {
+     uint32_t address = UINT32_MAX;
+     uint32_t size = UINT32_MAX;
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 76e4d96..7793d95 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -256,9 +256,44 @@ void D3D12CommandProcessor::InitializeTextureReplacement(const std::filesystem::
+   }
+ }
+ 
++namespace {
++// Occlusion query outcome counts, logged every 5 seconds (OCCLUSION): query ends answered by the
++// host (and how many of them were zero, occluded), ends given the fake "visible" count, and
++// packets handled while host queries are off.
++enum class OcclusionOutcome { kHost, kFake, kOff };
++struct OcclusionStats {
++  uint64_t host = 0, zero = 0, fake = 0, off = 0;
++  std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
++};
++OcclusionStats g_occlusion_stats;
++void NoteOcclusion(OcclusionOutcome outcome, uint64_t samples = 0) {
++  OcclusionStats& st = g_occlusion_stats;
++  switch (outcome) {
++    case OcclusionOutcome::kHost:
++      ++st.host;
++      if (!samples) ++st.zero;
++      break;
++    case OcclusionOutcome::kFake:
++      ++st.fake;
++      break;
++    case OcclusionOutcome::kOff:
++      ++st.off;
++      break;
++  }
++  const auto now = std::chrono::steady_clock::now();
++  if (now - st.window >= std::chrono::seconds(5)) {
++    REXGPU_INFO("OCCLUSION host_results={} occluded={} fake_visible={} packets_with_queries_off={}",
++                st.host, st.zero, st.fake, st.off);
++    st = OcclusionStats{};
++    st.window = now;
++  }
++}
++}  // namespace
++
+ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
+                                                                uint32_t packet, uint32_t count) {
+   if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_) {
++    NoteOcclusion(OcclusionOutcome::kOff);
+     return CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(reader, packet, count);
+   }
+ 
+@@ -271,9 +306,12 @@ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffe
+   auto* sample_counts =
+       memory_->TranslatePhysical<xenos::xe_gpu_depth_sample_counts*>(sample_count_addr);
+   if (!sample_counts) {
++    REXGPU_WARN("OCCLUSION host queries off: sample count address {:08X} not in memory",
++                sample_count_addr);
+     DisableHostOcclusionQueries();
+     return true;
+   }
++  WritePendingOcclusionResults(false);
+ 
+   auto write_fallback_result = [sample_counts, kQueryFinished]() -> bool {
+     auto fake_sample_count = REXCVAR_GET(query_occlusion_fake_sample_count);
+@@ -286,6 +324,7 @@ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffe
+         sample_counts->ZFail_A == kQueryFinished || sample_counts->ZFail_B == kQueryFinished;
+     std::memset(sample_counts, 0, sizeof(xenos::xe_gpu_depth_sample_counts));
+     if (is_end_via_z_pass || is_end_via_z_fail) {
++      NoteOcclusion(OcclusionOutcome::kFake);
+       sample_counts->ZPass_A = fake_sample_count;
+       sample_counts->Total_A = fake_sample_count;
+     }
+@@ -298,21 +337,28 @@ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffe
+       sample_counts->ZFail_A == kQueryFinished || sample_counts->ZFail_B == kQueryFinished;
+   bool is_end = is_end_via_z_pass || is_end_via_z_fail;
+ 
++  // The Xenos GPU writes the counters at the begin and at the end of a query to two separate
++  // blocks (the game puts the "finished" marker in the end one), so an end pairs with whatever
++  // query is open, not with one at its own address. Requiring the same address turned host
++  // queries off on the first query of a session, and every query then answered "visible".
+   if (!is_end) {
+-    if (active_occlusion_query_.valid &&
+-        active_occlusion_query_.sample_count_address != sample_count_addr) {
+-      DisableHostOcclusionQueries();
+-      return write_fallback_result();
++    if (active_occlusion_query_.valid) {
++      // A begin with one still open: drop the open one (it gets no result).
++      if (BeginSubmission(true)) {
++        deferred_command_list_.D3DEndQuery(occlusion_query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION,
++                                           active_occlusion_query_.host_index);
++      }
++      active_occlusion_query_ = {};
+     }
++    std::memset(sample_counts, 0, sizeof(xenos::xe_gpu_depth_sample_counts));
+     if (!BeginGuestOcclusionQuery(sample_count_addr)) {
+       return write_fallback_result();
+     }
+     return true;
+   }
+ 
+-  if (!active_occlusion_query_.valid ||
+-      active_occlusion_query_.sample_count_address != sample_count_addr) {
+-    DisableHostOcclusionQueries();
++  if (!active_occlusion_query_.valid) {
++    // No open query (its submission ended, or it was dropped): this one is "visible".
+     return write_fallback_result();
+   }
+ 
+@@ -2031,6 +2077,7 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbu
+                                       uint32_t frontbuffer_height) {
+   SCOPE_profile_cpu_f("gpu");
+   stats::OnSwap();
++  WritePendingOcclusionResults(false);
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+ #ifdef GOW2_DEV_TOOLS
+@@ -5393,6 +5440,14 @@ void D3D12CommandProcessor::DisableHostOcclusionQueries() {
+   }
+   occlusion_query_cursor_ = 0;
+   occlusion_query_resources_available_ = false;
++  // Queries still in flight get the fake "visible" count, so the guest never waits on them.
++  const int32_t fake = std::max<int32_t>(REXCVAR_GET(query_occlusion_fake_sample_count), 0);
++  for (const PendingOcclusionResult& r : occlusion_pending_) {
++    WriteGuestOcclusionResult(
++        memory_->TranslatePhysical<xenos::xe_gpu_depth_sample_counts*>(r.sample_count_address),
++        uint64_t(fake));
++  }
++  occlusion_pending_.clear();
+ }
+ 
+ bool D3D12CommandProcessor::BeginGuestOcclusionQuery(uint32_t sample_count_address) {
+@@ -5442,23 +5497,49 @@ bool D3D12CommandProcessor::EndGuestOcclusionQuery(
+       occlusion_query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION, host_index, 1,
+       occlusion_query_readback_.Get(), sizeof(uint64_t) * host_index);
+ 
+-  if (!EndSubmission(false)) {
+-    return false;
++  // The result is written once the GPU has done the submission (WritePendingOcclusionResults);
++  // until then the guest sees its "finished" marker untouched, as on the console while the GPU is
++  // behind. Waiting here for every query stalled the CPU on the GPU dozens of times a frame.
++  (void)sample_counts;
++  occlusion_pending_.push_back({sample_count_address, host_index, submission_current_});
++  if (occlusion_pending_.size() >= kMaxOcclusionQueries / 2) {
++    WritePendingOcclusionResults(true);
+   }
++  return true;
++}
+ 
+-  uint64_t query_submission = submission_current_ ? submission_current_ - 1 : 0;
+-  CheckSubmissionFence(query_submission);
+-  if (submission_completed_ < query_submission) {
+-    return false;
++void D3D12CommandProcessor::WritePendingOcclusionResults(bool wait_all) {
++  if (occlusion_pending_.empty()) {
++    return;
+   }
+-  if (!occlusion_query_readback_mapping_) {
+-    return false;
++  if (wait_all) {
++    CheckSubmissionFence(occlusion_pending_.back().submission);
++  }
++  // Read the fence without CheckSubmissionFence's reclaiming, which runs on its own schedule.
++  const uint64_t completed = std::max(submission_completed_, submission_fence_->GetCompletedValue());
++  while (!occlusion_pending_.empty() && occlusion_pending_.front().submission <= completed) {
++    const PendingOcclusionResult r = occlusion_pending_.front();
++    occlusion_pending_.pop_front();
++    auto* sample_counts =
++        memory_->TranslatePhysical<xenos::xe_gpu_depth_sample_counts*>(r.sample_count_address);
++    if (!sample_counts || !occlusion_query_readback_mapping_) {
++      continue;
++    }
++    uint64_t samples = NormalizeOcclusionSamples(occlusion_query_readback_mapping_[r.host_index]);
++    NoteOcclusion(OcclusionOutcome::kHost, samples);
++    WriteGuestOcclusionResult(sample_counts, samples);
+   }
++}
+ 
+-  uint64_t samples = occlusion_query_readback_mapping_[host_index];
+-  samples = NormalizeOcclusionSamples(samples);
+-  WriteGuestOcclusionResult(sample_counts, samples);
+-  return true;
++void D3D12CommandProcessor::PrepareForWait() {
++  // The guest may be waiting for a query result: finish the work and write them all.
++  if (!occlusion_pending_.empty()) {
++    if (submission_open_) {
++      EndSubmission(false);
++    }
++    WritePendingOcclusionResults(true);
++  }
++  CommandProcessor::PrepareForWait();
+ }
+ 
+ uint64_t D3D12CommandProcessor::NormalizeOcclusionSamples(uint64_t samples) const {

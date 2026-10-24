@@ -1,5 +1,41 @@
 # Known issues
 
+## Rooms at ~15 fps, light glows through walls (fixed)
+
+**Symptom.** In some rooms (the opening ship cabins, for one) the frame rate fell to 10-20 fps when
+facing one way, and soft light glows from other rooms showed through the walls. Every PC Options
+setting, 1x, and host render targets made no difference to the frame rate.
+
+**Cause.** The game culls what is hidden with GPU occlusion queries, and every query came back
+"visible": about 2900 draws a frame where ~900 do. Two runtime bugs:
+- `0062`: the Xenos GPU writes a query's begin and end counters to two separate blocks (D3D
+  subtracts them). The runtime paired an end only with a begin at the same address, so the first
+  query of every session turned host queries off and from then on all answered "visible". An end
+  now pairs with the open query, and results are written when the GPU has finished, without a CPU
+  wait per query.
+- `0063` (`rov_occlusion_discard`): on the ROV render path (the default on NVIDIA) depth is tested
+  in the pixel shader, and a pixel that failed returned early, which the host query still counts
+  (1% of queries hidden, against 85% with host render targets). Such pixels now discard.
+
+Each 5 seconds the log has an `OCCLUSION` line (host results, how many were hidden, fake answers).
+
+## HUD and popups with DLSS / FSR (fixed)
+
+At 2x internal resolution the upscaler never ran (`0061`): it took the scene depth only at exactly
+the guest size, 1280x720, and at 2x it is 2560x1440. With it running, the HUD mask's rectangles
+(guest pixels) covered only the top-left quarter; they are now scaled. Inside the mask the screen
+now shows the game's own frame: the mask used to only bias the upscaler, which still sharpened and
+lightened HUD text (the objective line looked washed out). Traced frames (`gow2_trace.now`) log
+the mask (`UIMASK`) and each UI draw's estimate (`UIDRAW`). Checked: objective line, weapon HUD,
+Checkpoint popup, tutorial panels, waypoint markers.
+
+## Mouse in the game's own menus (limitation)
+
+The menus are Scaleform movies made for the controller. Mouse motion now reaches them (it is sent
+through the viewport client, `gow3_mouse_aim.cpp`), and `gow3_menu_mouse` can map
+`[GFxUI.GamepadMouse]` to the mouse axes in a cached copy of the Coalesced bundles, but the console
+menus have no pointer to move. Off by default; use the keyboard in menus.
+
 ## Green speckle and off colours at 2x internal resolution (fixed); 3x still wrong
 
 **Symptom.** With `resolution_scale = 2`, the whole image (title screen, gameplay, cutscenes) gets a

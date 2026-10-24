@@ -27,6 +27,7 @@ set(GOW3_SOURCES
     src/gow3_options_values_text.cpp
     src/gow3_toml_edit.cpp
     src/gow3_mouse_aim.cpp
+    src/gow3_coalesced.cpp
 )
 
 if(WIN32)
@@ -38,5 +39,5 @@ endif()
 rexglue_setup_target(gow3 GPU_PLUGINS xenos)
 
 if(WIN32)
-    target_link_libraries(gow3 PRIVATE dxgi ole32 shell32 user32)
+    target_link_libraries(gow3 PRIVATE dxgi ole32 shell32 user32 bcrypt)
 endif()

@@ -1,0 +1,216 @@
+Gears of War 3: DLSS / FSR at 2x internal resolution, and the HUD kept out of the upscaler. The
+scene depth was taken only when it was exactly the guest frame size (a filter against larger shadow
+maps), so at 2x the 2560x1440 depth was never used and every frame went out without the upscaler.
+A depth texture now matches when it is the guest size times a whole scale. The UI mask rectangles
+are guest pixels; they are scaled to the render size, or at 2x the mask covered only the top-left
+quarter of the frame. Inside the mask the presented image is now the game's own frame (bilinear
+when upscaling): the mask only biased the upscaler, which still sharpened and lightened HUD text.
+Traced frames (gow2_trace.now) log the mask rectangles (UIMASK) and each UI draw's estimate
+(UIDRAW).
+
+diff --git a/src/graphics/d3d12/gow2_temporal.cpp b/src/graphics/d3d12/gow2_temporal.cpp
+index 92750e6..eb34ce8 100644
+--- a/src/graphics/d3d12/gow2_temporal.cpp
++++ b/src/graphics/d3d12/gow2_temporal.cpp
+@@ -1,6 +1,7 @@
+ // Adapted from gears-judgement-recomp (BSD-3-Clause).
+ // Project-local temporal-upscaling support: scene camera capture and frame dumps.
+ #include <rex/graphics/d3d12/gow2_temporal.h>
++#include <rex/graphics/d3d12/gow2_trace.h>
+ 
+ #include <wrl/client.h>
+ 
+@@ -493,6 +494,12 @@ void NoteUiDraw(const RegisterFile& regs, const memory::Memory& memory,
+ 
+   if (!g_state.in_ui || g_state.ui_rects_overflow) return;
+ 
++  // Traced frames: each UI draw's estimate, after the DRAW line it belongs to.
++  if (Gow2TraceActive()) {
++    REXGPU_WARN("UIDRAW n={} estimated={} bounds=({}, {})..({}, {}) frame {}x{} rects={}", index_count,
++                have_bounds, vx0, vy0, vx1, vy1, fw, fh, g_state.ui_rect_count);
++  }
++
+   uint32_t x0 = 0, y0 = 0, x1 = fw, y1 = fh;
+   if (have_bounds) {
+     constexpr uint32_t kPad = 2;
+diff --git a/src/graphics/d3d12/gow2_upscale.cpp b/src/graphics/d3d12/gow2_upscale.cpp
+index 6190798..15026db 100644
+--- a/src/graphics/d3d12/gow2_upscale.cpp
++++ b/src/graphics/d3d12/gow2_upscale.cpp
+@@ -17,6 +17,7 @@
+ #include <rex/graphics/d3d12/gow2_dlss.h>
+ #include <rex/graphics/d3d12/gow2_fsr.h>
+ #include <rex/graphics/d3d12/gow2_temporal.h>
++#include <rex/graphics/d3d12/gow2_trace.h>
+ #include <rex/graphics/d3d12/texture_cache.h>
+ #include <rex/logging.h>
+ 
+@@ -111,17 +112,36 @@ void main(uint3 id : SV_DispatchThreadID) {
+ }
+ )";
+ 
++// Inside the UI mask the game's own frame is shown, not the upscaler's: the mask only biased the
++// upscaler towards the current frame, and it still reworked (sharpened, lightened) the HUD text.
++// The frame is the render size, so with upscaling it is filtered up bilinearly.
+ const char kWritebackHlsl[] = R"(
+ cbuffer C : register(b0) {
+-  row_major float4x4 m0; row_major float4x4 m1; float3 t0; float p0;
+-  uint2 size; uint mode; uint p1;
++  uint2 inSize; uint2 p2; float4 p3[7]; float3 t0; float p0;
++  uint2 size; uint useMask; uint p1;
+ };
+ Texture2D<float4> src : register(t0);
+ RWTexture2D<unorm float4> dst : register(u0);
++Texture2D<float> maskTex : register(t1);
++Texture2D<float4> frameTex : register(t2);
++float4 FrameAt(float2 p) {
++  float2 q = clamp(p - 0.5, 0.0, float2(inSize) - 1.0);
++  int2 i0 = int2(floor(q));
++  int2 i1 = min(i0 + 1, int2(inSize) - 1);
++  float2 f = q - float2(i0);
++  float4 a = lerp(frameTex[i0], frameTex[int2(i1.x, i0.y)], f.x);
++  float4 b = lerp(frameTex[int2(i0.x, i1.y)], frameTex[i1], f.x);
++  return lerp(a, b, f.y);
++}
+ [numthreads(8, 8, 1)]
+ void main(uint3 id : SV_DispatchThreadID) {
+   if (id.x >= size.x || id.y >= size.y) return;
+   float4 o = src[id.xy];
++  if (useMask != 0) {
++    float2 p = (float2(id.xy) + 0.5) * float2(inSize) / float2(size);
++    uint2 m = min(uint2(p), inSize - 1);
++    if (maskTex[m] > 0.0) o = FrameAt(p);
++  }
+ #ifdef KEEP_ALPHA
+   float a = dst[id.xy].a;
+ #else
+@@ -182,7 +202,7 @@ struct Gpu {
+ };
+ Gpu g;
+ constexpr uint32_t kSlices = 8;
+-constexpr uint32_t kPerSlice = 9;
++constexpr uint32_t kPerSlice = 12;  // three tables of four: t0, u0, t1, t2
+ 
+ typedef HRESULT(WINAPI* PFN_Compile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*,
+                                      LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+@@ -231,7 +251,7 @@ bool InitGpu(D3D12CommandProcessor& cp) {
+               (fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD) != 0,
+               (fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) != 0, g.keep_alpha);
+ 
+-  D3D12_DESCRIPTOR_RANGE ranges[3] = {};
++  D3D12_DESCRIPTOR_RANGE ranges[4] = {};
+   ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+   ranges[0].NumDescriptors = 1;
+   ranges[0].BaseShaderRegister = 0;
+@@ -244,13 +264,17 @@ bool InitGpu(D3D12CommandProcessor& cp) {
+   ranges[2].NumDescriptors = 1;
+   ranges[2].BaseShaderRegister = 1;
+   ranges[2].OffsetInDescriptorsFromTableStart = 2;
++  ranges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
++  ranges[3].NumDescriptors = 1;
++  ranges[3].BaseShaderRegister = 2;
++  ranges[3].OffsetInDescriptorsFromTableStart = 3;
+   D3D12_ROOT_PARAMETER params[2] = {};
+   params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+   params[0].Constants.ShaderRegister = 0;
+   params[0].Constants.Num32BitValues = 40;
+   params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+   params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+-  params[1].DescriptorTable.NumDescriptorRanges = 3;
++  params[1].DescriptorTable.NumDescriptorRanges = 4;
+   params[1].DescriptorTable.pDescriptorRanges = ranges;
+   params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+   D3D12_ROOT_SIGNATURE_DESC rsd = {};
+@@ -535,8 +559,11 @@ void RunJob(ID3D12GraphicsCommandList* list, void* user) {
+             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+     list->SetPipelineState(g.pso_wb.Get());
+     uint32_t wb[40] = {};
++    wb[0] = j.rw;
++    wb[1] = j.rh;
+     wb[36] = j.ow;
+     wb[37] = j.oh;
++    wb[38] = j.use_mask && j.ui_rect_count ? 1u : 0u;
+     list->SetComputeRoot32BitConstants(0, 40, wb, 0);
+     list->SetComputeRootDescriptorTable(1, j.table_wb);
+     list->Dispatch((j.ow + 7) / 8, (j.oh + 7) / 8, 1);
+@@ -610,9 +637,13 @@ void NoteDepthTexture(ID3D12Resource* depth) {
+   }
+   // Shadow maps are resolved to depth addresses too, and some are larger than the scene (1344x1344 in
+   // parts of Gears of War 3), so "largest" picked them and the frame was skipped for the size mismatch.
+-  // Once the scene size is known, take only a depth texture of exactly that size.
++  // Once the scene size is known, take only a depth texture of exactly that size. With draw
++  // resolution scaling the host texture is the guest size times the scale (2560x1440 at 2x).
+   const FrameState& st = State();
+-  if (st.guest_w && (d.Width != st.guest_w || d.Height != st.guest_h)) return;
++  if (st.guest_w && st.guest_h) {
++    const uint64_t sx = d.Width / st.guest_w, sy = d.Height / st.guest_h;
++    if (!sx || sx != sy || d.Width != sx * st.guest_w || d.Height != sy * st.guest_h) return;
++  }
+   const uint64_t area = d.Width * uint64_t(d.Height);
+   if (!g.depth_tex || area >= g.depth_area) {
+     g.depth_tex = depth;
+@@ -763,6 +794,16 @@ bool UpscaleFinal(D3D12CommandProcessor& cp, ID3D12Resource* color, uint32_t in_
+   if (job->use_mask && st.ended_ui_rect_count) {
+     job->ui_rect_count = std::min<uint32_t>(st.ended_ui_rect_count, kMaxUiRects);
+     std::memcpy(job->ui_rects, st.ended_ui_rects, job->ui_rect_count * sizeof(UiRect));
++    // The rectangles are in guest pixels; the mask is the render size (2x the guest at 2x).
++    if (st.guest_w && st.guest_h && (rw != st.guest_w || rh != st.guest_h)) {
++      for (uint32_t i = 0; i < job->ui_rect_count; ++i) {
++        UiRect& r = job->ui_rects[i];
++        r.x0 = uint16_t(std::min<uint64_t>(uint64_t(r.x0) * rw / st.guest_w, rw));
++        r.x1 = uint16_t(std::min<uint64_t>((uint64_t(r.x1) * rw + st.guest_w - 1) / st.guest_w, rw));
++        r.y0 = uint16_t(std::min<uint64_t>(uint64_t(r.y0) * rh / st.guest_h, rh));
++        r.y1 = uint16_t(std::min<uint64_t>((uint64_t(r.y1) * rh + st.guest_h - 1) / st.guest_h, rh));
++      }
++    }
+     static bool ui_logged = false;
+     if (!ui_logged) {
+       ui_logged = true;
+@@ -771,6 +812,15 @@ bool UpscaleFinal(D3D12CommandProcessor& cp, ID3D12Resource* color, uint32_t in_
+                   job->ui_rect_count, r.x0, r.y0, r.x1, r.y1);
+     }
+   }
++  // Traced frames (gow2_trace.now): what the UI mask covers, in render pixels.
++  if (Gow2TraceActive()) {
++    std::string list;
++    for (uint32_t i = 0; i < job->ui_rect_count && i < 16; ++i) {
++      const UiRect& r = job->ui_rects[i];
++      list += fmt::format(" ({},{})..({},{})", r.x0, r.y0, r.x1, r.y1);
++    }
++    REXGPU_WARN("UIMASK f={} render {}x{}: {} rect(s){}", gow2_trace_frame.load(), rw, rh, job->ui_rect_count, list);
++  }
+   const int mode = ModeFromRatio(double(rh) / double(oh));
+   job->quality = mode;
+   job->backend = backend_sel == 1 ? 0 : 1;
+@@ -876,20 +926,24 @@ bool UpscaleFinal(D3D12CommandProcessor& cp, ID3D12Resource* color, uint32_t in_
+     h.ptr += size_t(idx) * g.inc;
+     g.device->CreateUnorderedAccessView(r, nullptr, &d, h);
+   };
++  // Unused slots get the depth view: every descriptor in a bound table must be valid.
+   srv(job->depth.Get(), DXGI_FORMAT_R32_FLOAT, 0);
+   uav(job->mask, DXGI_FORMAT_R8_UNORM, 1);
+   srv(job->depth.Get(), DXGI_FORMAT_R32_FLOAT, 2);
+   srv(job->depth.Get(), DXGI_FORMAT_R32_FLOAT, 3);
+-  uav(job->mv, DXGI_FORMAT_R16G16_FLOAT, 4);
+-  srv(job->mask, DXGI_FORMAT_R8_UNORM, 5);
+-  srv(job->out, DXGI_FORMAT_R16G16B16A16_FLOAT, 6);
+-  uav(job->final_, DXGI_FORMAT_R10G10B10A2_UNORM, 7);
+-  srv(job->mask, DXGI_FORMAT_R8_UNORM, 8);
++  srv(job->depth.Get(), DXGI_FORMAT_R32_FLOAT, 4);
++  uav(job->mv, DXGI_FORMAT_R16G16_FLOAT, 5);
++  srv(job->mask, DXGI_FORMAT_R8_UNORM, 6);
++  srv(job->depth.Get(), DXGI_FORMAT_R32_FLOAT, 7);
++  srv(job->out, DXGI_FORMAT_R16G16B16A16_FLOAT, 8);
++  uav(job->final_, DXGI_FORMAT_R10G10B10A2_UNORM, 9);
++  srv(job->mask, DXGI_FORMAT_R8_UNORM, 10);
++  srv(job->color.Get(), job->color_format, 11);
+   job->table_mask = gpu;
+   job->table_mv = gpu;
+-  job->table_mv.ptr += 3ull * g.inc;
++  job->table_mv.ptr += 4ull * g.inc;
+   job->table_wb = gpu;
+-  job->table_wb.ptr += 6ull * g.inc;
++  job->table_wb.ptr += 8ull * g.inc;
+ 
+   {
+     static const char* kNames[] = {"Performance", "Balanced", "Quality", "Ultra Performance", "Ultra Quality", "Native"};

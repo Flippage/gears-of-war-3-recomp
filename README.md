@@ -31,12 +31,14 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
       no longer pop in late or hitch while streaming
 - [x] Smooth frame pacing (one present per game frame) and faster EDRAM clears, both from the
       Gears of War 2 port
+- [x] Occlusion culling works: hidden rooms and the lights behind walls are culled as on the
+      console (fixes rooms dropping to ~15 fps, and light glows showing through walls)
 - [x] Community game patches as settings: Unlock FPS (60 fps and above), Black Shading Fix, 16x AF,
       texture streaming pool, and optional AO / motion blur / bloom / lens flares / depth of field /
       post-processing / shadow cuts toggles (off by default: the game runs well with its original look)
 - [x] DLSS temporal upscaling calibrated for Gears 3 (camera, depth convention, camera cuts), with
-      the HUD, subtitles and chapter titles masked out so they do not warp; 2x internal resolution
-      (2560x1440) renders correctly, and looks great with DLSS
+      the HUD, popups, subtitles and chapter titles shown untouched by the upscaler; 2x internal
+      resolution (2560x1440) renders correctly and runs DLSS as DLAA
 - [x] Faces render cleanly in in-engine cutscenes (the black blotches are fixed, see
       [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md))
 - [x] In-game PC options menu (`F10` on keyboard or `Back + Start` on a controller)
@@ -158,19 +160,27 @@ acceleration. **Mouse Sensitivity** (`gow3_mouse_scale`) and **Invert Mouse Y**
 | Input | Action |
 |---|---|
 | Mouse | Look / aim |
-| Left click / right click / middle click | Fire (RT) / aim (LT) / zoom (right stick click) |
+| Left click / right click | Fire (RT) / aim (LT) |
+| Middle click or `Z` | Zoom (right stick click) |
 | `W` `A` `S` `D` | Move |
-| `Space` | A (cover, roll, sprint) |
-| `Backspace` / `L` / `P` | B / X / Y |
-| `E` / `Q` | Right / left trigger |
-| `1` / `3` | Left / right bumper (`3` reloads) |
-| `F` / `K` | Left / right stick click |
-| `Shift` + arrows | D-pad (weapons) |
-| `Enter` / `Tab` | Start / Back |
+| `Space` | Cover, roll, sprint (A) |
+| `F` | Melee (B) |
+| `E` | Interact, revive, pick up (X) |
+| `Q` | Point of interest, execute (Y) |
+| `R` | Reload (RB) |
+| `C` | Tac/Com (LB) |
+| `Shift` | Left stick click |
+| `1` `2` `3` `4` | Weapons (D-pad left, right, down, up) |
+| Arrow keys | Look (keyboard) |
+| `Enter` or `Esc` | Pause (Start) |
+| `Tab` | Scoreboard / objectives (Back) |
 
-Every binding is a `keybind_*` setting in `gow3.toml` (key names, comma-separated; `LMB`, `RMB`,
-`MMB` for the mouse buttons). The game's own menus are controller-style: use the keys above, the
-mouse does not point and click there.
+Rebind any of them on the PC Options menu's **Keyboard & Mouse Bindings** page (`F10`): pick a row,
+press **Set** and then the key or mouse button; **Reset Page to Defaults** restores the table above.
+`Shift`, `Ctrl` and `Alt` bind like any other key. Every binding is also a `keybind_*` setting in
+`gow3.toml` (key names, comma-separated; `LMB`, `RMB`, `MMB` for the mouse buttons). The game's own
+menus are controller-style: use the keys above, the mouse does not point and click there (the
+console menus have no pointer; a known limitation).
 
 ## Known issues
 
@@ -179,8 +189,6 @@ mouse does not point and click there.
   load them from the cache.
 - With an upscaler on, characters that move by themselves can ghost slightly (only camera motion
   vectors are available).
-- With DLSS, the tutorial panels that slide in from the right and the "Checkpoint" popup still
-  blur and wobble: they are not covered by the HUD mask yet.
 - 3x internal resolution shows wrong colours (issue #13); use 2x.
 - Aim assist also applies to the mouse.
 

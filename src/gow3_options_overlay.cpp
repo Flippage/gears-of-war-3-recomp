@@ -184,11 +184,13 @@ bool IsControlsSubPage(Page id) {
 
 #ifdef _WIN32
 // Gears of War 3 recomp: the first key or mouse button down, as a keybind name ("" if none).
-// Modifiers, Escape and F10 are skipped (Shift is read separately for combinations).
+// Shift, Ctrl and Alt bind as keys under their generic names (the left / right variants are
+// skipped: the keyboard/mouse driver records the generic ones); Escape (cancel), F10 and the
+// Windows keys are skipped.
 std::string FirstBindableKeyDown() {
   for (int vk = 0x01; vk <= 0xFE; ++vk) {
-    if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_ESCAPE || vk == VK_F10 ||
-        (vk >= VK_LSHIFT && vk <= VK_RMENU) || vk == VK_LWIN || vk == VK_RWIN) {
+    if (vk == VK_ESCAPE || vk == VK_F10 || (vk >= VK_LSHIFT && vk <= VK_RMENU) || vk == VK_LWIN ||
+        vk == VK_RWIN) {
       continue;
     }
     if (!(GetAsyncKeyState(vk) & 0x8000)) {
@@ -227,6 +229,13 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override {
     const RawInput raw = SampleRawInput(io, open_);
 
+    // The game gets its input back once the keys that can close the menu are released: Esc is
+    // also Start, and handing it over while still held paused the game as the menu closed.
+    if (!open_ && unblock_pending_ && !raw.key_escape && !raw.key_enter && !raw.key_f10) {
+      unblock_pending_ = false;
+      rex::cvar::SetFlagByName("xam_input_block", "false");
+    }
+
     // Handle the active keyboard / mouse capture on Page::kKeyBindings: wait until nothing is
     // held (the click or Enter that started it), then take the next key or mouse button.
     if (open_ && !key_capture_cvar_.empty()) {
@@ -244,8 +253,7 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
         if (!key_capture_armed_) {
           key_capture_armed_ = key.empty();
         } else if (!key.empty()) {
-          const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-          model_.Set(key_capture_cvar_, shift ? "Shift+" + key : key);
+          model_.Set(key_capture_cvar_, key);
           SaveConfigToDisk(paths_.config_path, model_);
           SyncTextBuffersFromModel();
           key_capture_cvar_.clear();
@@ -302,6 +310,7 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
     }
     open_ = open;
     if (open_) {
+      unblock_pending_ = false;
       rex::cvar::SetFlagByName("xam_input_block", "true");
       model_.RefreshFromReader();
       RefreshDynamicRowChoices(model_, paths_);
@@ -312,7 +321,7 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
       key_capture_cvar_.clear();
       FlushTextBuffersToModel();
       SaveConfigToDisk(paths_.config_path, model_);
-      rex::cvar::SetFlagByName("xam_input_block", "false");
+      unblock_pending_ = true;  // OnDraw unblocks once the closing key is released
     }
   }
 
@@ -1050,6 +1059,7 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
   Model model_;
   InputTracker input_;
   bool open_ = false;
+  bool unblock_pending_ = false;
   Page active_page_ = Page::kDisplay;
   int selected_row_ = 0;
   bool scroll_to_selected_ = false;

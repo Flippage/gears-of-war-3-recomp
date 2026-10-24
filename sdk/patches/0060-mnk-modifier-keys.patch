@@ -1,0 +1,21 @@
+Gears of War 3: keyboard bindings and modifier keys. A binding matched only when the held modifiers
+were exactly the ones it names, so holding Shift (or Ctrl / Alt) stopped every plain binding, WASD
+included, and "Shift" on its own could never be bound. A binding now needs the modifiers it names
+and ignores the others; Shift, Control and Alt can be bound as keys.
+
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index a9d2e0e..2498e7f 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -131,7 +131,10 @@ std::string_view TrimSpaces(std::string_view s) {
+ 
+ bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods) {
+   uint8_t want = TakeModifiers(token);
+-  if (want != live_mods) {
++  // Gears of War 3 recomp: a binding without modifiers works whatever is held (holding Shift to
++  // run must not stop WASD), and a modifier can be a key of its own ("Shift", "Control", "Alt").
++  // "Shift+X" still needs Shift. The exact match made a plain binding fail with any modifier down.
++  if ((live_mods & want) != want) {
+     return false;
+   }
+   rex::ui::VirtualKey vk = rex::ui::ParseVirtualKey(token);

@@ -1,0 +1,109 @@
+Gears of War 3: occlusion queries on the ROV path. With ROV the depth and stencil tests run in the
+pixel shader, and a pixel that fails them returned early, which the host occlusion query still
+counts: about 1% of the game's queries came back hidden (85% with host render targets), so it
+culled almost nothing behind walls and drew lights through them. A pixel with no covered sample
+left now discards (`rov_occlusion_discard`, default on), in the early depth / stencil path, after
+the late test (the depth-only shader included), after alpha to coverage and on a failed alpha test.
+
+diff --git a/include/rex/graphics/pipeline/shader/dxbc_translator.h b/include/rex/graphics/pipeline/shader/dxbc_translator.h
+index 3b0fd61..4a5007a 100644
+--- a/include/rex/graphics/pipeline/shader/dxbc_translator.h
++++ b/include/rex/graphics/pipeline/shader/dxbc_translator.h
+@@ -726,6 +726,8 @@ class DxbcShaderTranslator : public ShaderTranslator {
+   // unchanged or known that it's safe not to await kills/alphatest/AtoC),
+   // returns from the shader.
+   void ROV_DepthStencilTest();
++  // Ends the pixel when `covered` is zero: discards (rov_occlusion_discard), or returns.
++  void ROV_EndIfUncovered(const dxbc::Src& covered);
+   // Unpacks a 32bpp or a 64bpp color in packed_temp.packed_temp_components to
+   // color_temp, using 2 temporary VGPRs.
+   void ROV_UnpackColor(uint32_t rt_index, uint32_t packed_temp, uint32_t packed_temp_components,
+diff --git a/src/graphics/pipeline/shader/dxbc_translator_om.cpp b/src/graphics/pipeline/shader/dxbc_translator_om.cpp
+index 106dfc2..4aad6bf 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator_om.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator_om.cpp
+@@ -12,6 +12,7 @@
+ #include <cstdint>
+ 
+ #include <rex/assert.h>
++#include <rex/cvar.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/pipeline/render_target/cache.h>
+ #include <rex/graphics/pipeline/shader/dxbc_translator.h>
+@@ -19,6 +20,14 @@
+ #include <rex/graphics/util/draw.h>
+ #include <rex/math.h>
+ 
++// Gears of War 3 recomp: with ROV, depth and stencil are tested in the pixel shader, and the host
++// occlusion query counts every pixel that does not discard. Pixels left with no covered sample
++// discard instead of returning, so the game's occlusion queries see them as hidden (as with host
++// render targets); without it every query was "visible" and nothing was culled.
++REXCVAR_DEFINE_BOOL(rov_occlusion_discard, true, "GPU",
++                    "ROV: pixels with no sample left after the depth / stencil test discard "
++                    "(occlusion queries count them as hidden) instead of returning.");
++
+ namespace rex::graphics {
+ using namespace ucode;
+ 
+@@ -395,6 +404,14 @@ void DxbcShaderTranslator::StartPixelShader_LoadROVParameters() {
+   a_.OpEndIf();
+ }
+ 
++void DxbcShaderTranslator::ROV_EndIfUncovered(const dxbc::Src& covered) {
++  if (REXCVAR_GET(rov_occlusion_discard)) {
++    a_.OpDiscard(false, covered);
++  } else {
++    a_.OpRetC(false, covered);
++  }
++}
++
+ void DxbcShaderTranslator::ROV_DepthStencilTest() {
+   uint32_t temp = PushSystemTemp();
+   dxbc::Dest temp_x_dest(dxbc::Dest::R(temp, 0b0001));
+@@ -1089,7 +1106,7 @@ void DxbcShaderTranslator::ROV_DepthStencilTest() {
+     // End the shader if nothing is covered in the 2x2 quad after early
+     // depth/stencil.
+     // temp.x = free
+-    a_.OpRetC(false, dxbc::Src::R(temp, dxbc::Src::kXXXX));
++    ROV_EndIfUncovered(dxbc::Src::R(temp, dxbc::Src::kXXXX));
+   }
+ 
+   // Close the large depth/stencil conditional.
+@@ -1844,7 +1861,7 @@ void DxbcShaderTranslator::CompletePixelShader_AlphaToMask() {
+     // 0:3, but not in 4:7).
+     a_.OpAnd(temp_x_dest, dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kXXXX),
+              dxbc::Src::LU(0b11111111));
+-    a_.OpRetC(false, temp_x_src);
++    ROV_EndIfUncovered(temp_x_src);
+   } else {
+     dxbc::Src coverage_src(dxbc::Src::R(coverage_temp, coverage_temp_component));
+     a_.OpDiscard(false, coverage_src);
+@@ -1918,14 +1935,15 @@ void DxbcShaderTranslator::CompletePixelShader_WriteToROV() {
+   // system_temp_rov_params_.y (the depth / stencil sample address) is not
+   // needed anymore, can be used for color writing.
+ 
+-  if (!is_depth_only_pixel_shader_) {
+-    // Check if any sample is still covered after depth testing and writing,
+-    // skip color writing completely in this case.
++  // Check if any sample is still covered after depth testing and writing,
++  // skip color writing completely in this case (the depth-only shader has none,
++  // but discards for occlusion queries).
++  if (!is_depth_only_pixel_shader_ || REXCVAR_GET(rov_occlusion_discard)) {
+     // temp.x = whether any sample is still covered.
+     a_.OpAnd(temp_x_dest, dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kXXXX),
+              dxbc::Src::LU(0b1111));
+     // temp.x = free.
+-    a_.OpRetC(false, temp_x_src);
++    ROV_EndIfUncovered(temp_x_src);
+   }
+ 
+   // Write color values.
+@@ -2778,7 +2796,7 @@ void DxbcShaderTranslator::CompletePixelShader() {
+       a_.OpEndIf();
+       // Discard the pixel if it has failed the test.
+       if (edram_rov_used_) {
+-        a_.OpRetC(false, alpha_test_mask_src);
++        ROV_EndIfUncovered(alpha_test_mask_src);
+       } else {
+         a_.OpDiscard(false, alpha_test_mask_src);
+       }
