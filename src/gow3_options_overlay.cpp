@@ -174,8 +174,34 @@ RawInput SampleRawInput(const ImGuiIO& io, bool menu_open) {
 }
 
 bool IsTabPage(Page id) {
-  return id != Page::kPadButtons;
+  return id != Page::kPadButtons && id != Page::kKeyBindings;
 }
+
+// Sub-pages opened from the Controls tab.
+bool IsControlsSubPage(Page id) {
+  return id == Page::kPadButtons || id == Page::kKeyBindings;
+}
+
+#ifdef _WIN32
+// Gears of War 3 recomp: the first key or mouse button down, as a keybind name ("" if none).
+// Modifiers, Escape and F10 are skipped (Shift is read separately for combinations).
+std::string FirstBindableKeyDown() {
+  for (int vk = 0x01; vk <= 0xFE; ++vk) {
+    if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_ESCAPE || vk == VK_F10 ||
+        (vk >= VK_LSHIFT && vk <= VK_RMENU) || vk == VK_LWIN || vk == VK_RWIN) {
+      continue;
+    }
+    if (!(GetAsyncKeyState(vk) & 0x8000)) {
+      continue;
+    }
+    std::string name = rex::ui::VirtualKeyToString(static_cast<rex::ui::VirtualKey>(vk));
+    if (!name.empty()) {
+      return name;
+    }
+  }
+  return {};
+}
+#endif
 
 class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
  public:
@@ -201,8 +227,38 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override {
     const RawInput raw = SampleRawInput(io, open_);
 
-    // Handle active controller-button capture modal on Page::kPadButtons.
-    if (open_ && !pad_capture_cvar_.empty()) {
+    // Handle the active keyboard / mouse capture on Page::kKeyBindings: wait until nothing is
+    // held (the click or Enter that started it), then take the next key or mouse button.
+    if (open_ && !key_capture_cvar_.empty()) {
+      if (raw.key_escape && !prev_capture_esc_) {
+        key_capture_cvar_.clear();
+      } else {
+#ifdef _WIN32
+        HWND fg = GetForegroundWindow();
+        DWORD fg_pid = 0;
+        if (fg) {
+          GetWindowThreadProcessId(fg, &fg_pid);
+        }
+        const std::string key =
+            fg_pid == GetCurrentProcessId() ? FirstBindableKeyDown() : std::string();
+        if (!key_capture_armed_) {
+          key_capture_armed_ = key.empty();
+        } else if (!key.empty()) {
+          const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+          model_.Set(key_capture_cvar_, shift ? "Shift+" + key : key);
+          SaveConfigToDisk(paths_.config_path, model_);
+          SyncTextBuffersFromModel();
+          key_capture_cvar_.clear();
+        }
+#else
+        key_capture_cvar_.clear();
+#endif
+      }
+      prev_capture_pad_ = raw.pad_buttons;
+      prev_capture_esc_ = raw.key_escape;
+      // Eat navigation edges while capturing a key.
+      (void)input_.Step(raw, open_);
+    } else if (open_ && !pad_capture_cvar_.empty()) {
       if (raw.key_escape && !prev_capture_esc_) {
         pad_capture_cvar_.clear();
       } else {
@@ -253,6 +309,7 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
       ClampSelectedRow();
     } else {
       pad_capture_cvar_.clear();
+      key_capture_cvar_.clear();
       FlushTextBuffersToModel();
       SaveConfigToDisk(paths_.config_path, model_);
       rex::cvar::SetFlagByName("xam_input_block", "false");
@@ -322,7 +379,7 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
     if (tabs.empty()) {
       return;
     }
-    Page current_tab = (active_page_ == Page::kPadButtons) ? Page::kControls : active_page_;
+    Page current_tab = IsControlsSubPage(active_page_) ? Page::kControls : active_page_;
     int idx = 0;
     for (size_t i = 0; i < tabs.size(); ++i) {
       if (tabs[i] == current_tab) {
@@ -343,11 +400,19 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
         active_page_ = Page::kPadButtons;
         selected_row_ = 0;
         scroll_to_selected_ = true;
+      } else if (std::string_view(row.cvar) == "key_bindings") {
+        active_page_ = Page::kKeyBindings;
+        selected_row_ = 0;
+        scroll_to_selected_ = true;
       }
       return;
     }
     if (row.page == Page::kPadButtons) {
       pad_capture_cvar_ = row.cvar;
+      return;
+    }
+    if (row.page == Page::kKeyBindings) {
+      StartKeyCapture(row.cvar);
       return;
     }
     model_.Toggle(row.cvar);
@@ -356,7 +421,7 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
 
   void HandleNavigationEdges(const MenuEdges& edges) {
     if (edges.cancel) {
-      if (active_page_ == Page::kPadButtons) {
+      if (IsControlsSubPage(active_page_)) {
         active_page_ = Page::kControls;
         selected_row_ = 0;
         scroll_to_selected_ = true;
@@ -570,8 +635,18 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
                 kColTextPrimary, val_text.c_str());
   }
 
+  void StartKeyCapture(const char* cvar) {
+    FlushTextBuffersToModel();
+    key_capture_cvar_ = cvar;
+    key_capture_armed_ = false;
+  }
+
   void DrawTextWidget(const RowSpec& row, float width, float height, float scale) {
     auto& buf = text_buffers_[row.cvar];
+    const bool is_key_row = (row.page == Page::kKeyBindings);
+    const float set_w = is_key_row ? 76.0f * scale : 0.0f;
+    const float set_gap = is_key_row ? 6.0f * scale : 0.0f;
+    width = std::max(80.0f * scale, width - set_w - set_gap);
     ImGui::PushItemWidth(width);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * scale, (height - ImGui::GetFontSize()) * 0.5f));
     ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::ColorConvertU32ToFloat4(kColControlBg));
@@ -592,6 +667,24 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
     ImGui::PopStyleColor(4);
     ImGui::PopStyleVar();
     ImGui::PopItemWidth();
+
+    if (is_key_row) {
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      ImGui::SameLine(0.0f, set_gap);
+      ImVec2 sp = ImGui::GetCursorScreenPos();
+      std::string set_id = std::string("##keyset_") + row.cvar;
+      if (ImGui::InvisibleButton(set_id.c_str(), ImVec2(set_w, height))) {
+        StartKeyCapture(row.cvar);
+      }
+      bool sp_hov = ImGui::IsItemHovered();
+      dl->AddRectFilled(sp, ImVec2(sp.x + set_w, sp.y + height),
+                        sp_hov ? kColAccentBright : kColAccentSoft, 4.0f * scale);
+      dl->AddRect(sp, ImVec2(sp.x + set_w, sp.y + height), kColAccent, 4.0f * scale);
+      const char* set_txt = UiText("key_set").For(Lang::kEn);
+      ImVec2 ssz = ImGui::CalcTextSize(set_txt);
+      dl->AddText(ImVec2(sp.x + (set_w - ssz.x) * 0.5f, sp.y + (height - ssz.y) * 0.5f),
+                  kColTextPrimary, set_txt);
+    }
   }
 
   void DrawActionWidget(const RowSpec& row, Lang lang, float width, float height, float scale) {
@@ -712,7 +805,7 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
 
           const bool active =
               (p.id == active_page_) ||
-              (active_page_ == Page::kPadButtons && p.id == Page::kControls);
+              (IsControlsSubPage(active_page_) && p.id == Page::kControls);
           const char* tab_label = p.title.For(lang);
           ImVec2 tsz = ImGui::CalcTextSize(tab_label);
           float tab_w = tsz.x + 28.0f * scale;
@@ -747,8 +840,8 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
 
       const PageSpec& page = ActivePageSpec();
 
-      // Sub-page back button for Controller Buttons.
-      if (active_page_ == Page::kPadButtons) {
+      // Sub-page back button for Controller Buttons and Keyboard & Mouse Bindings.
+      if (IsControlsSubPage(active_page_)) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kColRowIdle));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::ColorConvertU32ToFloat4(kColAccent));
         if (ImGui::Button(UiText("back_to_controls").For(lang),
@@ -926,11 +1019,12 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
       ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextDim), "%s",
                          UiText("hint_bar").For(lang));
 
-      // Controller button capture modal overlay.
-      if (!pad_capture_cvar_.empty()) {
+      // Controller button / key capture modal overlay.
+      if (!pad_capture_cvar_.empty() || !key_capture_cvar_.empty()) {
         win_dl->AddRectFilled(panel_pos, ImVec2(panel_pos.x + panel_w, panel_pos.y + panel_h),
                               IM_COL32(0, 0, 0, 195), 8.0f * scale);
-        const char* prompt = UiText("pad_press_button").For(lang);
+        const char* prompt =
+            UiText(key_capture_cvar_.empty() ? "pad_press_button" : "key_press_key").For(lang);
         ImVec2 psz = ImGui::CalcTextSize(prompt);
         ImVec2 box_min((disp_w - psz.x) * 0.5f - 28.0f * scale,
                        (disp_h - psz.y) * 0.5f - 20.0f * scale);
@@ -960,6 +1054,10 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
   int selected_row_ = 0;
   bool scroll_to_selected_ = false;
   std::string pad_capture_cvar_;
+  // Gears of War 3 recomp: keybind_* row waiting for a key, and whether the keys that started the
+  // capture have been released.
+  std::string key_capture_cvar_;
+  bool key_capture_armed_ = false;
   uint16_t prev_capture_pad_ = 0;
   bool prev_capture_esc_ = false;
   std::unordered_map<std::string, std::array<char, 256>> text_buffers_;

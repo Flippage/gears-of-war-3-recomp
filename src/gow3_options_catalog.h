@@ -16,6 +16,7 @@ enum class Page {
   kGraphics,
   kControls,
   kPadButtons,
+  kKeyBindings,
   kNetwork,
   kSaves,
 };

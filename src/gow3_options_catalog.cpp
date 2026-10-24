@@ -43,6 +43,22 @@ RowSpec PadButtonRow(const char* cvar, const char* def, const char* en_label,
   };
 }
 
+// Gears of War 3 recomp: keyboard / mouse bindings (the keyboard/mouse driver's keybind_*
+// settings: comma-separated key names, Shift+ combinations, LMB / RMB / MMB). The defaults include
+// the mouse buttons set by PrepareNativeMouseAim.
+RowSpec KeyBindRow(const char* cvar, const char* def, const char* en_label, const char* en_help) {
+  return {
+      cvar,
+      Page::kKeyBindings,
+      Control::kText,
+      Apply::kNow,
+      {en_label},
+      {en_help},
+      def,
+      {},
+  };
+}
+
 std::vector<PageSpec> BuildCatalog() {
   std::vector<PageSpec> pages;
 
@@ -428,6 +444,73 @@ std::vector<PageSpec> BuildCatalog() {
               "",
               {},
           },
+          {
+              "key_bindings",
+              Page::kControls,
+              Control::kAction,
+              Apply::kNow,
+              {"Keyboard & Mouse Bindings"},
+              {"Choose which keys and mouse buttons do what with Keyboard & Mouse Input on."},
+              "",
+              {},
+          },
+      },
+  });
+
+  // --- Keyboard & Mouse Bindings (sub-page opened from Controls) ---
+  pages.push_back({
+      Page::kKeyBindings,
+      {"Keyboard & Mouse Bindings"},
+      {"Select an action and press Set (or Enter), then the key or mouse button. Hold Shift for a Shift combination. Or type keys, comma-separated."},
+      {
+          KeyBindRow("keybind_lstick_up", "W", "Move Forward",
+                     "Left stick up. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_lstick_down", "S", "Move Back",
+                     "Left stick down. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_lstick_left", "A", "Move Left",
+                     "Left stick left. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_lstick_right", "D", "Move Right",
+                     "Left stick right. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_right_trigger", "E,O,LMB", "Fire (RT)",
+                     "Right trigger. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_left_trigger", "Q,I,RMB", "Aim (LT)",
+                     "Left trigger. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_a", "Semicolon,Space", "Cover / Evade / Run (A)",
+                     "A button. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_b", "Quote,Backspace", "Melee (B)",
+                     "B button. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_x", "L", "Interact / Revive / Pick Up (X)",
+                     "X button. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_y", "P", "Point of Interest / Execute (Y)",
+                     "Y button. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_right_shoulder", "3", "Reload (RB)",
+                     "Right bumper. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_left_shoulder", "1", "Tac/Com (LB)",
+                     "Left bumper. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_rstick_press", "K,MMB", "Zoom (Right Stick Click)",
+                     "Right stick click. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_lstick_press", "F", "Left Stick Click",
+                     "Left stick click. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_dpad_up", "Shift+Up", "Grenade (D-Pad Up)",
+                     "D-pad up. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_dpad_down", "Shift+Down", "Pistol (D-Pad Down)",
+                     "D-pad down. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_dpad_left", "Shift+Left", "Weapon 1 (D-Pad Left)",
+                     "D-pad left. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_dpad_right", "Shift+Right", "Weapon 2 (D-Pad Right)",
+                     "D-pad right. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_rstick_up", "Up", "Look Up",
+                     "Right stick up (keyboard look; the mouse looks too). Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_rstick_down", "Down", "Look Down",
+                     "Right stick down. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_rstick_left", "Left", "Look Left",
+                     "Right stick left. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_rstick_right", "Right", "Look Right",
+                     "Right stick right. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_start", "X,Return", "Pause (Start)",
+                     "Start button. Comma-separated keys; Set captures one."),
+          KeyBindRow("keybind_back", "Z,Tab", "Scoreboard / Objectives (Back)",
+                     "Back button. Comma-separated keys; Set captures one."),
       },
   });
 
@@ -592,6 +675,8 @@ const Text& UiText(std::string_view key) {
       {"back_to_controls", {"<  Back to Controls"}},
       {"pad_press_button", {"Press a button on your controller...   (Esc: Cancel)"}},
       {"pad_remap", {"Remap"}},
+      {"key_press_key", {"Press a key or mouse button...   (hold Shift for a combination, Esc: Cancel)"}},
+      {"key_set", {"Set"}},
   };
   for (const auto& [k, text] : kTable) {
     if (k == key) {
