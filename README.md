@@ -23,7 +23,10 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
 - [x] Boots, title screen, menus, profile sign-in
 - [x] Campaign: loads into missions and plays (tested through the first chapters)
 - [x] Saving and loading checkpoints, Continue, across game restarts
-- [x] Controller (tested with a DualSense); keyboard through the runtime's `--mnk_mode=true`
+- [x] Controller (tested with a DualSense)
+- [x] Keyboard and mouse: native mouse aim through the game's own PC mouse input (no stick dead zone
+      or acceleration); left click fires, right click aims, middle click zooms (see
+      [Keyboard and mouse](#keyboard-and-mouse))
 - [x] Shader pipelines compiled off the draw thread and cached between runs; models and textures
       no longer pop in late or hitch while streaming
 - [x] Smooth frame pacing (one present per game frame) and faster EDRAM clears, both from the
@@ -32,7 +35,8 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
       texture streaming pool, and optional AO / motion blur / bloom / lens flares / depth of field /
       post-processing / shadow cuts toggles (off by default: the game runs well with its original look)
 - [x] DLSS temporal upscaling calibrated for Gears 3 (camera, depth convention, camera cuts), with
-      the HUD, subtitles and chapter titles masked out so they do not warp
+      the HUD, subtitles and chapter titles masked out so they do not warp; 2x internal resolution
+      (2560x1440) renders correctly, and looks great with DLSS
 - [x] Faces render cleanly in in-engine cutscenes (the black blotches are fixed, see
       [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md))
 - [x] In-game PC options menu (`F10` on keyboard or `Back + Start` on a controller)
@@ -40,7 +44,7 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
 - [x] Two-player campaign co-op over System Link, tested with two instances on one PC
       (see [Co-op](#co-op)); over the internet not yet tested
 - [ ] Full campaign play-through; Horde, Beast and Versus untested
-- [ ] Mouse aim, ultrawide
+- [ ] Ultrawide; mouse in the game's own menus; 3x internal resolution (wrong colours)
 
 There is no binary release. Build it yourself as described below.
 
@@ -142,6 +146,32 @@ Playing over the internet uses the same System Link with the runtime's `net_peer
 War 2 port's patch 0011); a guide for Gears 3 is still to come. Every player needs their own copy of
 the game, dumped from their own disc.
 
+## Keyboard and mouse
+
+Turn on **Keyboard & Mouse Input** and **Mouse Look & Aim** on the PC Options menu's Controls page (or
+`mnk_mode = true` and `mnk_mouse = true` in `gow3.toml`), then click the game window to capture the
+mouse. The mouse goes into the game's own PC mouse axes (Unreal Engine 3's `MouseX` / `MouseY`
+bindings, still present in Gears 3's input config), so aiming has no stick dead zone or stick
+acceleration. **Mouse Sensitivity** (`gow3_mouse_scale`) and **Invert Mouse Y**
+(`gow3_mouse_invert_y`) apply at once.
+
+| Input | Action |
+|---|---|
+| Mouse | Look / aim |
+| Left click / right click / middle click | Fire (RT) / aim (LT) / zoom (right stick click) |
+| `W` `A` `S` `D` | Move |
+| `Space` | A (cover, roll, sprint) |
+| `Backspace` / `L` / `P` | B / X / Y |
+| `E` / `Q` | Right / left trigger |
+| `1` / `3` | Left / right bumper (`3` reloads) |
+| `F` / `K` | Left / right stick click |
+| `Shift` + arrows | D-pad (weapons) |
+| `Enter` / `Tab` | Start / Back |
+
+Every binding is a `keybind_*` setting in `gow3.toml` (key names, comma-separated; `LMB`, `RMB`,
+`MMB` for the mouse buttons). The game's own menus are controller-style: use the keys above, the
+mouse does not point and click there.
+
 ## Known issues
 
 - The first launch after updating, or after changing a graphics setting, recompiles the shader
@@ -149,6 +179,10 @@ the game, dumped from their own disc.
   load them from the cache.
 - With an upscaler on, characters that move by themselves can ghost slightly (only camera motion
   vectors are available).
+- With DLSS, the tutorial panels that slide in from the right and the "Checkpoint" popup still
+  blur and wobble: they are not covered by the HUD mask yet.
+- 3x internal resolution shows wrong colours (issue #13); use 2x.
+- Aim assist also applies to the mouse.
 
 ## Finding the functions codegen misses
 
