@@ -38,6 +38,7 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
       Gears of War 2 port
 - [x] Occlusion culling works: hidden rooms and the lights behind walls are culled as on the
       console (fixes rooms dropping to ~15 fps, and light glows showing through walls)
+- [x] Insane difficulty unlocked from the start (PC Options, Saves; normally it needs a finished campaign)
 - [x] Community game patches as settings: Unlock FPS (60 fps and above), Black Shading Fix, 16x AF,
       texture streaming pool, and optional AO / motion blur / bloom / lens flares / depth of field /
       post-processing / shadow cuts toggles (off by default: the game runs well with its original look)

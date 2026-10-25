@@ -29,6 +29,7 @@ set(GOW3_SOURCES
     src/gow3_mouse_aim.cpp
     src/gow3_coalesced.cpp
     src/gow3_button_glyphs.cpp
+    src/gow3_unlocks.cpp
 )
 
 if(WIN32)

@@ -644,6 +644,16 @@ std::vector<PageSpec> BuildCatalog() {
                   {"", {"Default (AppData\\Local\\GearsOfWar3PC\\user)"}},
               },
           },
+          {
+              "gow3_unlock_insane",
+              Page::kSaves,
+              Control::kToggle,
+              Apply::kNow,
+              {"Unlock Insane Difficulty"},
+              {"Insane is selectable from the start, without finishing the campaign first."},
+              "true",
+              {},
+          },
       },
   });
 

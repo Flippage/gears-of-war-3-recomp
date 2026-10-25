@@ -27,6 +27,7 @@
 #include "gow3_xam_input_guard.h"
 #include "gow3_xam_trace.h"
 #include "gow3_button_glyphs.h"
+#include "gow3_unlocks.h"
 
 class Gow3App : public rex::ReXApp {
  public:
@@ -91,6 +92,7 @@ class Gow3App : public rex::ReXApp {
   void OnPostSetup() override {
     rex::glue::InstallNativeMouseAim(window());
     rex::glue::InstallButtonGlyphs(window());
+    rex::glue::InstallUnlockHooks();
   }
   void OnConfigureFonts(ImFontAtlas* atlas) override {
     rex::glue::AddOptionsFonts(atlas);
