@@ -89,4 +89,11 @@ if (-not (Test-Path (Join-Path $build 'gow3.toml'))) {
     Copy-Item (Join-Path $root 'config\gow3.toml') $build
     Write-Host "Default settings: $build\gow3.toml"
 }
+if (Test-Path (Join-Path $root 'assets\glyphs')) {
+    $glyphDst = Join-Path $build 'assets\glyphs'
+    New-Item -ItemType Directory -Force $glyphDst | Out-Null
+    Copy-Item (Join-Path $root 'assets\glyphs\*') $glyphDst -Recurse -Force
+    Write-Host "Glyphs copied: $glyphDst"
+}
 Write-Host "`nDone: $build\gow3.exe" -ForegroundColor Green
+

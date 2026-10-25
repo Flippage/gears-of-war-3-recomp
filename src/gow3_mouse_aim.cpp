@@ -21,6 +21,7 @@
 // Upegui and the gow2-recomp contributors), which injects through the viewport client instead.
 
 #include "gow3_mouse_aim.h"
+#include "gow3_button_glyphs.h"
 
 #include <windows.h>
 
@@ -126,6 +127,9 @@ class MouseBankListener : public rex::ui::WindowInputListener {
     if (!window || !window->IsMouseCaptureRequested()) return;
     if (!rex::input::mnk::IsMouseLookActive()) return;
     if (e.dx() == 0 && e.dy() == 0) return;
+    if (std::abs(e.dx()) > 3 || std::abs(e.dy()) > 3) {
+      rex::glue::NotifyKeyboardMouseInput();
+    }
     std::lock_guard<std::mutex> lock(g_bank_mutex);
     g_bank_dx += e.dx();
     g_bank_dy += e.dy();

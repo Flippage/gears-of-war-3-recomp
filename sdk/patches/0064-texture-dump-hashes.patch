@@ -1,0 +1,96 @@
+Gears of War 3: selective texture dumps. `texture_dump_hashes` (comma-separated 16-hex-digit guest
+texture hashes) dumps just those textures to the pack dump folder the first time each loads, also
+with `texture_dump` off. The button prompt replacement uses it to capture the player's own two prompt
+atlases on first run, so the replacement atlases are built from the player's copy of the game.
+
+diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
+index 9397475..d0de4de 100644
+--- a/include/rex/graphics/flags.h
++++ b/include/rex/graphics/flags.h
+@@ -48,6 +48,7 @@ REXCVAR_DECLARE(bool, direct_host_resolve);
+ 
+ // GPU Textures
+ REXCVAR_DECLARE(bool, texture_dump);
++REXCVAR_DECLARE(std::string, texture_dump_hashes);
+ REXCVAR_DECLARE(std::string, texture_pack_dir);
+ REXCVAR_DECLARE(bool, texture_replace);
+ REXCVAR_DECLARE(bool, texture_replace_allow_larger);
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 5e3cd27..8cb49cf 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -672,7 +672,8 @@ void D3D12TextureCache::ClearCache() {
+ 
+ void D3D12TextureCache::InitializeTextureReplacement(const std::filesystem::path& cache_root,
+                                                      uint32_t title_id) {
+-  if (!REXCVAR_GET(texture_dump) && !REXCVAR_GET(texture_replace)) {
++  if (!REXCVAR_GET(texture_dump) && !REXCVAR_GET(texture_replace) &&
++      REXCVAR_GET(texture_dump_hashes).empty()) {
+     texture_replacement_.reset();
+     return;
+   }
+diff --git a/src/graphics/d3d12/texture_replacement.cpp b/src/graphics/d3d12/texture_replacement.cpp
+index 72f534e..7b8f34b 100644
+--- a/src/graphics/d3d12/texture_replacement.cpp
++++ b/src/graphics/d3d12/texture_replacement.cpp
+@@ -4,6 +4,7 @@
+ #include <cctype>
+ #include <charconv>
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ 
+ #include <rex/cvar.h>
+@@ -21,6 +22,9 @@
+ 
+ REXCVAR_DEFINE_BOOL(texture_dump, false, "GPU/Textures",
+                     "Write each unique decoded guest texture to the pack dump folder (DDS)");
++REXCVAR_DEFINE_STRING(texture_dump_hashes, "", "GPU/Textures",
++                      "Comma-separated guest texture hashes (16 hex digits) to dump to DDS the first "
++                      "time each loads, also with texture_dump off");
+ REXCVAR_DEFINE_STRING(texture_pack_dir, "", "GPU/Textures",
+                       "Texture pack root. Empty means the \"textures\" folder next to the "
+                       "executable; packs go in <root>/<TITLEID>/replace, dumps in "
+@@ -461,7 +465,7 @@ void TextureReplacementManager::ScanDir(const std::filesystem::path& dir,
+ bool TextureReplacementManager::HashGuest(const GuestTextureDesc& desc, const uint8_t* base_bytes,
+                                           const uint8_t* mips_bytes, bool gpu_written,
+                                           uint64_t* out_hash) const {
+-  bool want_dump = REXCVAR_GET(texture_dump);
++  bool want_dump = REXCVAR_GET(texture_dump) || !REXCVAR_GET(texture_dump_hashes).empty();
+   bool want_replace = REXCVAR_GET(texture_replace);
+   if (!want_dump && !want_replace) {
+     return false;
+@@ -611,11 +615,32 @@ bool WriteDdsFile(const std::filesystem::path& path, DXGI_FORMAT format, uint32_
+   return ok;
+ }
+ 
++// Whether `hash` is in the comma-separated hex list of texture_dump_hashes.
++bool InDumpHashList(uint64_t hash, const std::string& list) {
++  const char* p = list.c_str();
++  while (*p) {
++    while (*p == ' ' || *p == ',') ++p;
++    if (!*p) break;
++    char* end = nullptr;
++    const uint64_t value = std::strtoull(p, &end, 16);
++    if (end == p) {
++      ++p;
++      continue;
++    }
++    if (value == hash) return true;
++    p = end;
++  }
++  return false;
++}
++
+ }  // namespace
+ 
+ void TextureReplacementManager::MaybeDump(const GuestTextureDesc& desc, const uint8_t* base_bytes,
+                                           uint32_t base_row_pitch_bytes, uint64_t hash) {
+-  if (!REXCVAR_GET(texture_dump) || base_bytes == nullptr || desc.base_size == 0) {
++  if (base_bytes == nullptr || desc.base_size == 0) {
++    return;
++  }
++  if (!REXCVAR_GET(texture_dump) && !InDumpHashList(hash, REXCVAR_GET(texture_dump_hashes))) {
+     return;
+   }
+   if (dumped_.find(hash) != dumped_.end()) {

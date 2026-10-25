@@ -1,0 +1,51 @@
+Gears of War 3: texture replacement survives reused texture slots. A host texture whose guest memory
+changed content twice was marked dynamic and never hashed or replaced again. Streaming reuses those
+slots, so the button prompt atlases lost their replacement after a level, once the menu loaded them
+back into a reused slot. While the pack or the active variant has files, dynamic textures are still
+hashed, and they are replaced when their content has a file.
+
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 8cb49cf..0efcf04 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -1744,7 +1744,14 @@ void D3D12TextureCache::MaybeUpdateReplacement(D3D12Texture& texture) {
+   if (key.dimension != xenos::DataDimension::k2DOrStacked || key.GetDepthOrArraySize() != 1) {
+     return;
+   }
+-  if (IsSignedVersionSeparateForFormat(key) || texture.is_dynamic_content()) {
++  if (IsSignedVersionSeparateForFormat(key)) {
++    return;
++  }
++  // A texture whose memory held other content more than once (streaming reuses the slot) counts
++  // as dynamic and was never replaced again: Gears of War 3's prompt atlases lost their replacement
++  // after a level, when the menu loaded them back into a reused slot. While a pack has files,
++  // dynamic textures are still hashed, and replaced when their content has a file.
++  if (texture.is_dynamic_content() && !texture_replacement_->HasAnyReplacementFiles()) {
+     return;
+   }
+   uint32_t base_size = texture.GetGuestBaseSize();
+@@ -1791,7 +1798,7 @@ void D3D12TextureCache::MaybeUpdateReplacement(D3D12Texture& texture) {
+     }
+     return;
+   }
+-  if (!texture.NoteContentHash(hash)) {
++  if (!texture.NoteContentHash(hash) && !texture_replacement_->HasReplacementFile(hash)) {
+     if (texture.has_replacement()) {
+       texture.ClearReplacement();
+     }
+diff --git a/src/graphics/d3d12/texture_replacement.h b/src/graphics/d3d12/texture_replacement.h
+index 00d14ac..52fa5d5 100644
+--- a/src/graphics/d3d12/texture_replacement.h
++++ b/src/graphics/d3d12/texture_replacement.h
+@@ -89,6 +89,11 @@ class TextureReplacementManager {
+   uint32_t variant_epoch() const { return variant_epoch_; }
+   // Whether the active variant has a file for this content hash.
+   bool HasVariantFile(uint64_t hash) const { return variant_paths_.find(hash) != variant_paths_.end(); }
++  // Whether the pack or the active variant has a file for this hash / any file at all.
++  bool HasReplacementFile(uint64_t hash) const {
++    return HasVariantFile(hash) || replace_paths_.find(hash) != replace_paths_.end();
++  }
++  bool HasAnyReplacementFiles() const { return !replace_paths_.empty() || !variant_paths_.empty(); }
+   // Whether any variant folder has been read; the hashes it names matter for reloads.
+   bool HasVariantFiles() const { return !variant_paths_.empty() || variant_was_active_; }
+   bool GetReplacementImage(uint64_t hash, const ReplacementImage** out_image) const;

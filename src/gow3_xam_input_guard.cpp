@@ -38,6 +38,7 @@
 // trampoline and no fixups.
 
 #include "gow3_xam_input_guard.h"
+#include "gow3_button_glyphs.h"
 
 #include <windows.h>
 
@@ -205,6 +206,12 @@ void GuardWrap(PPCContext& ctx, uint8_t* base) {
 
   // XamInputGetState(user_index r3, flags r4, XINPUT_STATE* r5); r3 holds the result afterwards.
   kTargets[I].body(ctx, base);
+
+  if constexpr (I == 0) {
+    if (ctx.r3.u32 == 0) {
+      rex::glue::PollButtonPrompts();
+    }
+  }
 
   LARGE_INTEGER done;
   QueryPerformanceCounter(&done);

@@ -1,0 +1,240 @@
+Input drivers: physical controller activity polling and gamepad type detection. SDLInputDriver and XinputInputDriver record the host uptime timestamp and controller type (SDL_GamepadType) on physical button presses or stick/trigger deflection past deadzone. InputSystem::GetLastPhysicalControllerActivity exposes the latest physical activity across drivers so game-side glyph replacement can detect active gamepads without linking SDL.
+
+diff --git a/include/rex/input/input_driver.h b/include/rex/input/input_driver.h
+index 52116f1..3d138a3 100644
+--- a/include/rex/input/input_driver.h
++++ b/include/rex/input/input_driver.h
+@@ -46,6 +46,16 @@ class InputDriver {
+ 
+   virtual void OnWindowAvailable(rex::ui::Window* /*window*/) {}
+ 
++  /// Uptime millis of the last real physical controller activity (button press, or
++  /// stick/trigger past dead zone). If out_type is non-null, writes the
++  /// controller's SDL_GamepadType or 0. Synthetic drivers return 0.
++  virtual uint64_t GetLastPhysicalActivity(int* out_type) const {
++    if (out_type) {
++      *out_type = 0;
++    }
++    return 0;
++  }
++
+   void set_is_active_callback(std::function<bool()> is_active_callback) {
+     is_active_callback_ = is_active_callback;
+   }
+diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
+index 1cb3faa..2037480 100644
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -47,6 +47,11 @@ class InputSystem : public system::IInputSystem {
+   X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration);
+   X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags, X_INPUT_KEYSTROKE* out_keystroke);
+ 
++  /// Returns the uptime millis of the latest physical controller activity across
++  /// all active drivers. If out_gamepad_type is non-null, writes the
++  /// SDL_GamepadType of that controller.
++  uint64_t GetLastPhysicalControllerActivity(int* out_gamepad_type = nullptr) const;
++
+  private:
+   /// Re-enumerates every driver and notifies the assignment when the set
+   /// changed.
+diff --git a/include/rex/input/sdl/sdl_input_driver.h b/include/rex/input/sdl/sdl_input_driver.h
+index 6e776db..e567e05 100644
+--- a/include/rex/input/sdl/sdl_input_driver.h
++++ b/include/rex/input/sdl/sdl_input_driver.h
+@@ -42,6 +42,7 @@ class SDLInputDriver final : public InputDriver, public rex::ui::WindowListener
+   X_RESULT GetDeviceKeystroke(DeviceId id, uint32_t flags,
+                               X_INPUT_KEYSTROKE* out_keystroke) override;
+   void OnWindowAvailable(rex::ui::Window* window) override;
++  uint64_t GetLastPhysicalActivity(int* out_type) const override;
+ 
+  private:
+   enum class RepeatState {
+@@ -104,6 +105,8 @@ class SDLInputDriver final : public InputDriver, public rex::ui::WindowListener
+   std::vector<SDL_Event> pending_events_;
+   // Never rewound, so a handle held past a disconnect resolves to nothing.
+   uint64_t next_device_id_ = 1;
++  std::atomic<uint64_t> last_physical_activity_ms_{0};
++  std::atomic<int> last_physical_gamepad_type_{0};
+ };
+ 
+ }  // namespace rex::input::sdl
+diff --git a/include/rex/input/xinput/xinput_input_driver.h b/include/rex/input/xinput/xinput_input_driver.h
+index d03a3d6..31c8ec1 100644
+--- a/include/rex/input/xinput/xinput_input_driver.h
++++ b/include/rex/input/xinput/xinput_input_driver.h
+@@ -34,6 +34,7 @@ class XinputInputDriver final : public InputDriver {
+   X_RESULT SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibration) override;
+   X_RESULT GetDeviceKeystroke(DeviceId id, uint32_t flags,
+                               X_INPUT_KEYSTROKE* out_keystroke) override;
++  uint64_t GetLastPhysicalActivity(int* out_type) const override;
+ 
+  private:
+   void* module_;
+@@ -43,6 +44,8 @@ class XinputInputDriver final : public InputDriver {
+   void* XInputGetKeystroke_;
+   void* XInputSetState_;
+   void* XInputEnable_;
++  std::atomic<uint64_t> last_physical_activity_ms_{0};
++  std::atomic<int> last_physical_gamepad_type_{2 /* SDL_GAMEPAD_TYPE_XBOX360 */};
+ };
+ 
+ }  // namespace rex::input::xinput
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index fd8f7d4..23be8f3 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -24,6 +24,7 @@
+ #include <rex/input/state_merge.h>
+ #include <rex/input/xinput/xinput_input_driver.h>
+ #include <rex/logging.h>
++#include <rex/runtime.h>
+ 
+ REXCVAR_DEFINE_STRING(input_backend, "sdl", "Input", "Input backend: sdl, xinput")
+     .allowed({"sdl", "xinput"});
+@@ -350,6 +351,23 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
+   return any_connected ? X_ERROR_EMPTY : X_ERROR_DEVICE_NOT_CONNECTED;
+ }
+ 
++uint64_t InputSystem::GetLastPhysicalControllerActivity(int* out_gamepad_type) const {
++  uint64_t latest_time = 0;
++  int latest_type = 0;
++  for (const auto& driver : drivers_) {
++    int type = 0;
++    uint64_t t = driver->GetLastPhysicalActivity(&type);
++    if (t > latest_time) {
++      latest_time = t;
++      latest_type = type;
++    }
++  }
++  if (out_gamepad_type) {
++    *out_gamepad_type = latest_type;
++  }
++  return latest_time;
++}
++
+ std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
+   auto input = std::make_unique<InputSystem>(nullptr);
+ 
+@@ -385,3 +403,16 @@ std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
+ }
+ 
+ }  // namespace rex::input
++ 
++extern "C" __declspec(dllexport) uint64_t rex_input_get_last_physical_activity(int* out_type) {
++  auto* rt = rex::Runtime::instance();
++  if (!rt || !rt->input_system()) {
++    if (out_type) {
++      *out_type = 0;
++    }
++    return 0;
++  }
++  auto* input_sys = static_cast<rex::input::InputSystem*>(rt->input_system());
++  return input_sys->GetLastPhysicalControllerActivity(out_type);
++}
++
+diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
+index 6a5b449..93b247a 100644
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -526,6 +526,8 @@ void SDLInputDriver::OnControllerDeviceAddedLocked(const SDL_Event& event) {
+ 
+   const int ordinal = static_cast<int>(controllers_.size()) - 1;
+   SDL_SetGamepadPlayerIndex(controller, ordinal);
++  last_physical_gamepad_type_.store(static_cast<int>(SDL_GetGamepadType(controller)),
++                                    std::memory_order_relaxed);
+ 
+   REXLOG_INFO("SDL OnControllerDeviceAdded: connection order {}, device {}.", ordinal,
+               static_cast<uint64_t>(state.id));
+@@ -578,6 +580,32 @@ void SDLInputDriver::OnControllerDeviceAxisMotionLocked(const SDL_Event& event)
+       assert_always();
+       break;
+   }
++  bool past_deadzone = false;
++  switch (event.gaxis.axis) {
++    case SDL_GAMEPAD_AXIS_LEFTX:
++    case SDL_GAMEPAD_AXIS_LEFTY:
++    case SDL_GAMEPAD_AXIS_RIGHTX:
++    case SDL_GAMEPAD_AXIS_RIGHTY:
++      if (std::abs(event.gaxis.value) > 6000) {
++        past_deadzone = true;
++      }
++      break;
++    case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
++    case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
++      if (event.gaxis.value > 3840) {
++        past_deadzone = true;
++      }
++      break;
++    default:
++      break;
++  }
++  if (past_deadzone) {
++    last_physical_activity_ms_.store(rex::chrono::Clock::QueryHostUptimeMillis(),
++                                     std::memory_order_relaxed);
++    last_physical_gamepad_type_.store(
++        static_cast<int>(SDL_GetGamepadType(controllers_.at(*idx).sdl)),
++        std::memory_order_relaxed);
++  }
+   controllers_.at(*idx).state_changed = true;
+ }
+ 
+@@ -633,6 +661,11 @@ void SDLInputDriver::OnControllerDeviceButtonChangedLocked(const SDL_Event& even
+   auto xbutton = xbutton_lookup.at(event.gbutton.button);
+   // Pressed or released?
+   if (event.gbutton.down) {
++    last_physical_activity_ms_.store(rex::chrono::Clock::QueryHostUptimeMillis(),
++                                     std::memory_order_relaxed);
++    last_physical_gamepad_type_.store(
++        static_cast<int>(SDL_GetGamepadType(controller.sdl)),
++        std::memory_order_relaxed);
+     if (xbutton == X_INPUT_GAMEPAD_GUIDE && !REXCVAR_GET(guide_button)) {
+       return;
+     }
+@@ -778,4 +811,11 @@ inline uint64_t SDLInputDriver::AnalogToKeyfield(const X_INPUT_GAMEPAD& gamepad)
+   return f;
+ }
+ 
++uint64_t SDLInputDriver::GetLastPhysicalActivity(int* out_type) const {
++  if (out_type) {
++    *out_type = last_physical_gamepad_type_.load(std::memory_order_relaxed);
++  }
++  return last_physical_activity_ms_.load(std::memory_order_relaxed);
++}
++
+ }  // namespace rex::input::sdl
+diff --git a/src/input/xinput/xinput_input_driver.cpp b/src/input/xinput/xinput_input_driver.cpp
+index d934eaa..80833c5 100644
+--- a/src/input/xinput/xinput_input_driver.cpp
++++ b/src/input/xinput/xinput_input_driver.cpp
+@@ -232,6 +232,18 @@ X_RESULT XinputInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state
+   out_state->gamepad.thumb_rx = dead_rx;
+   out_state->gamepad.thumb_ry = dead_ry;
+ 
++  bool active = (out_state->gamepad.buttons != 0) ||
++                (out_state->gamepad.left_trigger > 30) ||
++                (out_state->gamepad.right_trigger > 30) ||
++                (std::abs(out_state->gamepad.thumb_lx) > 7849) ||
++                (std::abs(out_state->gamepad.thumb_ly) > 7849) ||
++                (std::abs(dead_rx) > 6000) ||
++                (std::abs(dead_ry) > 6000);
++  if (active) {
++    last_physical_activity_ms_.store(rex::chrono::Clock::QueryHostUptimeMillis(),
++                                     std::memory_order_relaxed);
++  }
++
+   return result;
+ }
+ 
+@@ -294,4 +306,12 @@ X_RESULT XinputInputDriver::GetDeviceKeystroke(DeviceId id, uint32_t flags,
+   // X_ERROR_SUCCESS if key
+   return result;
+ }
++
++uint64_t XinputInputDriver::GetLastPhysicalActivity(int* out_type) const {
++  if (out_type) {
++    *out_type = last_physical_gamepad_type_.load(std::memory_order_relaxed);
++  }
++  return last_physical_activity_ms_.load(std::memory_order_relaxed);
++}
++
+ }  // namespace rex::input::xinput

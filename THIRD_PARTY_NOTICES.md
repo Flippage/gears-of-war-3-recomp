@@ -211,3 +211,13 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+---
+
+## Kenney Input Prompts
+
+- Assets: `assets/glyphs/` (Xbox Series, PlayStation Series, Keyboard & Mouse)
+- Author: Kenney ([www.kenney.nl](http://www.kenney.nl/))
+- License: Creative Commons Zero (CC0 1.0 Universal)
+- Notice: The button prompt glyphs and keyboard/mouse icons are from the Kenney Input Prompts pack, licensed under CC0.
+

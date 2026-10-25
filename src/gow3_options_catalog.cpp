@@ -377,6 +377,22 @@ std::vector<PageSpec> BuildCatalog() {
       {"Keyboard & mouse input, mouse sensitivity, controller dead zone, and button remapping."},
       {
           {
+              "gow3_button_prompts",
+              Page::kControls,
+              Control::kChoice,
+              Apply::kNow,
+              {"Button Prompts"},
+              {"Which button prompt glyphs to display: match active input device, force a specific controller/keyboard style, or keep the original Xbox 360 icons."},
+              "auto",
+              {
+                  {"auto", {"Automatic (Switch on Input)"}},
+                  {"xbox", {"Xbox Series"}},
+                  {"playstation", {"PlayStation"}},
+                  {"keyboard", {"Keyboard & Mouse"}},
+                  {"original", {"Original Xbox 360"}},
+              },
+          },
+          {
               "mnk_mode",
               Page::kControls,
               Control::kToggle,

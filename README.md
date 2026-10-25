@@ -42,6 +42,7 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
 - [x] Faces render cleanly in in-engine cutscenes (the black blotches are fixed, see
       [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md))
 - [x] In-game PC options menu (`F10` on keyboard or `Back + Start` on a controller)
+- [x] Dynamic on-screen button prompts: replaces original round Xbox 360 buttons with clean Kenney Input Prompts (Xbox, PlayStation, or Keyboard & Mouse matching player keybindings), switching on the fly in Auto mode
 - [ ] FSR 3.1 / FSR 4 on AMD cards: built in and calibrated the same way, but untested
 - [x] Two-player campaign co-op over System Link, tested with two instances on one PC
       (see [Co-op](#co-op)); over the internet not yet tested
@@ -98,8 +99,8 @@ takes effect:
 
 - **Applies now**: window mode/size, monitor, V-Sync, Unlock 30 FPS Cap, temporal upscaler
   (Off / Auto / DLSS / FSR 3 / FSR 4), upscaler quality and HUD mask, post-process/shadow game
-  patches, keyboard/mouse toggles, mouse sensitivity, controller dead zone, and controller button
-  remapping.
+  patches, button prompt style (Auto / Xbox / PlayStation / Keyboard / Original), keyboard/mouse
+  toggles, mouse sensitivity, controller dead zone, and controller button remapping.
 - **Applies on next level load**: 16x Anisotropic Filtering (`gow3_aniso16`).
 - **Needs game restart**: GPU selection (`d3d12_adapter`), internal resolution scale, display
   scaling/sharpening filter (`present_effect`), Black Shading Fix, texture streaming pool size,
@@ -112,6 +113,7 @@ as `--name=value`.
 
 | Setting | Default | What it does |
 |---|---|---|
+| `gow3_button_prompts` | auto | Button prompt style: `auto` (switches live on input), `xbox`, `playstation`, `keyboard`, `original` |
 | `gow3_unlock_fps` | on | Removes the engine's 30 fps cap |
 | `gow3_black_shading_fix` | on | `GUseTilingMode = FALSE`; removes MSAA resolve artifacts |
 | `gow3_disable_motion_blur` | on | Removes motion blur (ghosting when panning) |

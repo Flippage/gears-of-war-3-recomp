@@ -164,3 +164,13 @@ cutscene (Marcus close-up):
 2. Review the recompiler's VMX128 implementations used by the animation code against Xenia's
    (`vpkd3d128`/`vupkd3d128` FLOAT16 and NORMSHORT paths looked correct on a first read).
 3. Report to the ReXGlue SDK and the Gears 2 port, which share this runtime.
+
+## Button prompt glyph replacement (notes and limitations)
+
+- **Texture Atlases**: In Gears of War 3, button glyphs are split between two primary texture atlases:
+  1. `a000624a174e08ba` (`512x512`, BC3): The in-world interact prompt (doors, ladders, pick-ups). The button glyphs (A, B, X, Y, RS) are replaced with clean Kenney glyphs, while all action pictograms (such as Marcus pushing a door) remain untouched.
+  2. `ae5c68a9d7f7398c` (`256x256`, BC3): The Scaleform / HUD button prompt atlas used for tutorial popups, hints, and HUD elements. All button glyphs (face buttons, bumpers, triggers, stick clicks, D-pad, Start/Back) are replaced with clean Kenney glyphs.
+- **Dynamic Swapping**: Variant switching is performed live via `texture_replace_variant` without needing a game restart.
+- **Keyboard Mode**: In Keyboard mode, button prompts dynamically map to the player's active bindings in `gow3.toml` (`keybind_*`, e.g. `keybind_x`, `keybind_a`, etc.), picking the first key of comma-separated combinations.
+- **Auto Mode Deadzones**: Automatic switching uses stick deadzone (`6000` radial) and trigger deadzone (`30`) thresholds to prevent analog stick drift from switching away from keyboard mode.
+

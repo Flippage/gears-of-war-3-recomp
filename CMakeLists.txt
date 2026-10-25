@@ -28,6 +28,7 @@ set(GOW3_SOURCES
     src/gow3_toml_edit.cpp
     src/gow3_mouse_aim.cpp
     src/gow3_coalesced.cpp
+    src/gow3_button_glyphs.cpp
 )
 
 if(WIN32)

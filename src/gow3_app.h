@@ -26,6 +26,7 @@
 #include "gow3_utf8_guard.h"
 #include "gow3_xam_input_guard.h"
 #include "gow3_xam_trace.h"
+#include "gow3_button_glyphs.h"
 
 class Gow3App : public rex::ReXApp {
  public:
@@ -42,6 +43,8 @@ class Gow3App : public rex::ReXApp {
   void OnPreSetup(rex::RuntimeConfig& config) override {
     rex::glue::options_actions::WaitForPreviousInstance();
     config.gpu_plugin = "xenos";
+    // Enable runtime texture replacement for button prompts.
+    rex::glue::PrepareButtonGlyphs();
     // Guest content names are raw bytes; the runtime's UTF-8 decoder throws on a bad lead byte.
     rex::glue::InstallUtf8Guard();
     // The guest polls XamInput* from several threads; the runtime's device list has no lock.
@@ -85,7 +88,10 @@ class Gow3App : public rex::ReXApp {
     const auto* bytes = runtime()->memory()->TranslateVirtual<const char*>(kBase);
     out.write(bytes, kEnd - kBase);
   }
-  void OnPostSetup() override { rex::glue::InstallNativeMouseAim(window()); }
+  void OnPostSetup() override {
+    rex::glue::InstallNativeMouseAim(window());
+    rex::glue::InstallButtonGlyphs(window());
+  }
   void OnConfigureFonts(ImFontAtlas* atlas) override {
     rex::glue::AddOptionsFonts(atlas);
   }
@@ -97,6 +103,7 @@ class Gow3App : public rex::ReXApp {
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
   // CreateAchievementNotificationDialog() override;
   void OnShutdown() override {
+    rex::glue::ShutdownButtonGlyphs();
     rex::glue::ClosePcOptionsForShutdown();
     options_overlay_.reset();
   }
