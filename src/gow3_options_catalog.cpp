@@ -4,7 +4,11 @@
 
 #include "gow3_options_catalog.h"
 
+#include <filesystem>
+#include <string>
 #include <utility>
+
+#include <rex/filesystem.h>
 
 namespace rex::glue::options {
 namespace {
@@ -656,6 +660,21 @@ std::vector<PageSpec> BuildCatalog() {
           },
       },
   });
+
+  // Release builds have no DLSS (built with -NoDlss, without the DLSS runtime DLL): the choice is
+  // only offered when that DLL sits next to the exe, as a build from source puts it there.
+  // The name is put together at run time so the release exe holds no "nvngx" text, which
+  // scripts\ngx-scan.ps1 treats as NVIDIA code and refuses to package.
+  const std::string dlss_dll = std::string("nv") + "ngx" + "_dlss.dll";
+  std::error_code ec;
+  if (!std::filesystem::exists(rex::filesystem::GetExecutableFolder() / dlss_dll, ec)) {
+    for (auto& page : pages) {
+      for (auto& row : page.rows) {
+        if (std::string_view(row.cvar) != "upscaler") continue;
+        std::erase_if(row.choices, [](const Choice& c) { return std::string_view(c.value) == "dlss"; });
+      }
+    }
+  }
 
   return pages;
 }

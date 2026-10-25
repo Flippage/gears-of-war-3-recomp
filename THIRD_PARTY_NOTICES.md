@@ -4,6 +4,11 @@ This repository holds source code only. It contains **no game files** and **no t
 binaries**: the ReXGlue SDK, the NVIDIA DLSS SDK and the AMD FidelityFX SDK are downloaded or built
 on the user's machine by `scripts/build-sdk.ps1`, and nothing they produce is committed.
 
+The release zips (`scripts/package.ps1`) contain our own binaries, the ReXGlue runtime DLLs built
+from source without DLSS, AMD's FidelityFX DLLs (MIT, notice in `licenses\` inside the zip) and
+the Microsoft Visual C++ runtime DLLs (redistributable). They contain no game files and nothing
+from the NVIDIA DLSS SDK.
+
 Our own code is under the BSD 3-Clause License ([LICENSE](LICENSE)). The files below are copied
 from, adapted from, or modify other projects; each keeps its original copyright and license.
 
@@ -98,7 +103,7 @@ The texture streaming pool setting follows the Gears of War 2 port's `gow2_textu
 Not included. `scripts/build-sdk.ps1` clones [NVIDIA/DLSS](https://github.com/NVIDIA/DLSS) on the
 user's machine, links NGX into the locally built `rexgpu-xenos.dll` and copies `nvngx_dlss.dll`
 next to the locally built game, for the user's own use under NVIDIA's DLSS SDK license. Nothing
-from the DLSS SDK is committed, and this project distributes no binaries.
+from the DLSS SDK is committed, and the release zips are built without it (`-NoDlss`).
 
 ## AMD FidelityFX SDK
 

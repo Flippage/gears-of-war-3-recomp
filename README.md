@@ -55,7 +55,17 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
 - [ ] Full campaign play-through; Horde, Beast and Versus untested
 - [ ] Ultrawide; mouse in the game's own menus; 3x internal resolution (wrong colours)
 
-There is no binary release. Build it yourself as described below.
+## Download
+
+Get the latest `gow3-recomp-<version>-win64.zip` from
+[Releases](https://github.com/Flippage/gears-of-war-3-recomp/releases), extract it anywhere, and
+follow `QUICKSTART.txt` inside. It includes everything except the game itself, and DLSS:
+
+- **You still need your own game files** (see [Bring your own game](#bring-your-own-game)). Point
+  the exe at them with a `gow3_game_path.txt` next to `gow3.exe` (first line = the game folder),
+  or put the extracted folder inside or next to the game folder.
+- **No DLSS in the download** (NVIDIA's DLSS SDK license; FSR 3.1 / FSR 4 are included). For DLSS,
+  build it yourself: see [DLSS](#dlss-build-from-source).
 
 ## Bring your own game
 
@@ -84,6 +94,46 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -Sdk C:\path\to\rexgl
 ```
 
 The result is `out\build\release\gow3.exe`.
+
+## DLSS (build from source)
+
+The release zip has no DLSS. Building it yourself takes about half an hour, mostly waiting:
+
+1. **Install the tools** (once), in PowerShell:
+
+   ```powershell
+   winget install Git.Git Kitware.CMake Ninja-build.Ninja LLVM.LLVM Python.Python.3.12
+   winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+   ```
+
+2. **Download** this repository (`git clone https://github.com/Flippage/gears-of-war-3-recomp`) and
+   the ReXGlue SDK zip named in [BUILDING.md](BUILDING.md#requirements); extract the SDK anywhere.
+3. **Copy your own** `default.xex` (from your extracted disc) to `game\default.xex` in the repository.
+4. **Build**, from the repository folder:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\build-sdk.ps1
+   powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -Sdk C:\path\to\rexglue-sdk\win-amd64
+   ```
+
+5. **Run** `out\build\release\gow3.exe`. Pick **NVIDIA DLSS** under F10 → Graphics → Temporal Upscaler.
+
+The first command downloads the NVIDIA DLSS SDK for your own use and puts `nvngx_dlss.dll` next to
+the game. Full details and options: [BUILDING.md](BUILDING.md).
+
+**Or let an AI assistant do it.** Paste this into Claude Code, ChatGPT (with a terminal) or Gemini
+CLI, opened in an empty folder:
+
+```text
+Build the Gears of War 3 recomp with DLSS for me on this Windows PC, from
+https://github.com/Flippage/gears-of-war-3-recomp. Follow its README section "DLSS (build from
+source)" and BUILDING.md exactly: install any missing tools (Git, CMake, Ninja, LLVM, Python,
+Visual Studio Build Tools with the C++ workload), clone the repository, download the ReXGlue SDK
+release that BUILDING.md names, and run scripts\build-sdk.ps1 (without -NoDlss) and then
+scripts\build.ps1 -Sdk <the extracted SDK's win-amd64 folder>. My own default.xex from my game
+disc is at <PATH TO default.xex>: copy it to game\default.xex. Never upload, commit or share any
+game file. Stop and ask me before deleting anything. When it builds, tell me where gow3.exe is.
+```
 
 ## Running
 

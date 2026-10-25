@@ -47,6 +47,7 @@ namespace {
 
 constexpr uint64_t kAtlas512Hash = UINT64_C(0xa000624a174e08ba);
 constexpr uint64_t kAtlas256Hash = UINT64_C(0xae5c68a9d7f7398c);
+constexpr const char kAtlasDumpHashes[] = "a000624a174e08ba,ae5c68a9d7f7398c";
 
 constexpr size_t kExpectedSize512 = 1398248;
 constexpr size_t kExpectedSize256 = 349672;
@@ -618,7 +619,6 @@ ButtonGlyphWindowListener g_window_listener;
 
 Image g_base512;
 Image g_base256;
-bool g_bases_loaded = false;
 
 std::unordered_map<std::string, Image> g_glyph_cache;
 
@@ -661,38 +661,39 @@ std::filesystem::path AssetsDir() {
   return rex::filesystem::GetExecutableFolder() / "assets" / "glyphs";
 }
 
-bool EnsureBasesLoaded() {
-  if (g_bases_loaded) return true;
+// The player's own atlases, captured by the GPU plugin the first time each one is drawn
+// (texture_dump_hashes): the 256x256 one in the first menu, the 512x512 one only in a level.
+// Each is used as soon as it exists, so the menus switch before a level has been loaded.
+bool g_have512 = false;
+bool g_have256 = false;
+
+bool LoadBaseIfDumped(bool* have, Image* image, const char* hash, const char* size) {
+  if (*have) return false;
   const std::filesystem::path dump_dir = TitleDir() / "dump";
-  const std::filesystem::path replace_xbox_dir = TitleDir() / "replace_xbox";
-
-  std::filesystem::path p512 = dump_dir / "a000624a174e08ba_bc3_512x512.dds";
-  if (!std::filesystem::exists(p512)) p512 = dump_dir / "a000624a174e08ba.dds";
-  if (!std::filesystem::exists(p512)) p512 = replace_xbox_dir / "a000624a174e08ba.dds";
-
-  std::filesystem::path p256 = dump_dir / "ae5c68a9d7f7398c_bc3_256x256.dds";
-  if (!std::filesystem::exists(p256)) p256 = dump_dir / "ae5c68a9d7f7398c.dds";
-  if (!std::filesystem::exists(p256)) p256 = replace_xbox_dir / "ae5c68a9d7f7398c.dds";
-
-  if (!ReadDds(p512, &g_base512)) {
-    return false;
-  }
-  if (!ReadDds(p256, &g_base256)) {
-    return false;
-  }
-  g_bases_loaded = true;
-  REXLOG_INFO("ButtonGlyphs: loaded base atlases (512x512 from {}, 256x256 from {})",
-              p512.string(), p256.string());
+  std::filesystem::path p = dump_dir / fmt::format("{}_bc3_{}.dds", hash, size);
+  std::error_code ec;
+  if (!std::filesystem::exists(p, ec)) p = dump_dir / fmt::format("{}.dds", hash);
+  if (!std::filesystem::exists(p, ec) || !ReadDds(p, image)) return false;
+  *have = true;
+  REXLOG_INFO("ButtonGlyphs: base atlas {} loaded from {}", hash, p.string());
   return true;
 }
 
+// Loads the atlases that have been captured since the last call; true when one was added.
+bool LoadNewBases() {
+  bool added = LoadBaseIfDumped(&g_have512, &g_base512, "a000624a174e08ba", "512x512");
+  added |= LoadBaseIfDumped(&g_have256, &g_base256, "ae5c68a9d7f7398c", "256x256");
+  return added;
+}
+
 bool ComposeVariant(const std::string& variant_dir_name, const std::string& style) {
-  if (!EnsureBasesLoaded()) return false;
+  if (!g_have512 && !g_have256) return false;
   const std::filesystem::path assets = AssetsDir();
   const std::filesystem::path out_dir = TitleDir() / variant_dir_name;
 
   Image comp512 = g_base512;
   for (const auto& sp : kSprites512) {
+    if (!g_have512) break;
     ClearBox(comp512, sp.box[0], sp.box[1], sp.box[2], sp.box[3]);
     std::filesystem::path gf = FindGlyphFile(assets, style, sp.button);
     Image glyph;
@@ -704,6 +705,7 @@ bool ComposeVariant(const std::string& variant_dir_name, const std::string& styl
 
   Image comp256 = g_base256;
   for (const auto& sp : kSprites256) {
+    if (!g_have256) break;
     ClearBox(comp256, sp.box[0], sp.box[1], sp.box[2], sp.box[3]);
     std::filesystem::path gf = FindGlyphFile(assets, style, sp.button);
     Image glyph;
@@ -717,8 +719,8 @@ bool ComposeVariant(const std::string& variant_dir_name, const std::string& styl
   std::snprintf(name512, sizeof(name512), "%016llx.dds", static_cast<unsigned long long>(kAtlas512Hash));
   std::snprintf(name256, sizeof(name256), "%016llx.dds", static_cast<unsigned long long>(kAtlas256Hash));
 
-  const bool ok1 = WriteDds(out_dir / name512, comp512);
-  const bool ok2 = WriteDds(out_dir / name256, comp256);
+  const bool ok1 = !g_have512 || WriteDds(out_dir / name512, comp512);
+  const bool ok2 = !g_have256 || WriteDds(out_dir / name256, comp256);
   return ok1 && ok2;
 }
 
@@ -737,7 +739,7 @@ void EnsureVariantOnDisk(const std::string& variant_dir_name, const std::string&
   const std::filesystem::path p256 = dir / name256;
   // A variant is composed again when the cell map or any glyph image it uses changes: the stamp
   // holds a layout version plus every cell's box and image file name.
-  std::string want = "3";
+  std::string want = fmt::format("4|512={}|256={}", g_have512, g_have256);
   const std::filesystem::path assets = AssetsDir();
   auto add_cells = [&](const auto& sprites) {
     for (const SpriteDef& sp : sprites) {
@@ -755,7 +757,8 @@ void EnsureVariantOnDisk(const std::string& variant_dir_name, const std::string&
     while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) have.append(buf, n);
     std::fclose(f);
   }
-  if (have != want || !IsDdsValid(p512, kExpectedSize512) || !IsDdsValid(p256, kExpectedSize256)) {
+  if (have != want || (g_have512 && !IsDdsValid(p512, kExpectedSize512)) ||
+      (g_have256 && !IsDdsValid(p256, kExpectedSize256))) {
     if (ComposeVariant(variant_dir_name, style)) {
       if (FILE* f = std::fopen(stamp.string().c_str(), "wb")) {
         std::fwrite(want.data(), 1, want.size(), f);
@@ -788,52 +791,55 @@ std::string KeyboardSignature() {
 // Background worker state
 std::atomic<bool> g_worker_running{false};
 std::atomic<bool> g_variants_ready{false};
+// Bumped when an atlas is added to the composed variants: the active variant is then reloaded
+// (the GPU plugin scans a variant folder only when the variant name changes).
+std::atomic<int> g_base_generation{0};
 std::atomic<int> g_ready_kbd_slot{0};  // 0 -> replace_kbdA, 1 -> replace_kbdB
 std::string g_composed_kbd_sig;
 std::thread g_worker_thread;
 std::mutex g_worker_mutex;
 std::condition_variable g_worker_cv;
 
-void WorkerThreadFunc() {
-  // 1. Wait for base atlases to be captured/dumped
-  while (g_worker_running) {
-    if (EnsureBasesLoaded()) {
-      break;
-    }
-    std::unique_lock<std::mutex> lock(g_worker_mutex);
-    g_worker_cv.wait_for(lock, std::chrono::milliseconds(200), [] { return !g_worker_running.load(); });
-  }
-
-  if (!g_worker_running) return;
-
-  // 2. Base atlases exist! Compose/repair static controller variants
+void ComposeAllVariants() {
   EnsureVariantOnDisk("replace_xbox", "xbox");
   EnsureVariantOnDisk("replace_playstation", "playstation");
+}
 
-  // Compose initial keyboard variant into slot 0 (replace_kbdA)
-  std::string last_sig = KeyboardSignature();
-  ComposeVariant("replace_kbdA", "keyboard");
-  g_composed_kbd_sig = last_sig;
-  g_ready_kbd_slot.store(0, std::memory_order_release);
-  g_variants_ready.store(true, std::memory_order_release);
-  REXLOG_INFO("ButtonGlyphs: variants composed and ready on disk");
-
-  // 3. Loop responding to key binding changes off the input thread
+void WorkerThreadFunc() {
+  std::string last_sig;
   while (g_worker_running) {
-    std::string current_sig = KeyboardSignature();
-    if (current_sig != last_sig) {
-      int next_slot = (g_ready_kbd_slot.load(std::memory_order_relaxed) == 0) ? 1 : 0;
-      std::string slot_name = (next_slot == 0) ? "replace_kbdA" : "replace_kbdB";
-      if (ComposeVariant(slot_name, "keyboard")) {
-        last_sig = current_sig;
-        g_composed_kbd_sig = current_sig;
-        g_ready_kbd_slot.store(next_slot, std::memory_order_release);
-        REXLOG_INFO("ButtonGlyphs: off-thread re-composed keyboard atlas into {}", slot_name);
+    if (LoadNewBases()) {
+      // A new atlas: compose every variant again, the keyboard one into the slot not in use.
+      ComposeAllVariants();
+      const std::string sig = KeyboardSignature();
+      const bool first = !g_variants_ready.load(std::memory_order_acquire);
+      const int slot = first ? 0 : 1 - g_ready_kbd_slot.load(std::memory_order_relaxed);
+      if (ComposeVariant(slot == 0 ? "replace_kbdA" : "replace_kbdB", "keyboard")) {
+        last_sig = sig;
+        g_composed_kbd_sig = sig;
+        g_ready_kbd_slot.store(slot, std::memory_order_release);
+      }
+      g_base_generation.fetch_add(1, std::memory_order_acq_rel);
+      g_variants_ready.store(true, std::memory_order_release);
+      REXLOG_INFO("ButtonGlyphs: variants composed (512x512: {}, 256x256: {})", g_have512,
+                  g_have256);
+    } else if (g_variants_ready.load(std::memory_order_acquire)) {
+      // Key binding changes, composed off the input thread into the slot not in use.
+      const std::string current_sig = KeyboardSignature();
+      if (current_sig != last_sig) {
+        const int next_slot = 1 - g_ready_kbd_slot.load(std::memory_order_relaxed);
+        const std::string slot_name = next_slot == 0 ? "replace_kbdA" : "replace_kbdB";
+        if (ComposeVariant(slot_name, "keyboard")) {
+          last_sig = current_sig;
+          g_composed_kbd_sig = current_sig;
+          g_ready_kbd_slot.store(next_slot, std::memory_order_release);
+          REXLOG_INFO("ButtonGlyphs: off-thread re-composed keyboard atlas into {}", slot_name);
+        }
       }
     }
-
     std::unique_lock<std::mutex> lock(g_worker_mutex);
-    g_worker_cv.wait_for(lock, std::chrono::milliseconds(150), [] { return !g_worker_running.load(); });
+    g_worker_cv.wait_for(lock, std::chrono::milliseconds(200),
+                         [] { return !g_worker_running.load(); });
   }
 }
 
@@ -841,6 +847,16 @@ std::string g_active_variant = "initial";
 std::chrono::steady_clock::time_point g_next_poll{};
 
 }  // namespace
+
+// Texture replacement plus a one-time dump of the player's own two prompt atlases. Called before
+// setup and again after it: the settings belong to the GPU plugin, and setting one before the
+// plugin has registered it is rejected (a fresh install then never captured the atlases).
+static void EnableAtlasCapture(const char* when) {
+  const bool replace = rex::cvar::SetFlagByName("texture_replace", "true");
+  const bool dump = rex::cvar::SetFlagByName("texture_dump_hashes", kAtlasDumpHashes);
+  REXLOG_INFO("ButtonGlyphs: texture capture settings at {}: replace={} dump_hashes={}", when,
+              replace, dump);
+}
 
 void PrepareButtonGlyphs() {
   const std::string mode = rex::cvar::Query<std::string>("gow3_button_prompts");
@@ -859,11 +875,13 @@ void PrepareButtonGlyphs() {
     }
   }
 #endif
-  rex::cvar::SetFlagByName("texture_replace", "true");
-  rex::cvar::SetFlagByName("texture_dump_hashes", "a000624a174e08ba,ae5c68a9d7f7398c");
+  EnableAtlasCapture("pre-setup");
 }
 
 void InstallButtonGlyphs(rex::ui::Window* window) {
+  if (rex::cvar::Query<std::string>("gow3_button_prompts") != "original") {
+    EnableAtlasCapture("post-setup");
+  }
   if (window) {
     window->AddInputListener(&g_window_listener, 1);
   }
@@ -940,6 +958,20 @@ void PollButtonPrompts() {
     target_variant = (slot == 0) ? "kbdA" : "kbdB";
     if (KeyboardSignature() != g_composed_kbd_sig) {
       g_worker_cv.notify_one();
+    }
+  }
+
+  // An atlas was added to the variant folders: drop the variant for one poll so the GPU plugin
+  // scans the folder again when it comes back.
+  static int seen_generation = 0;
+  const int generation = g_base_generation.load(std::memory_order_acquire);
+  if (generation != seen_generation) {
+    seen_generation = generation;
+    if (!g_active_variant.empty() && g_active_variant != "initial" &&
+        target_variant == g_active_variant) {
+      g_active_variant = "";
+      rex::cvar::SetFlagByName("texture_replace_variant", "");
+      return;
     }
   }
 
