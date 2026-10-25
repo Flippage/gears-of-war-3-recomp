@@ -39,6 +39,8 @@ Files in this repository derived from it:
 
 - `sdk/patches/0002`-`0029` and `sdk/patches/README.md`: copied (the README extended with our
   patches). `0002` is itself adapted from gears-judgement-recomp.
+- `sdk/patches/0069`-`0080`: its native renderer patches `0032`, `0034`-`0039` and `0041`-`0045`
+  (native surfaces and native resolves, D3D12 parts), ported onto our patch series.
 - `scripts/build-sdk.ps1`, `scripts/sdk-source.ps1`, `scripts/sdk-symlinks.ps1`,
   `scripts/ngx-scan.ps1`: copied unchanged.
 - `tools/harvest_hints.py`: adapted (file names changed for gow3).

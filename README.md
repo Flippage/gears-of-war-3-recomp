@@ -39,6 +39,13 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
       Gears of War 2 port
 - [x] Occlusion culling works: hidden rooms and the lights behind walls are culled as on the
       console (fixes rooms dropping to ~15 fps, and light glows showing through walls)
+- [x] Native renderer (default): the game's render targets stay on the GPU instead of being copied
+      through emulated Xbox 360 EDRAM, about twice the frame rate of ROV at 2x (from ~50-60 to
+      ~90-115 fps on an RTX 5060 Ti). Ported from the Gears of War 2 port. A partial implementation:
+      draws still come from the emulated GPU command stream (see below). RTV and ROV stay as
+      choices in PC Options -> Graphics -> Renderer
+- [x] Loading screen while shader pipelines compile (after an update or a graphics change) instead
+      of a black "Not responding" window
 - [x] Insane difficulty unlocked from the start (PC Options, Saves; normally it needs a finished campaign)
 - [x] Community game patches as settings: Unlock FPS (60 fps and above), Black Shading Fix, 16x AF,
       texture streaming pool, and optional AO / motion blur / bloom / lens flares / depth of field /
@@ -247,9 +254,15 @@ console menus have no pointer; a known limitation).
 
 ## Known issues
 
-- The first launch after updating, or after changing a graphics setting, recompiles the shader
-  pipelines: the window can show "Not responding" for a few minutes. Let it finish; later launches
-  load them from the cache.
+- The first launch after updating, or after changing a graphics setting (such as the internal
+  resolution), recompiles the shader pipelines behind a "Preparing shaders" screen. It can take a
+  few minutes; later launches load them from the cache.
+- The native renderer is a partial implementation. It covers the Gears of War 2 port's native
+  surfaces and native resolves (render targets and resolves handled on the GPU), with one Gears 3
+  addition (depth to colour copies kept, which the cutscene lighting reads). Drawing straight from
+  the game's own Direct3D calls (the Gears 2 port's "native frontend") still needs the game's
+  Direct3D functions mapped for Gears 3, and is future work. If something renders wrong, compare
+  with Renderer = ROV in PC Options -> Graphics and report it.
 - With an upscaler on, characters that move by themselves can ghost slightly (only camera motion
   vectors are available).
 - 3x internal resolution shows wrong colours (issue #13); use 2x.
@@ -270,7 +283,9 @@ generated C++.
   recompiler and runtime.
 - [Gears of War 2 native PC port](https://github.com/santiquiroz/gears-of-war-2-pc-port)
   (BSD-3-Clause): SDK patch series `0002`-`0029`, build scripts, the hint harvester, the UTF-8 and
-  XamInput guards, the in-game PC options menu, and the overall approach.
+  XamInput guards, the in-game PC options menu, and the overall approach; the native renderer's
+  native surfaces and native resolves (its patches `0032`, `0034`-`0039`, `0041`-`0045`, ported as
+  our `0069`-`0080`).
 - [Gears of War: Judgment recompilation](https://github.com/OverkillLabs3/gears-judgement-recomp)
   (BSD-3-Clause): the switch-trap patcher, the guards and the temporal upscaler code (by way of
   the Gears 2 port).

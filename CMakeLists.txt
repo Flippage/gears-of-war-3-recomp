@@ -31,6 +31,7 @@ set(GOW3_SOURCES
     src/gow3_button_glyphs.cpp
     src/gow3_unlocks.cpp
     src/gow3_loading_screen.cpp
+    src/gow3_renderer.cpp
 )
 
 if(WIN32)

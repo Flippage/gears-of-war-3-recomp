@@ -28,6 +28,7 @@
 #include "gow3_xam_trace.h"
 #include "gow3_button_glyphs.h"
 #include "gow3_unlocks.h"
+#include "gow3_renderer.h"
 
 class Gow3App : public rex::ReXApp {
  public:
@@ -44,6 +45,7 @@ class Gow3App : public rex::ReXApp {
   void OnPreSetup(rex::RuntimeConfig& config) override {
     rex::glue::options_actions::WaitForPreviousInstance();
     config.gpu_plugin = "xenos";
+    rex::glue::ApplyRendererChoice();
     // Enable runtime texture replacement for button prompts.
     rex::glue::PrepareButtonGlyphs();
     // Guest content names are raw bytes; the runtime's UTF-8 decoder throws on a bad lead byte.

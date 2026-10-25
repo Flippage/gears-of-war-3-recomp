@@ -158,6 +158,20 @@ std::vector<PageSpec> BuildCatalog() {
       {"Temporal upscaling, internal resolution scale, presentation filters, and Gears 3 visual patches."},
       {
           {
+              "gow3_renderer",
+              Page::kGraphics,
+              Control::kChoice,
+              Apply::kRestart,
+              {"Renderer"},
+              {"Native is the fastest (render targets kept on the GPU, from the Gears of War 2 port). RTV and ROV emulate the Xbox 360's EDRAM; ROV is the most exact and the slowest. Restart to apply."},
+              "native",
+              {
+                  {"native", {"Native (Fastest)"}},
+                  {"rtv", {"RTV (Host Render Targets)"}},
+                  {"rov", {"ROV (Most Exact, Slowest)"}},
+              },
+          },
+          {
               "upscaler",
               Page::kGraphics,
               Control::kChoice,
