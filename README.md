@@ -1,5 +1,10 @@
 # Gears of War 3 — native PC recompilation (unofficial, work in progress)
 
+[![release](https://img.shields.io/github/v/release/Flippage/gears-of-war-3-recomp)](https://github.com/Flippage/gears-of-war-3-recomp/releases)
+[![downloads](https://img.shields.io/github/downloads/Flippage/gears-of-war-3-recomp/total)](https://github.com/Flippage/gears-of-war-3-recomp/releases)
+[![license](https://img.shields.io/github/license/Flippage/gears-of-war-3-recomp)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/Flippage/gears-of-war-3-recomp?style=social)](https://github.com/Flippage/gears-of-war-3-recomp/stargazers)
+
 Retail Xbox 360 **Gears of War 3** statically recompiled from the player's own `default.xex` to
 native x64 code with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). This is not
 emulation of the game's CPU code: the PowerPC executable is translated to C++ and compiled for
