@@ -40,6 +40,14 @@ endif()
 
 rexglue_setup_target(gow3 GPU_PLUGINS xenos)
 
+# ReXApp is compiled into the game from the SDK's share/rexglue/rex_app.cpp; use our copy instead
+# (src/sdk/rex_app.cpp: the startup shader build behind a loading panel). SDK patches never reach
+# that file, since it is built here against the SDK's installed copy.
+get_target_property(GOW3_TARGET_SOURCES gow3 SOURCES)
+list(TRANSFORM GOW3_TARGET_SOURCES REPLACE ".*/share/rexglue/rex_app\\.cpp$"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/sdk/rex_app.cpp")
+set_target_properties(gow3 PROPERTIES SOURCES "${GOW3_TARGET_SOURCES}")
+
 if(WIN32)
     target_link_libraries(gow3 PRIVATE dxgi ole32 shell32 user32 bcrypt)
 endif()

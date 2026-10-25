@@ -1,0 +1,192 @@
+Gears of War 3: startup shader loading progress. The pipeline cache reports the number of stored
+pipelines it builds at startup and each one created (rex/shader_progress.h, in rexruntime so every
+module shares it), and rexruntime exports rex_shader_loading_set_active / rex_shader_loading_get
+for the host app. The game's own src/sdk/rex_app.cpp (ReXApp is compiled into the game exe, not
+the runtime) runs that build off the UI thread behind a "Compiling shaders  done / total" panel,
+instead of a black "Not responding" window. For testing, dxbc_cache_bust (a nonzero number)
+changes every shader's generator name, so the bytes differ but not the code and the driver's own
+shader cache misses.
+
+diff --git a/include/rex/shader_progress.h b/include/rex/shader_progress.h
+new file mode 100644
+index 0000000..e26f4b9
+--- /dev/null
++++ b/include/rex/shader_progress.h
+@@ -0,0 +1,23 @@
++// Gears of War 3 recomp: startup shader loading progress, for the loading screen. The host app marks the
++// loading active while the GPU plugin builds the stored shaders and pipelines; the plugin sets the
++// pipeline count and advances it as each one is created (0 / 0 while it still reads and
++// translates the shaders). Lives in rexruntime so both DLLs see the same counters.
++#pragma once
++
++#include <cstdint>
++
++namespace rex {
++
++struct ShaderLoadingProgress {
++  bool active = false;
++  uint32_t done = 0;
++  uint32_t total = 0;
++};
++
++void SetShaderLoadingActive(bool active);
++void SetShaderLoadingTotal(uint32_t total);
++// Counts one created pipeline while the loading is active.
++void AdvanceShaderLoading();
++ShaderLoadingProgress GetShaderLoadingProgress();
++
++}  // namespace rex
+diff --git a/src/graphics/d3d12/pipeline_cache.cpp b/src/graphics/d3d12/pipeline_cache.cpp
+index 241ec8e..9c1d731 100644
+--- a/src/graphics/d3d12/pipeline_cache.cpp
++++ b/src/graphics/d3d12/pipeline_cache.cpp
+@@ -27,6 +27,7 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <rex/shader_progress.h>
+ #include <rex/assert.h>
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
+@@ -547,6 +548,7 @@ void PipelineCache::InitializeShaderStorage(const std::filesystem::path& cache_r
+   // Create the pipelines.
+   if (!pipeline_stored_descriptions.empty()) {
+     uint64_t pipeline_creation_start_ = rex::chrono::Clock::QueryHostTickCount();
++    rex::SetShaderLoadingTotal(uint32_t(pipeline_stored_descriptions.size()));
+ 
+     // Launch additional creation threads to use all cores to create
+     // pipelines faster. Will also be using the main thread, so minus 1.
+@@ -668,6 +670,7 @@ void PipelineCache::InitializeShaderStorage(const std::filesystem::path& cache_r
+       } else {
+         new_pipeline->state.store(CreateD3D12Pipeline(pipeline_runtime_description),
+                                   std::memory_order_release);
++        rex::AdvanceShaderLoading();
+       }
+       ++pipelines_created;
+     }
+@@ -3297,6 +3300,7 @@ void PipelineCache::CreationThread(size_t thread_index) {
+       pipeline_to_create->state.store(CreateD3D12Pipeline(runtime_description),
+                                       std::memory_order_release);
+     }
++    rex::AdvanceShaderLoading();
+ 
+     // Pipeline created - the thread is not busy anymore, safe to set the
+     // completion event if needed (at the next iteration, or in some other
+@@ -3323,10 +3327,12 @@ void PipelineCache::CreateQueuedPipelinesOnProcessorThread() {
+     PipelineRuntimeDescription runtime_description;
+     if (!PrepareRuntimeDescriptionForQueuedCreation(pipeline_to_create, runtime_description)) {
+       pipeline_to_create->state.store(nullptr, std::memory_order_release);
++      rex::AdvanceShaderLoading();
+       continue;
+     }
+     pipeline_to_create->state.store(CreateD3D12Pipeline(runtime_description),
+                                     std::memory_order_release);
++    rex::AdvanceShaderLoading();
+   }
+ }
+ 
+diff --git a/src/graphics/pipeline/shader/dxbc_translator.cpp b/src/graphics/pipeline/shader/dxbc_translator.cpp
+index 89a48ee..eca465f 100644
+--- a/src/graphics/pipeline/shader/dxbc_translator.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator.cpp
+@@ -29,6 +29,13 @@ REXCVAR_DEFINE_BOOL(dxbc_switch, true, "GPU/Shader", "Use switch statements in D
+ 
+ REXCVAR_DEFINE_BOOL(dxbc_source_map, false, "GPU/Shader", "Generate source maps for DXBC");
+ 
++// Gears of War 3 recomp, testing: a nonzero value goes into every shader's generator name, so the
++// bytes differ while the code is the same, and the driver's own shader cache misses. Reproduces
++// a cold first launch (or one after an update) without clearing the driver cache.
++REXCVAR_DEFINE_INT32(dxbc_cache_bust, 0, "GPU/Shader",
++                     "Testing: change every shader's bytes (not its code) so the driver compiles "
++                     "all pipelines from scratch, as on a first launch");
++
+ namespace rex::graphics {
+ using namespace ucode;
+ 
+@@ -2059,7 +2066,11 @@ void DxbcShaderTranslator::WriteResourceDefinition() {
+   // known.
+   shader_object_.resize(shader_object_.size() + sizeof(dxbc::RdefHeader) / sizeof(uint32_t));
+   // Generator name.
+-  dxbc::AppendAlignedString(shader_object_, "Xenia");
++  if (const int32_t bust = REXCVAR_GET(dxbc_cache_bust)) {
++    dxbc::AppendAlignedString(shader_object_, fmt::format("Xenia {}", bust).c_str());
++  } else {
++    dxbc::AppendAlignedString(shader_object_, "Xenia");
++  }
+ 
+   // ***************************************************************************
+   // Constant types
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+index 92c61fe..168479d 100644
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -45,6 +45,7 @@ set(REXSYSTEM_SOURCES
+     module.cpp
+     function_dispatcher.cpp
+     gpu_plugin_loader.cpp
++    shader_progress.cpp
+     thread.cpp
+     thread_state.cpp
+     xex_module.cpp
+diff --git a/src/system/shader_progress.cpp b/src/system/shader_progress.cpp
+new file mode 100644
+index 0000000..d6e3a06
+--- /dev/null
++++ b/src/system/shader_progress.cpp
+@@ -0,0 +1,56 @@
++// Gears of War 3 recomp: startup shader loading progress, see rex/shader_progress.h.
++
++#include <rex/shader_progress.h>
++
++#include <atomic>
++
++namespace rex {
++
++namespace {
++std::atomic<bool> g_active{false};
++std::atomic<uint32_t> g_done{0};
++std::atomic<uint32_t> g_total{0};
++}  // namespace
++
++void SetShaderLoadingActive(bool active) {
++  if (active) {
++    g_done.store(0, std::memory_order_relaxed);
++    g_total.store(0, std::memory_order_relaxed);
++  }
++  g_active.store(active, std::memory_order_release);
++}
++
++void SetShaderLoadingTotal(uint32_t total) {
++  g_done.store(0, std::memory_order_relaxed);
++  g_total.store(total, std::memory_order_release);
++}
++
++void AdvanceShaderLoading() {
++  if (g_active.load(std::memory_order_acquire)) {
++    g_done.fetch_add(1, std::memory_order_acq_rel);
++  }
++}
++
++ShaderLoadingProgress GetShaderLoadingProgress() {
++  ShaderLoadingProgress p;
++  p.active = g_active.load(std::memory_order_acquire);
++  p.total = g_total.load(std::memory_order_acquire);
++  p.done = g_done.load(std::memory_order_acquire);
++  if (p.done > p.total) p.done = p.total;
++  return p;
++}
++
++}  // namespace rex
++
++// For the host application: games compile ReXApp (share/rexglue/rex_app.cpp) into their own exe
++// against the SDK headers, so they reach these counters by name (GetProcAddress) instead.
++extern "C" __declspec(dllexport) void rex_shader_loading_set_active(bool active) {
++  rex::SetShaderLoadingActive(active);
++}
++
++extern "C" __declspec(dllexport) bool rex_shader_loading_get(uint32_t* done, uint32_t* total) {
++  const rex::ShaderLoadingProgress p = rex::GetShaderLoadingProgress();
++  if (done) *done = p.done;
++  if (total) *total = p.total;
++  return p.active;
++}

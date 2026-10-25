@@ -69,6 +69,7 @@ Both SDK builds apply every patch here in file-name order on top of ReXGlue comm
 | `0065-pad-activity-poll.patch` | Physical controller activity polling and gamepad type detection. `SDLInputDriver` and `XinputInputDriver` record the host uptime timestamp and controller type (`SDL_GamepadType`) on physical button presses or stick/trigger deflection past deadzone. `InputSystem::GetLastPhysicalControllerActivity` exposes the latest physical activity across drivers so dynamic button glyph selection can detect active physical gamepads and their style (PlayStation vs Xbox) without the game linking SDL. |
 | `0066-replace-dynamic-slots.patch` | Gears of War 3: texture replacement keeps working for a texture slot that held other content before (streaming reuse marked it dynamic, and the button prompt atlases lost their replacement after a level). While a pack or variant has files, dynamic textures are still hashed and replaced. |
 | `0067-pad-remap-multi-source.patch` | Gears of War 3: a `pad_map_*` setting may list several physical buttons (`a,lb`), and any of them presses that game button; the controller page's Primary / Secondary slots. |
+| `0068-shader-loading-screen.patch` | Gears of War 3: the first-launch shader build runs off the UI thread with a "Compiling shaders  done / total" progress panel, instead of a black "Not responding" window. |
 
 ## Working on a patch
 
