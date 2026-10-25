@@ -1,0 +1,73 @@
+Gears of War 3: gpu_native_surfaces_keep, a list of EDRAM ownership copy kinds the native surfaces
+mode keeps on top of its own rule ("source->dest" as the NATIVESURF log prints them, with C* / D* /
+* wildcards). Used to find the copies Gears 3 needs: with only the Gears of War 2 rule, character
+lighting goes dark.
+
+diff --git a/include/rex/graphics/pipeline/render_target/native_surfaces.h b/include/rex/graphics/pipeline/render_target/native_surfaces.h
+index 20f068b..a467911 100644
+--- a/include/rex/graphics/pipeline/render_target/native_surfaces.h
++++ b/include/rex/graphics/pipeline/render_target/native_surfaces.h
+@@ -23,6 +23,36 @@ constexpr uint32_t kColorFormat16_16 = 4;
+ // Which EDRAM ownership copies survive in the native surfaces mode: depth to depth (the game reads
+ // depth back across the two depth formats at the same EDRAM base), and k_16_16 colour to depth (at
+ // 21:9 the light shafts read a depth surface the game first wrote as a k_16_16 colour target).
++// Gears of War 3 recomp: one side of a gpu_native_surfaces_keep pattern. "*" is any surface, "C*" /
++// "D*" any colour / depth surface, otherwise an exact kind as the NATIVESURF log prints it ("C5x1").
++inline bool KindMatches(const std::string& pattern, const SurfaceKind& kind) {
++  if (pattern == "*") return true;
++  if (pattern.empty() || pattern[0] != (kind.is_depth ? 'D' : 'C')) return false;
++  if (pattern.size() == 2 && pattern[1] == '*') return true;
++  return pattern == std::string(kind.is_depth ? "D" : "C") + std::to_string(kind.format) + "x" +
++                        std::to_string(1u << kind.msaa_samples_log2);
++}
++
++// Whether a comma-separated list of "source->dest" patterns (or "*") keeps this copy.
++inline bool KeepListMatches(const std::string& list, const SurfaceKind& source,
++                            const SurfaceKind& dest) {
++  size_t start = 0;
++  while (start <= list.size()) {
++    size_t end = list.find(',', start);
++    if (end == std::string::npos) end = list.size();
++    std::string item = list.substr(start, end - start);
++    item.erase(std::remove(item.begin(), item.end(), ' '), item.end());
++    if (item == "*") return true;
++    const size_t arrow = item.find("->");
++    if (arrow != std::string::npos && KindMatches(item.substr(0, arrow), source) &&
++        KindMatches(item.substr(arrow + 2), dest)) {
++      return true;
++    }
++    start = end + 1;
++  }
++  return false;
++}
++
+ inline bool KeepTransfer(const SurfaceKind& source, const SurfaceKind& dest) {
+   if (!dest.is_depth) {
+     return false;
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 00bc2d8..4d59e5a 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -42,6 +42,11 @@ REXCVAR_DEFINE_BOOL(direct_host_resolve, true, "GPU",
+                     "Resolve from host render targets directly to shared memory when possible")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++// Gears of War 3 recomp: copies to keep on top of KeepTransfer, to find the ones a game needs.
++REXCVAR_DEFINE_STRING(gpu_native_surfaces_keep, "", "GPU",
++                      "Native surfaces: also keep these EDRAM ownership copies, comma-separated "
++                      "\"source->dest\" kinds as the NATIVESURF log prints them (C5x1->C5x1), with "
++                      "C* / D* / * wildcards, or * for all");
+ REXCVAR_DEFINE_BOOL(gpu_native_surfaces, false, "GPU",
+                     "Native renderer, phase 2a: render targets are host surfaces; EDRAM ownership "
+                     "copies between them are dropped (depth to depth kept) and counted; forces "
+@@ -1498,7 +1503,9 @@ void RenderTargetCache::DropNativeSurfaceTransfers(std::vector<Transfer>& transf
+   auto dropped_begin =
+       std::remove_if(transfers.begin(), transfers.end(), [&](const Transfer& transfer) {
+         const native_surfaces::SurfaceKind source_kind = KindOf(transfer.source->key());
+-        if (native_surfaces::KeepTransfer(source_kind, dest_kind)) {
++        if (native_surfaces::KeepTransfer(source_kind, dest_kind) ||
++            native_surfaces::KeepListMatches(REXCVAR_GET(gpu_native_surfaces_keep), source_kind,
++                                             dest_kind)) {
+           return false;
+         }
+         native_surface_drops_.Record(source_kind, dest_kind,

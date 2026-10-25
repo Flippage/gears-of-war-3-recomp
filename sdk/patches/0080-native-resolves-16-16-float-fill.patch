@@ -1,0 +1,51 @@
+Native resolves 16 16 float fill: support exponent bias and scaled half-pixel offset gap fills for k_16_16_FLOAT native resolves by creating matching textures with unordered access and using the compute shader. Vulkan and GLSL portions skipped. Ported from Gears of War 2 port patch 0045 by santiquiroz.
+
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index c74f225..22adaa8 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -6083,6 +6083,7 @@ bool D3D12RenderTargetCache::IsNativeResolveEligible(const draw_util::ResolveInf
+       xenos::MsaaSamples::k1X) {
+     reason = NativeResolveFallback::kMsaa;
+   } else if (!is_depth && resolve_info.copy_dest_info.copy_dest_exp_bias != 0 &&
++             source_color_format != xenos::ColorRenderTargetFormat::k_16_16_FLOAT &&
+              source_color_format != xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT &&
+              source_color_format != xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT) {
+     reason = NativeResolveFallback::kExpBias;
+@@ -6163,6 +6164,11 @@ void D3D12RenderTargetCache::WriteResolveToTextures(const draw_util::ResolveInfo
+     } else if (source_format == xenos::ColorRenderTargetFormat::k_16_16_FLOAT) {
+       pair = NativeResolvePair::k1616Float;
+       texture_format = xenos::TextureFormat::k_16_16_FLOAT;
++      if (exp_bias || fill_half_pixel_offset) {
++        write.mode = D3D12TextureCache::NativeResolveMode::kScale;
++        write.source_srv_format = DXGI_FORMAT_R16G16_FLOAT;
++        write.dest_uav_format = DXGI_FORMAT_R16G16_FLOAT;
++      }
+     } else if (source_format == xenos::ColorRenderTargetFormat::k_8_8_8_8) {
+       // R8G8B8A8_UNORM render target, R8G8B8A8_TYPELESS texture - copyable without the swap.
+       pair = NativeResolvePair::k8888;
+@@ -6218,8 +6224,8 @@ void D3D12RenderTargetCache::WriteResolveToTextures(const draw_util::ResolveInfo
+   }
+   // The resolve shaders replicate the first surely covered host column / row (scale / 2) into the
+   // half-pixel offset gap before it with resolution scaling, so does native_resolve_cs. Copied
+-  // pairs whose textures can't be written by it (k_16_16_FLOAT, created without unordered access)
+-  // are left to the resolve.
++  // pairs are left to the resolve, as the copy can't do the fill and the textures of some formats
++  // aren't created with unordered access.
+   if (fill_half_pixel_offset) {
+     if (write.mode == D3D12TextureCache::NativeResolveMode::kCopy) {
+       fallback(NativeResolveFallback::kHalfPixelFill);
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 45f002b..4389001 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -2048,7 +2048,8 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
+   if (REXCVAR_GET(gpu_native_resolves) && key.tiled &&
+       key.dimension == xenos::DataDimension::k2DOrStacked && key.depth_or_array_size_minus_1 == 0 &&
+       key.mip_max_level == 0 &&
+-      (key.format == xenos::TextureFormat::k_16_16_16_16_FLOAT ||
++      (key.format == xenos::TextureFormat::k_16_16_FLOAT ||
++       key.format == xenos::TextureFormat::k_16_16_16_16_FLOAT ||
+        key.format == xenos::TextureFormat::k_8_8_8_8 ||
+        key.format == xenos::TextureFormat::k_24_8 ||
+        key.format == xenos::TextureFormat::k_24_8_FLOAT)) {

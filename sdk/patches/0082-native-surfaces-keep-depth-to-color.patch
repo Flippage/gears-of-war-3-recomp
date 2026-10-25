@@ -1,0 +1,23 @@
+Gears of War 3: native surfaces keep depth to colour EDRAM ownership copies. Gears 3 reads its
+scene depth back through colour surfaces at the same EDRAM base; with those copies dropped,
+character lighting in cutscenes went dark (found with gpu_native_surfaces_keep, 0081). No
+measurable frame rate cost at 2x.
+
+diff --git a/include/rex/graphics/pipeline/render_target/native_surfaces.h b/include/rex/graphics/pipeline/render_target/native_surfaces.h
+index a467911..47b3592 100644
+--- a/include/rex/graphics/pipeline/render_target/native_surfaces.h
++++ b/include/rex/graphics/pipeline/render_target/native_surfaces.h
+@@ -53,9 +53,12 @@ inline bool KeepListMatches(const std::string& list, const SurfaceKind& source,
+   return false;
+ }
+ 
++// Gears of War 3 recomp: and depth to colour. Gears 3 reads its scene depth back through colour
++// surfaces at the same EDRAM base (D0x1 to C0x1 / C2x1 / C3x1 / C5x1 / C6x1); dropped, character
++// lighting in cutscenes went dark. Keeping them cost no measurable frame rate at 2x.
+ inline bool KeepTransfer(const SurfaceKind& source, const SurfaceKind& dest) {
+   if (!dest.is_depth) {
+-    return false;
++    return source.is_depth;
+   }
+   return source.is_depth || source.format == kColorFormat16_16;
+ }

@@ -1,0 +1,593 @@
+Native resolves scaled: resolution scaling support for native resolves, writing into scaled destination host textures at matching resolution scale. Vulkan and GLSL portions skipped. Ported from Gears of War 2 port patch 0041 by santiquiroz.
+
+diff --git a/include/rex/graphics/d3d12/texture_cache.h b/include/rex/graphics/d3d12/texture_cache.h
+index c1e1f33..69e4e1e 100644
+--- a/include/rex/graphics/d3d12/texture_cache.h
++++ b/include/rex/graphics/d3d12/texture_cache.h
+@@ -204,6 +204,11 @@ class D3D12TextureCache final : public TextureCache {
+     NativeResolveMode mode = NativeResolveMode::kCopy;
+     // kScale multiplier.
+     float scale = 1.0f;
++    // Shader modes: resolution-scaled host pixel columns / rows at the left / top of the rectangle
++    // taken from the first column / row after them - the half-pixel offset gap fill of the resolve
++    // shaders (ResolveEdramInfo::fill_half_pixel_offset).
++    uint32_t fill_x = 0;
++    uint32_t fill_y = 0;
+     // Shader modes: the non-shader-visible SRV of the source to copy if source_srv_format is
+     // DXGI_FORMAT_UNKNOWN, otherwise a 2D source SRV with source_srv_format is created.
+     D3D12_CPU_DESCRIPTOR_HANDLE source_srv = {};
+@@ -610,6 +615,7 @@ class D3D12TextureCache final : public TextureCache {
+     int32_t source_offset[2];
+     int32_t dest_offset[2];
+     uint32_t size[2];
++    uint32_t fill[2];
+   };
+   Microsoft::WRL::ComPtr<ID3D12RootSignature> native_resolve_root_signature_;
+   Microsoft::WRL::ComPtr<ID3D12PipelineState> native_resolve_pipeline_;
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index 78c2fcd..bf4b691 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -6113,6 +6113,9 @@ void D3D12RenderTargetCache::WriteResolveToTextures(const draw_util::ResolveInfo
+       is_depth ? resolve_info.depth_edram_info : resolve_info.color_edram_info;
+   const int32_t exp_bias = resolve_info.copy_dest_info.copy_dest_exp_bias;
+   const bool swap_red_blue = resolve_info.copy_dest_info.copy_dest_swap != 0;
++  // Only with resolution scaling. The fill is done by native_resolve_cs, so copied pairs are
++  // written by it with the identity (kScale by 1) instead.
++  const bool fill_half_pixel_offset = edram_info.fill_half_pixel_offset != 0;
+   D3D12TextureCache::NativeResolveWrite write;
+   NativeResolvePair pair;
+   xenos::TextureFormat texture_format;
+@@ -6143,7 +6146,7 @@ void D3D12RenderTargetCache::WriteResolveToTextures(const draw_util::ResolveInfo
+     if (source_format == xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT) {
+       pair = NativeResolvePair::k16161616Float;
+       texture_format = xenos::TextureFormat::k_16_16_16_16_FLOAT;
+-      if (exp_bias) {
++      if (exp_bias || fill_half_pixel_offset) {
+         write.mode = D3D12TextureCache::NativeResolveMode::kScale;
+         write.source_srv_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+         write.dest_uav_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+@@ -6166,6 +6169,11 @@ void D3D12RenderTargetCache::WriteResolveToTextures(const draw_util::ResolveInfo
+         write.mode = D3D12TextureCache::NativeResolveMode::kSwapRedBlue;
+         write.source_srv_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+         write.dest_uav_format = DXGI_FORMAT_R8G8B8A8_UNORM;
++      } else if (fill_half_pixel_offset && !exp_bias) {
++        // Unorm to float to unorm with the scale of 1 round-trips with round-to-nearest stores.
++        write.mode = D3D12TextureCache::NativeResolveMode::kScale;
++        write.source_srv_format = DXGI_FORMAT_R8G8B8A8_UNORM;
++        write.dest_uav_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+       }
+     } else {
+       // Including k_16_16, which the guest stores with a different range than the host.
+@@ -6205,10 +6213,17 @@ void D3D12RenderTargetCache::WriteResolveToTextures(const draw_util::ResolveInfo
+     fallback(NativeResolveFallback::kEndian);
+     return;
+   }
+-  // The resolve shader replicates the edge into the half-pixel offset gap with scaling.
+-  if (edram_info.fill_half_pixel_offset) {
+-    fallback(NativeResolveFallback::kHalfPixelFill);
+-    return;
++  // The resolve shaders replicate the first surely covered host column / row (scale / 2) into the
++  // half-pixel offset gap before it with resolution scaling, so does native_resolve_cs. Copied
++  // pairs whose textures can't be written by it (k_16_16_FLOAT, created without unordered access)
++  // are left to the resolve.
++  if (fill_half_pixel_offset) {
++    if (write.mode == D3D12TextureCache::NativeResolveMode::kCopy) {
++      fallback(NativeResolveFallback::kHalfPixelFill);
++      return;
++    }
++    write.fill_x = resolve_info.coordinate_info.draw_resolution_scale_x >> 1;
++    write.fill_y = resolve_info.coordinate_info.draw_resolution_scale_y >> 1;
+   }
+ 
+   // The single render target owning the whole resolve area, as dumped by DumpRenderTargets.
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index b3032c5..98f07ad 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -1605,6 +1605,8 @@ void D3D12TextureCache::WriteNativeResolveToTextures(const NativeResolveWrite& w
+       constants.dest_offset[1] = int32_t(write.dest_y * scale_y);
+       constants.size[0] = width * scale_x;
+       constants.size[1] = height * scale_y;
++      constants.fill[0] = write.fill_x;
++      constants.fill[1] = write.fill_y;
+       command_list.D3DSetComputeRoot32BitConstants(0, sizeof(constants) / sizeof(uint32_t),
+                                                    &constants, 0);
+       command_list.D3DDispatch((constants.size[0] + 7) >> 3, (constants.size[1] + 7) >> 3, 1);
+@@ -1620,6 +1622,9 @@ void D3D12TextureCache::WriteNativeResolveToTextures(const NativeResolveWrite& w
+       return;
+     }
+ 
++    // The half-pixel offset gap fill needs a shader mode.
++    assert_true(!write.fill_x && !write.fill_y);
++
+     // Referenced by the command list now.
+     texture.MarkAsUsed();
+     command_processor_.PushTransitionBarrier(write.source, source_state,
+diff --git a/src/graphics/shaders/bytecode/d3d12_5_1/native_resolve_cs.h b/src/graphics/shaders/bytecode/d3d12_5_1/native_resolve_cs.h
+index 3e829dc..c5d93c1 100644
+--- a/src/graphics/shaders/bytecode/d3d12_5_1/native_resolve_cs.h
++++ b/src/graphics/shaders/bytecode/d3d12_5_1/native_resolve_cs.h
+@@ -13,6 +13,7 @@
+ //   int2 xe_native_resolve_source_offset;// Offset:    8 Size:     8
+ //   int2 xe_native_resolve_dest_offset;// Offset:   16 Size:     8
+ //   uint2 xe_native_resolve_size;      // Offset:   24 Size:     8
++//   uint2 xe_native_resolve_fill;      // Offset:   32 Size:     8
+ //
+ // }
+ //
+@@ -40,7 +41,7 @@
+ // no Output
+ cs_5_1
+ dcl_globalFlags refactoringAllowed
+-dcl_constantbuffer CB0[0:0][2], immediateIndexed, space=0
++dcl_constantbuffer CB0[0:0][3], immediateIndexed, space=0
+ dcl_resource_texture2d (float,float,float,float) T0[0:0], space=0
+ dcl_uav_typed_texture2d (float,float,float,float) U0[0:0], space=0
+ dcl_input vThreadID.xy
+@@ -51,7 +52,8 @@ or r0.x, r0.y, r0.x
+ if_nz r0.x
+   ret 
+ endif 
+-iadd r0.xy, vThreadID.xyxx, CB0[0][0].zwzz
++umax r0.xy, vThreadID.xyxx, CB0[0][2].xyxx
++iadd r0.xy, r0.xyxx, CB0[0][0].zwzz
+ mov r0.zw, l(0,0,0,0)
+ ld r0.xyzw, r0.xyzw, T0[0].zyxw
+ ieq r1.x, CB0[0][0].x, l(1)
+@@ -67,26 +69,26 @@ endif
+ iadd r1.xyzw, vThreadID.xyyy, CB0[0][1].xyyy
+ store_uav_typed U0[0].xyzw, r1.xyzw, r0.xyzw
+ ret 
+-// Approximately 21 instruction slots used
++// Approximately 22 instruction slots used
+ #endif
+ 
+ const BYTE native_resolve_cs[] =
+ {
+-     68,  88,  66,  67, 250,  44, 
+-    255, 228, 158, 209,  62, 249, 
+-     73, 113,  53, 130, 110, 187, 
+-    104, 204,   1,   0,   0,   0, 
+-    116,   6,   0,   0,   5,   0, 
++     68,  88,  66,  67,  17, 121, 
++     14, 146, 219,  73, 166,  27, 
++     16, 174,  89, 249, 218, 139, 
++      6, 232,   1,   0,   0,   0, 
++    216,   6,   0,   0,   5,   0, 
+       0,   0,  52,   0,   0,   0, 
+-    120,   3,   0,   0, 136,   3, 
+-      0,   0, 152,   3,   0,   0, 
+-    216,   5,   0,   0,  82,  68, 
+-     69,  70,  60,   3,   0,   0, 
++    184,   3,   0,   0, 200,   3, 
++      0,   0, 216,   3,   0,   0, 
++     60,   6,   0,   0,  82,  68, 
++     69,  70, 124,   3,   0,   0, 
+       1,   0,   0,   0,   0,   1, 
+       0,   0,   3,   0,   0,   0, 
+      60,   0,   0,   0,   1,   5, 
+      83,  67,   0, 133,   0,   0, 
+-     20,   3,   0,   0,  19,  19, 
++     83,   3,   0,   0,  19,  19, 
+      68,  37,  60,   0,   0,   0, 
+      24,   0,   0,   0,  40,   0, 
+       0,   0,  40,   0,   0,   0, 
+@@ -125,218 +127,234 @@ const BYTE native_resolve_cs[] =
+     108, 118, 101,  67, 111, 110, 
+     115, 116,  97, 110, 116, 115, 
+       0, 171, 171, 171, 228,   0, 
+-      0,   0,   5,   0,   0,   0, 
+-     24,   1,   0,   0,  32,   0, 
++      0,   0,   6,   0,   0,   0, 
++     24,   1,   0,   0,  48,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0, 224,   1, 
++      0,   0,   0,   0,   8,   2, 
+       0,   0,   0,   0,   0,   0, 
+       4,   0,   0,   0,   2,   0, 
+-      0,   0,   0,   2,   0,   0, 
++      0,   0,  40,   2,   0,   0, 
+       0,   0,   0,   0, 255, 255, 
+     255, 255,   0,   0,   0,   0, 
+     255, 255, 255, 255,   0,   0, 
+-      0,   0,  36,   2,   0,   0, 
++      0,   0,  76,   2,   0,   0, 
+       4,   0,   0,   0,   4,   0, 
+       0,   0,   2,   0,   0,   0, 
+-     68,   2,   0,   0,   0,   0, 
++    108,   2,   0,   0,   0,   0, 
+       0,   0, 255, 255, 255, 255, 
+       0,   0,   0,   0, 255, 255, 
+     255, 255,   0,   0,   0,   0, 
+-    104,   2,   0,   0,   8,   0, 
++    144,   2,   0,   0,   8,   0, 
+       0,   0,   8,   0,   0,   0, 
+-      2,   0,   0,   0, 144,   2, 
++      2,   0,   0,   0, 184,   2, 
+       0,   0,   0,   0,   0,   0, 
+     255, 255, 255, 255,   0,   0, 
+       0,   0, 255, 255, 255, 255, 
+-      0,   0,   0,   0, 180,   2, 
++      0,   0,   0,   0, 220,   2, 
+       0,   0,  16,   0,   0,   0, 
+       8,   0,   0,   0,   2,   0, 
+-      0,   0, 144,   2,   0,   0, 
++      0,   0, 184,   2,   0,   0, 
+       0,   0,   0,   0, 255, 255, 
+     255, 255,   0,   0,   0,   0, 
+     255, 255, 255, 255,   0,   0, 
+-      0,   0, 210,   2,   0,   0, 
++      0,   0, 250,   2,   0,   0, 
+      24,   0,   0,   0,   8,   0, 
+       0,   0,   2,   0,   0,   0, 
+-    240,   2,   0,   0,   0,   0, 
++     24,   3,   0,   0,   0,   0, 
+       0,   0, 255, 255, 255, 255, 
+       0,   0,   0,   0, 255, 255, 
+     255, 255,   0,   0,   0,   0, 
++     60,   3,   0,   0,  32,   0, 
++      0,   0,   8,   0,   0,   0, 
++      2,   0,   0,   0,  24,   3, 
++      0,   0,   0,   0,   0,   0, 
++    255, 255, 255, 255,   0,   0, 
++      0,   0, 255, 255, 255, 255, 
++      0,   0,   0,   0, 120, 101, 
++     95, 110,  97, 116, 105, 118, 
++    101,  95, 114, 101, 115, 111, 
++    108, 118, 101,  95, 109, 111, 
++    100, 101,   0, 100, 119, 111, 
++    114, 100,   0, 171, 171, 171, 
++      0,   0,  19,   0,   1,   0, 
++      1,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,  31,   2,   0,   0, 
+     120, 101,  95, 110,  97, 116, 
+     105, 118, 101,  95, 114, 101, 
+     115, 111, 108, 118, 101,  95, 
+-    109, 111, 100, 101,   0, 100, 
+-    119, 111, 114, 100,   0, 171, 
+-    171, 171,   0,   0,  19,   0, 
++    115,  99,  97, 108, 101,   0, 
++    102, 108, 111,  97, 116,   0, 
++    171, 171,   0,   0,   3,   0, 
+       1,   0,   1,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0, 247,   1, 
++      0,   0,   0,   0, 100,   2, 
+       0,   0, 120, 101,  95, 110, 
+      97, 116, 105, 118, 101,  95, 
+     114, 101, 115, 111, 108, 118, 
+-    101,  95, 115,  99,  97, 108, 
+-    101,   0, 102, 108, 111,  97, 
+-    116,   0, 171, 171,   0,   0, 
+-      3,   0,   1,   0,   1,   0, 
+-      0,   0,   0,   0,   0,   0, 
++    101,  95, 115, 111, 117, 114, 
++     99, 101,  95, 111, 102, 102, 
++    115, 101, 116,   0, 105, 110, 
++    116,  50,   0, 171, 171, 171, 
++      1,   0,   2,   0,   1,   0, 
++      2,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-     60,   2,   0,   0, 120, 101, 
+-     95, 110,  97, 116, 105, 118, 
+-    101,  95, 114, 101, 115, 111, 
+-    108, 118, 101,  95, 115, 111, 
+-    117, 114,  99, 101,  95, 111, 
++      0,   0, 176,   2,   0,   0, 
++    120, 101,  95, 110,  97, 116, 
++    105, 118, 101,  95, 114, 101, 
++    115, 111, 108, 118, 101,  95, 
++    100, 101, 115, 116,  95, 111, 
+     102, 102, 115, 101, 116,   0, 
++    120, 101,  95, 110,  97, 116, 
++    105, 118, 101,  95, 114, 101, 
++    115, 111, 108, 118, 101,  95, 
++    115, 105, 122, 101,   0, 117, 
+     105, 110, 116,  50,   0, 171, 
+-    171, 171,   1,   0,   2,   0, 
+-      1,   0,   2,   0,   0,   0, 
+-      0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0, 136,   2, 
+-      0,   0, 120, 101,  95, 110, 
+-     97, 116, 105, 118, 101,  95, 
+-    114, 101, 115, 111, 108, 118, 
+-    101,  95, 100, 101, 115, 116, 
+-     95, 111, 102, 102, 115, 101, 
+-    116,   0, 120, 101,  95, 110, 
+-     97, 116, 105, 118, 101,  95, 
+-    114, 101, 115, 111, 108, 118, 
+-    101,  95, 115, 105, 122, 101, 
+-      0, 117, 105, 110, 116,  50, 
+-      0, 171,   1,   0,  19,   0, 
+-      1,   0,   2,   0,   0,   0, 
+-      0,   0,   0,   0,   0,   0, 
++      1,   0,  19,   0,   1,   0, 
++      2,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0, 233,   2, 
+-      0,   0,  77, 105,  99, 114, 
+-    111, 115, 111, 102, 116,  32, 
+-     40,  82,  41,  32,  72,  76, 
+-     83,  76,  32,  83, 104,  97, 
+-    100, 101, 114,  32,  67, 111, 
+-    109, 112, 105, 108, 101, 114, 
+-     32,  49,  48,  46,  49,   0, 
+-     73,  83,  71,  78,   8,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      8,   0,   0,   0,  79,  83, 
++      0,   0,  17,   3,   0,   0, 
++    120, 101,  95, 110,  97, 116, 
++    105, 118, 101,  95, 114, 101, 
++    115, 111, 108, 118, 101,  95, 
++    102, 105, 108, 108,   0,  77, 
++    105,  99, 114, 111, 115, 111, 
++    102, 116,  32,  40,  82,  41, 
++     32,  72,  76,  83,  76,  32, 
++     83, 104,  97, 100, 101, 114, 
++     32,  67, 111, 109, 112, 105, 
++    108, 101, 114,  32,  49,  48, 
++     46,  49,   0, 171,  73,  83, 
+      71,  78,   8,   0,   0,   0, 
+       0,   0,   0,   0,   8,   0, 
+-      0,   0,  83,  72,  69,  88, 
+-     56,   2,   0,   0,  81,   0, 
+-      5,   0, 142,   0,   0,   0, 
+-    106,   8,   0,   1,  89,   0, 
+-      0,   7,  70, 142,  48,   0, 
++      0,   0,  79,  83,  71,  78, 
++      8,   0,   0,   0,   0,   0, 
++      0,   0,   8,   0,   0,   0, 
++     83,  72,  69,  88,  92,   2, 
++      0,   0,  81,   0,   5,   0, 
++    151,   0,   0,   0, 106,   8, 
++      0,   1,  89,   0,   0,   7, 
++     70, 142,  48,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   3,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      2,   0,   0,   0,   0,   0, 
+-      0,   0,  88,  24,   0,   7, 
+-     70, 126,  48,   0,   0,   0, 
++     88,  24,   0,   7,  70, 126, 
++     48,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,  85,  85, 
++      0,   0,  85,  85,   0,   0, 
++      0,   0,   0,   0, 156,  24, 
++      0,   7,  70, 238,  49,   0, 
+       0,   0,   0,   0,   0,   0, 
+-    156,  24,   0,   7,  70, 238, 
+-     49,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,  85,  85,   0,   0, 
+-      0,   0,   0,   0,  95,   0, 
+-      0,   2,  50,   0,   2,   0, 
+-    104,   0,   0,   2,   2,   0, 
+-      0,   0, 155,   0,   0,   4, 
+-      8,   0,   0,   0,   8,   0, 
++     85,  85,   0,   0,   0,   0, 
++      0,   0,  95,   0,   0,   2, 
++     50,   0,   2,   0, 104,   0, 
++      0,   2,   2,   0,   0,   0, 
++    155,   0,   0,   4,   8,   0, 
++      0,   0,   8,   0,   0,   0, 
++      1,   0,   0,   0,  80,   0, 
++      0,   8,  50,   0,  16,   0, 
++      0,   0,   0,   0,  70,   0, 
++      2,   0, 230, 138,  48,   0, 
++      0,   0,   0,   0,   0,   0, 
+       0,   0,   1,   0,   0,   0, 
+-     80,   0,   0,   8,  50,   0, 
++     60,   0,   0,   7,  18,   0, 
+      16,   0,   0,   0,   0,   0, 
+-     70,   0,   2,   0, 230, 138, 
+-     48,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,   1,   0, 
+-      0,   0,  60,   0,   0,   7, 
+-     18,   0,  16,   0,   0,   0, 
+-      0,   0,  26,   0,  16,   0, 
+-      0,   0,   0,   0,  10,   0, 
+-     16,   0,   0,   0,   0,   0, 
+-     31,   0,   4,   3,  10,   0, 
++     26,   0,  16,   0,   0,   0, 
++      0,   0,  10,   0,  16,   0, 
++      0,   0,   0,   0,  31,   0, 
++      4,   3,  10,   0,  16,   0, 
++      0,   0,   0,   0,  62,   0, 
++      0,   1,  21,   0,   0,   1, 
++     83,   0,   0,   8,  50,   0, 
+      16,   0,   0,   0,   0,   0, 
+-     62,   0,   0,   1,  21,   0, 
+-      0,   1,  30,   0,   0,   8, 
++     70,   0,   2,   0,  70, 128, 
++     48,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   2,   0, 
++      0,   0,  30,   0,   0,   9, 
+      50,   0,  16,   0,   0,   0, 
+-      0,   0,  70,   0,   2,   0, 
+-    230, 138,  48,   0,   0,   0, 
+-      0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,  54,   0, 
+-      0,   8, 194,   0,  16,   0, 
+-      0,   0,   0,   0,   2,  64, 
++      0,   0,  70,   0,  16,   0, 
++      0,   0,   0,   0, 230, 138, 
++     48,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
++      0,   0,  54,   0,   0,   8, 
++    194,   0,  16,   0,   0,   0, 
++      0,   0,   2,  64,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-     45,   0,   0,   8, 242,   0, 
++      0,   0,   0,   0,  45,   0, 
++      0,   8, 242,   0,  16,   0, 
++      0,   0,   0,   0,  70,  14, 
+      16,   0,   0,   0,   0,   0, 
+-     70,  14,  16,   0,   0,   0, 
+-      0,   0, 102, 124,  32,   0, 
++    102, 124,  32,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,  32,   0,   0,   9, 
+-     18,   0,  16,   0,   1,   0, 
+-      0,   0,  10, 128,  48,   0, 
+-      0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,   0,   0, 
+-      1,  64,   0,   0,   1,   0, 
+-      0,   0,  31,   0,   0,   3, 
+-     10,   0,  16,   0,   1,   0, 
+-      0,   0,  32,   0,   0,   9, 
+-     18,   0,  16,   0,   1,   0, 
+-      0,   0,  10, 128,  48,   0, 
++     32,   0,   0,   9,  18,   0, 
++     16,   0,   1,   0,   0,   0, 
++     10, 128,  48,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   1,  64, 
++      0,   0,   1,   0,   0,   0, 
++     31,   0,   0,   3,  10,   0, 
++     16,   0,   1,   0,   0,   0, 
++     32,   0,   0,   9,  18,   0, 
++     16,   0,   1,   0,   0,   0, 
++     10, 128,  48,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      1,  64,   0,   0,   2,   0, 
+-      0,   0,  31,   0,   4,   3, 
+-     10,   0,  16,   0,   1,   0, 
+-      0,   0,  54,   0,   0,   5, 
+-     18,   0,  16,   0,   0,   0, 
+-      0,   0,  42,   0,  16,   0, 
+-      0,   0,   0,   0,  54,   0, 
+-      0,   8, 226,   0,  16,   0, 
+-      0,   0,   0,   0,   2,  64, 
++      0,   0,   0,   0,   1,  64, 
++      0,   0,   2,   0,   0,   0, 
++     31,   0,   4,   3,  10,   0, 
++     16,   0,   1,   0,   0,   0, 
++     54,   0,   0,   5,  18,   0, 
++     16,   0,   0,   0,   0,   0, 
++     42,   0,  16,   0,   0,   0, 
++      0,   0,  54,   0,   0,   8, 
++    226,   0,  16,   0,   0,   0, 
++      0,   0,   2,  64,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,  18,   0, 
++      0,   1,  56,   0,   0,   9, 
++    242,   0,  16,   0,   0,   0, 
++      0,   0, 102,  12,  16,   0, 
++      0,   0,   0,   0,  86, 133, 
++     48,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-     18,   0,   0,   1,  56,   0, 
+-      0,   9, 242,   0,  16,   0, 
+-      0,   0,   0,   0, 102,  12, 
+-     16,   0,   0,   0,   0,   0, 
+-     86, 133,  48,   0,   0,   0, 
++      0,   0,  21,   0,   0,   1, 
++     21,   0,   0,   1,  30,   0, 
++      0,   8, 242,   0,  16,   0, 
++      1,   0,   0,   0,  70,   5, 
++      2,   0,  70, 133,  48,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,  21,   0, 
+-      0,   1,  21,   0,   0,   1, 
+-     30,   0,   0,   8, 242,   0, 
++      0,   0,   1,   0,   0,   0, 
++    164,   0,   0,   8, 242, 224, 
++     33,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,  70,  14, 
+      16,   0,   1,   0,   0,   0, 
+-     70,   5,   2,   0,  70, 133, 
+-     48,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,   1,   0, 
+-      0,   0, 164,   0,   0,   8, 
+-    242, 224,  33,   0,   0,   0, 
+-      0,   0,   0,   0,   0,   0, 
+-     70,  14,  16,   0,   1,   0, 
+-      0,   0,  70,  14,  16,   0, 
+-      0,   0,   0,   0,  62,   0, 
+-      0,   1,  83,  84,  65,  84, 
+-    148,   0,   0,   0,  21,   0, 
+-      0,   0,   2,   0,   0,   0, 
+-      0,   0,   0,   0,   1,   0, 
++     70,  14,  16,   0,   0,   0, 
++      0,   0,  62,   0,   0,   1, 
++     83,  84,  65,  84, 148,   0, 
++      0,   0,  22,   0,   0,   0, 
++      2,   0,   0,   0,   0,   0, 
+       0,   0,   1,   0,   0,   0, 
+-      4,   0,   0,   0,   2,   0, 
++      1,   0,   0,   0,   4,   0, 
+       0,   0,   3,   0,   0,   0, 
+-      3,   0,   0,   0,   0,   0, 
++      3,   0,   0,   0,   3,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,   1,   0, 
+       0,   0,   0,   0,   0,   0, 
++      0,   0,   1,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   3,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
++      3,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+@@ -346,6 +364,6 @@ const BYTE native_resolve_cs[] =
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,   1,   0, 
+-      0,   0
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   1,   0,   0,   0
+ };
+diff --git a/src/graphics/shaders/native_resolve.cs.hlsl b/src/graphics/shaders/native_resolve.cs.hlsl
+index e053298..707b1e5 100644
+--- a/src/graphics/shaders/native_resolve.cs.hlsl
++++ b/src/graphics/shaders/native_resolve.cs.hlsl
+@@ -16,6 +16,12 @@
+ // 0 - out = in * xe_native_resolve_scale (exponent bias of float formats).
+ // 1 - out = in.bgra (red and blue swapped).
+ // 2 - out.r = depth (the source SRV returns the depth in the red component).
++//
++// xe_native_resolve_fill is the number of host pixel columns and rows at the
++// left and the top of the rectangle that are taken from the first surely
++// covered column and row instead (the resolve shaders' half-pixel offset gap
++// fill with resolution scaling, ResolveEdramInfo::fill_half_pixel_offset), so
++// the source pixel is max(pixel, xe_native_resolve_fill).
+ 
+ cbuffer XeNativeResolveConstants : register(b0) {
+   uint xe_native_resolve_mode;
+@@ -23,6 +29,7 @@ cbuffer XeNativeResolveConstants : register(b0) {
+   int2 xe_native_resolve_source_offset;
+   int2 xe_native_resolve_dest_offset;
+   uint2 xe_native_resolve_size;
++  uint2 xe_native_resolve_fill;
+ };
+ 
+ Texture2D<float4> xe_native_resolve_source : register(t0);
+@@ -34,8 +41,9 @@ void main(uint3 xe_thread_id : SV_DispatchThreadID) {
+     return;
+   }
+   int2 pixel = int2(xe_thread_id.xy);
++  int2 source_pixel = int2(max(xe_thread_id.xy, xe_native_resolve_fill));
+   float4 value = xe_native_resolve_source.Load(
+-      int3(xe_native_resolve_source_offset + pixel, 0));
++      int3(xe_native_resolve_source_offset + source_pixel, 0));
+   [branch] if (xe_native_resolve_mode == 1u) {
+     value = value.bgra;
+   } else if (xe_native_resolve_mode == 2u) {

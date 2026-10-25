@@ -68,6 +68,18 @@ cmake -S . -B $build -G Ninja "-DCMAKE_BUILD_TYPE=$Config" `
     "-DCMAKE_LINKER=$llvm\lld-link.exe" "-DCMAKE_PREFIX_PATH=$Sdk" | Out-File out\logs\configure.txt -Encoding utf8
 if ($LASTEXITCODE -ne 0) { Fail 'CMake configure failed (see out\logs\configure.txt).' }
 
+# CMake re-runs codegen during the build when its inputs (the manifest, hints, the xex) are newer
+# than its stamp, as in a fresh checkout. That would replace the generated files after the patch
+# steps above and drop their fixes (an unresolved branch trap then stops the game at boot), so run
+# that codegen target first and patch again before building.
+Step 'Codegen target (only runs when its inputs changed)'
+cmake --build $build --target gow3_codegen
+if ($LASTEXITCODE -ne 0) { Fail 'The codegen target failed.' }
+python -I tools\patch_switch_traps.py 'generated/default/*.cpp'
+if ($LASTEXITCODE -ne 0) { Fail 'tools\patch_switch_traps.py failed.' }
+python -I tools\patch_game_patches.py 'generated/default/*.cpp'
+if ($LASTEXITCODE -ne 0) { Fail 'tools\patch_game_patches.py failed.' }
+
 Step 'Building'
 cmake --build $build --target gow3
 if ($LASTEXITCODE -ne 0) { Fail 'Build failed.' }

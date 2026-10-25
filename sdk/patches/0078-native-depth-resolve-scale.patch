@@ -1,0 +1,174 @@
+Native depth resolve scale: doubles depth coordinate scale for D24FS8 native resolves so the full 0..1 floating point range is properly sampled and preserved. Vulkan and GLSL portions skipped. Ported from Gears of War 2 port patch 0043 by santiquiroz.
+
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index 8ecb4a6..c74f225 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -6131,6 +6131,8 @@ void D3D12RenderTargetCache::WriteResolveToTextures(const draw_util::ResolveInfo
+     } else if (source_format == xenos::DepthRenderTargetFormat::kD24FS8) {
+       pair = NativeResolvePair::kD24FS8;
+       texture_format = xenos::TextureFormat::k_24_8_FLOAT;
++      // The host keeps guest float24 depth [0, 2) as [0, 1).
++      write.scale = 2.0f;
+     } else {
+       fallback(NativeResolveFallback::kDepth);
+       return;
+diff --git a/src/graphics/shaders/bytecode/d3d12_5_1/native_resolve_cs.h b/src/graphics/shaders/bytecode/d3d12_5_1/native_resolve_cs.h
+index c5d93c1..ad9eda4 100644
+--- a/src/graphics/shaders/bytecode/d3d12_5_1/native_resolve_cs.h
++++ b/src/graphics/shaders/bytecode/d3d12_5_1/native_resolve_cs.h
+@@ -60,7 +60,7 @@ ieq r1.x, CB0[0][0].x, l(1)
+ if_z r1.x
+   ieq r1.x, CB0[0][0].x, l(2)
+   if_nz r1.x
+-    mov r0.x, r0.z
++    mul r0.x, r0.z, CB0[0][0].y
+     mov r0.yzw, l(0,0,0,0)
+   else 
+     mul r0.xyzw, r0.zyxw, CB0[0][0].yyyy
+@@ -74,15 +74,15 @@ ret
+ 
+ const BYTE native_resolve_cs[] =
+ {
+-     68,  88,  66,  67,  17, 121, 
+-     14, 146, 219,  73, 166,  27, 
+-     16, 174,  89, 249, 218, 139, 
+-      6, 232,   1,   0,   0,   0, 
+-    216,   6,   0,   0,   5,   0, 
++     68,  88,  66,  67, 225,  91, 
++    154,  14,  25,  67,  26, 142, 
++    119, 164, 243,  98, 178, 133, 
++     79, 100,   1,   0,   0,   0, 
++    232,   6,   0,   0,   5,   0, 
+       0,   0,  52,   0,   0,   0, 
+     184,   3,   0,   0, 200,   3, 
+       0,   0, 216,   3,   0,   0, 
+-     60,   6,   0,   0,  82,  68, 
++     76,   6,   0,   0,  82,  68, 
+      69,  70, 124,   3,   0,   0, 
+       1,   0,   0,   0,   0,   1, 
+       0,   0,   3,   0,   0,   0, 
+@@ -238,9 +238,9 @@ const BYTE native_resolve_cs[] =
+       0,   0,  79,  83,  71,  78, 
+       8,   0,   0,   0,   0,   0, 
+       0,   0,   8,   0,   0,   0, 
+-     83,  72,  69,  88,  92,   2, 
++     83,  72,  69,  88, 108,   2, 
+       0,   0,  81,   0,   5,   0, 
+-    151,   0,   0,   0, 106,   8, 
++    155,   0,   0,   0, 106,   8, 
+       0,   1,  89,   0,   0,   7, 
+      70, 142,  48,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+@@ -312,49 +312,52 @@ const BYTE native_resolve_cs[] =
+       0,   0,   2,   0,   0,   0, 
+      31,   0,   4,   3,  10,   0, 
+      16,   0,   1,   0,   0,   0, 
+-     54,   0,   0,   5,  18,   0, 
++     56,   0,   0,   9,  18,   0, 
+      16,   0,   0,   0,   0,   0, 
+      42,   0,  16,   0,   0,   0, 
+-      0,   0,  54,   0,   0,   8, 
+-    226,   0,  16,   0,   0,   0, 
+-      0,   0,   2,  64,   0,   0, 
++      0,   0,  26, 128,  48,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,  18,   0, 
+-      0,   1,  56,   0,   0,   9, 
+-    242,   0,  16,   0,   0,   0, 
+-      0,   0, 102,  12,  16,   0, 
+-      0,   0,   0,   0,  86, 133, 
+-     48,   0,   0,   0,   0,   0, 
++     54,   0,   0,   8, 226,   0, 
++     16,   0,   0,   0,   0,   0, 
++      2,  64,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,  21,   0,   0,   1, 
+-     21,   0,   0,   1,  30,   0, 
+-      0,   8, 242,   0,  16,   0, 
+-      1,   0,   0,   0,  70,   5, 
+-      2,   0,  70, 133,  48,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   1,   0,   0,   0, 
+-    164,   0,   0,   8, 242, 224, 
+-     33,   0,   0,   0,   0,   0, 
+-      0,   0,   0,   0,  70,  14, 
+-     16,   0,   1,   0,   0,   0, 
+-     70,  14,  16,   0,   0,   0, 
+-      0,   0,  62,   0,   0,   1, 
+-     83,  84,  65,  84, 148,   0, 
+-      0,   0,  22,   0,   0,   0, 
+-      2,   0,   0,   0,   0,   0, 
+-      0,   0,   1,   0,   0,   0, 
+-      1,   0,   0,   0,   4,   0, 
+-      0,   0,   3,   0,   0,   0, 
++      0,   0,  18,   0,   0,   1, 
++     56,   0,   0,   9, 242,   0, 
++     16,   0,   0,   0,   0,   0, 
++    102,  12,  16,   0,   0,   0, 
++      0,   0,  86, 133,  48,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++     21,   0,   0,   1,  21,   0, 
++      0,   1,  30,   0,   0,   8, 
++    242,   0,  16,   0,   1,   0, 
++      0,   0,  70,   5,   2,   0, 
++     70, 133,  48,   0,   0,   0, 
++      0,   0,   0,   0,   0,   0, 
++      1,   0,   0,   0, 164,   0, 
++      0,   8, 242, 224,  33,   0, 
++      0,   0,   0,   0,   0,   0, 
++      0,   0,  70,  14,  16,   0, 
++      1,   0,   0,   0,  70,  14, 
++     16,   0,   0,   0,   0,   0, 
++     62,   0,   0,   1,  83,  84, 
++     65,  84, 148,   0,   0,   0, 
++     22,   0,   0,   0,   2,   0, 
++      0,   0,   0,   0,   0,   0, 
++      1,   0,   0,   0,   2,   0, 
++      0,   0,   4,   0,   0,   0, 
+       3,   0,   0,   0,   3,   0, 
++      0,   0,   3,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   1,   0,   0,   0, 
++      1,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
++      0,   0,   0,   0,   2,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      3,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+@@ -365,5 +368,5 @@ const BYTE native_resolve_cs[] =
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+       0,   0,   0,   0,   0,   0, 
+-      0,   0,   1,   0,   0,   0
++      1,   0,   0,   0
+ };
+diff --git a/src/graphics/shaders/native_resolve.cs.hlsl b/src/graphics/shaders/native_resolve.cs.hlsl
+index 707b1e5..297693e 100644
+--- a/src/graphics/shaders/native_resolve.cs.hlsl
++++ b/src/graphics/shaders/native_resolve.cs.hlsl
+@@ -15,7 +15,7 @@
+ // Modes:
+ // 0 - out = in * xe_native_resolve_scale (exponent bias of float formats).
+ // 1 - out = in.bgra (red and blue swapped).
+-// 2 - out.r = depth (the source SRV returns the depth in the red component).
++// 2 - out.r = depth * xe_native_resolve_scale (the source SRV returns the depth in the red component).
+ //
+ // xe_native_resolve_fill is the number of host pixel columns and rows at the
+ // left and the top of the rectangle that are taken from the first surely
+@@ -47,7 +47,7 @@ void main(uint3 xe_thread_id : SV_DispatchThreadID) {
+   [branch] if (xe_native_resolve_mode == 1u) {
+     value = value.bgra;
+   } else if (xe_native_resolve_mode == 2u) {
+-    value = float4(value.r, 0.0, 0.0, 0.0);
++    value = float4(value.r * xe_native_resolve_scale, 0.0, 0.0, 0.0);
+   } else {
+     value *= xe_native_resolve_scale;
+   }
