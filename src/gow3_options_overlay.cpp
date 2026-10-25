@@ -1028,10 +1028,12 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
       ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextDim), "%s",
                          UiText("hint_bar").For(lang));
 
-      // Controller button / key capture modal overlay.
+      // Controller button / key capture modal overlay. Drawn on the foreground list: on the
+      // window's own list the scrolling rows (a child window, drawn later) covered it.
       if (!pad_capture_cvar_.empty() || !key_capture_cvar_.empty()) {
-        win_dl->AddRectFilled(panel_pos, ImVec2(panel_pos.x + panel_w, panel_pos.y + panel_h),
-                              IM_COL32(0, 0, 0, 195), 8.0f * scale);
+        ImDrawList* fg_dl = ImGui::GetForegroundDrawList();
+        fg_dl->AddRectFilled(panel_pos, ImVec2(panel_pos.x + panel_w, panel_pos.y + panel_h),
+                             IM_COL32(0, 0, 0, 195), 8.0f * scale);
         const char* prompt =
             UiText(key_capture_cvar_.empty() ? "pad_press_button" : "key_press_key").For(lang);
         ImVec2 psz = ImGui::CalcTextSize(prompt);
@@ -1039,10 +1041,10 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
                        (disp_h - psz.y) * 0.5f - 20.0f * scale);
         ImVec2 box_max((disp_w + psz.x) * 0.5f + 28.0f * scale,
                        (disp_h + psz.y) * 0.5f + 20.0f * scale);
-        win_dl->AddRectFilled(box_min, box_max, kColPanelBg, 6.0f * scale);
-        win_dl->AddRect(box_min, box_max, kColAccentBright, 6.0f * scale, 0, 2.0f * scale);
-        win_dl->AddText(ImVec2((disp_w - psz.x) * 0.5f, (disp_h - psz.y) * 0.5f), kColTextPrimary,
-                        prompt);
+        fg_dl->AddRectFilled(box_min, box_max, kColPanelBg | IM_COL32_A_MASK, 6.0f * scale);
+        fg_dl->AddRect(box_min, box_max, kColAccentBright, 6.0f * scale, 0, 2.0f * scale);
+        fg_dl->AddText(ImVec2((disp_w - psz.x) * 0.5f, (disp_h - psz.y) * 0.5f),
+                       kColTextPrimary | IM_COL32_A_MASK, prompt);
       }
     }
     ImGui::End();
