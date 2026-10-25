@@ -51,6 +51,8 @@
 
 #include <imgui.h>
 
+#include "gow3_loading_screen.h"
+
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -109,9 +111,37 @@ void GetShaderLoading(uint32_t* done, uint32_t* total) {
 class ShaderLoadingDialog;
 ShaderLoadingDialog* g_shader_loading_dialog = nullptr;
 
+// Fonts for the loading screen, added with the overlay fonts: Teko (SIL OFL, bundled in
+// assets\fonts next to the exe) for the title and numbers, else Bahnschrift (Windows 10 / 11), and
+// Segoe UI for the hint. Null when missing.
+ImFont* g_loading_title_font = nullptr;
+ImFont* g_loading_body_font = nullptr;
+
+void AddLoadingScreenFonts(ImFontAtlas* atlas) {
+#ifdef _WIN32
+  auto add = [&](const std::string& path, float size) -> ImFont* {
+    if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES) return nullptr;
+    return atlas->AddFontFromFileTTF(path.c_str(), size);
+  };
+  const std::string fonts_dir =
+      rex::path_to_utf8(rex::filesystem::GetExecutableFolder() / "assets" / "fonts");
+  char windir[MAX_PATH] = {};
+  const std::string system_fonts =
+      GetWindowsDirectoryA(windir, MAX_PATH) ? std::string(windir) + "\\Fonts\\" : std::string();
+  g_loading_title_font = add(fonts_dir + "\\Teko-Variable.ttf", 56.0f);
+  if (!g_loading_title_font && !system_fonts.empty()) {
+    g_loading_title_font = add(system_fonts + "bahnschrift.ttf", 56.0f);
+  }
+  if (!system_fonts.empty()) g_loading_body_font = add(system_fonts + "segoeui.ttf", 24.0f);
+#else
+  (void)atlas;
+#endif
+}
+
 class ShaderLoadingDialog final : public ui::ImGuiDialog {
  public:
-  explicit ShaderLoadingDialog(ui::ImGuiDrawer* drawer) : ui::ImGuiDialog(drawer) {}
+  explicit ShaderLoadingDialog(ui::ImGuiDrawer* drawer)
+      : ui::ImGuiDialog(drawer), start_(std::chrono::steady_clock::now()) {}
   void Finish() { finished_ = true; }
 
  protected:
@@ -123,27 +153,15 @@ class ShaderLoadingDialog final : public ui::ImGuiDialog {
     uint32_t done = 0, total = 0;
     GetShaderLoading(&done, &total);
     if (done > total) done = total;
-    const float scale = ImGui::GetFontSize() / 13.0f;
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowBgAlpha(0.85f);
-    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                                   ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
-                                   ImGuiWindowFlags_NoSavedSettings |
-                                   ImGuiWindowFlags_NoFocusOnAppearing;
-    if (ImGui::Begin("##shader_loading", nullptr, flags)) {
-      ImGui::TextUnformatted(total ? "Compiling shaders" : "Preparing shaders");
-      char label[64] = {};
-      if (total) std::snprintf(label, sizeof(label), "%u / %u", done, total);
-      ImGui::ProgressBar(total ? float(done) / float(total) : 0.0f, ImVec2(380.0f * scale, 0.0f),
-                         label);
-      ImGui::TextDisabled("Only after an update or a graphics change. This can take a few minutes.");
-    }
-    ImGui::End();
+    const float elapsed =
+        std::chrono::duration<float>(std::chrono::steady_clock::now() - start_).count();
+    glue::DrawShaderLoadingScreen(io, done, total, elapsed, g_loading_title_font,
+                                  g_loading_body_font);
   }
   void OnClose() override { g_shader_loading_dialog = nullptr; }
 
  private:
+  std::chrono::steady_clock::time_point start_;
   bool finished_ = false;
 };
 
@@ -507,7 +525,10 @@ bool ReXApp::SetupPresentation() {
 
 void ReXApp::SetupOverlays(rex::ui::Presenter* presenter, rex::ui::ImmediateDrawer* drawer) {
   imgui_drawer_ = std::make_unique<rex::ui::ImGuiDrawer>(
-      window_.get(), 64, [this](ImFontAtlas* atlas) { OnConfigureFonts(atlas); },
+      window_.get(), 64, [this](ImFontAtlas* atlas) {
+        OnConfigureFonts(atlas);
+        AddLoadingScreenFonts(atlas);
+      },
       [this](ImGuiStyle& imgui_style, rex::ui::Style& ui_style) {
         OnConfigureStyle(imgui_style, ui_style);
       });

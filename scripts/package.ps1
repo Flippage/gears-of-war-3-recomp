@@ -118,6 +118,9 @@ function Copy-Content([string]$Root, [string]$StageDir) {
     $glyphs = Join-Path $StageDir 'assets\glyphs'
     New-Item -ItemType Directory -Force -Path $glyphs | Out-Null
     Copy-Item -Recurse -Force (Join-Path $Root 'assets\glyphs\*') $glyphs
+    $fonts = Join-Path $StageDir 'assets\fonts'
+    New-Item -ItemType Directory -Force -Path $fonts | Out-Null
+    Copy-Item -Recurse -Force (Join-Path $Root 'assets\fonts\*') $fonts
     $licenses = Join-Path $StageDir 'licenses'
     New-Item -ItemType Directory -Force -Path $licenses | Out-Null
     Set-Content -Path (Join-Path $licenses 'AMD-FidelityFX-MIT.txt') -Encoding ASCII -Value @(

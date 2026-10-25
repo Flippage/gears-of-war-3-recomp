@@ -98,6 +98,13 @@ finding them goes to their authors:
 
 The texture streaming pool setting follows the Gears of War 2 port's `gow2_texture_streaming_fix`.
 
+## Teko font
+
+- `assets/fonts/Teko-Variable.ttf` (the loading screen's title and numbers), from
+  [google/fonts](https://github.com/google/fonts/tree/main/ofl/teko) (`Teko[wght].ttf`, file renamed
+  only), Copyright 2023 The Teko Project Authors (https://www.github.com/googlefonts/teko).
+- License: SIL Open Font License 1.1, full text in `assets/fonts/OFL.txt`.
+
 ## NVIDIA DLSS SDK
 
 Not included. `scripts/build-sdk.ps1` clones [NVIDIA/DLSS](https://github.com/NVIDIA/DLSS) on the

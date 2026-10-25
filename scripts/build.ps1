@@ -95,5 +95,10 @@ if (Test-Path (Join-Path $root 'assets\glyphs')) {
     Copy-Item (Join-Path $root 'assets\glyphs\*') $glyphDst -Recurse -Force
     Write-Host "Glyphs copied: $glyphDst"
 }
+if (Test-Path (Join-Path $root 'assets\fonts')) {
+    $fontDst = Join-Path $build 'assets\fonts'
+    New-Item -ItemType Directory -Force $fontDst | Out-Null
+    Copy-Item (Join-Path $root 'assets\fonts\*') $fontDst -Recurse -Force
+}
 Write-Host "`nDone: $build\gow3.exe" -ForegroundColor Green
 
