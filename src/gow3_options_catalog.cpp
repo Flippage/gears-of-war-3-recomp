@@ -477,7 +477,7 @@ std::vector<PageSpec> BuildCatalog() {
   pages.push_back({
       Page::kKeyBindings,
       {"Keyboard & Mouse Bindings"},
-      {"Select an action and press Set (or Enter), then the key or mouse button (Shift, Ctrl and Alt are keys too). Or type keys, comma-separated."},
+      {"Select a slot with Left/Right and press Enter or click to bind. Press Delete, Backspace, or (X) to clear. Reset Page restores defaults."},
       {
           KeyBindRow("keybind_lstick_up", "W", "Move Forward",
                      "Left stick up. Comma-separated keys; Set captures one."),
@@ -534,7 +534,7 @@ std::vector<PageSpec> BuildCatalog() {
   pages.push_back({
       Page::kPadButtons,
       {"Controller Buttons"},
-      {"Pick which physical button on your controller presses each Xbox 360 button in the game."},
+      {"Select a slot and press Enter or click to bind. If already used, it moves. Press Delete, Backspace, or (X) to clear."},
       {
           PadButtonRow("pad_map_a", "a", "A Button (Cover / Evade / Run)",
                        "Physical controller button that presses A in the game."),
@@ -688,6 +688,7 @@ const Text& UiText(std::string_view key) {
       {"open_save_folder", {"Open Current Save Folder"}},
       {"current_save_folder", {"Active save folder"}},
       {"hint_bar", {"Up/Down: Select   Left/Right: Adjust   A/Enter: Toggle   LB/RB: Tab   B/Esc/F10: Close"}},
+      {"hint_bar_bindings", {"Up/Down: Action   Left/Right: Slot   A/Enter: Bind   Delete/X: Clear   B/Esc: Back"}},
       {"back_to_controls", {"<  Back to Controls"}},
       {"pad_press_button", {"Press a button on your controller...   (Esc: Cancel)"}},
       {"pad_remap", {"Remap"}},

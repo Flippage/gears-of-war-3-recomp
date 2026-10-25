@@ -46,6 +46,8 @@ struct RawInput {
   bool key_enter = false;
   bool key_tab = false;
   bool key_shift = false;
+  bool key_delete = false;
+  bool key_backspace = false;
 
   // True when an ImGui text widget currently owns keyboard input.
   bool text_input_active = false;
@@ -55,6 +57,7 @@ struct MenuEdges {
   bool toggle_open = false;  // F10 or Back+Start chord pressed this frame.
   bool cancel = false;       // Esc or B pressed while open.
   bool confirm = false;      // Enter / Space or A pressed while open.
+  bool clear_slot = false;    // Delete / Backspace or X pressed on a binding slot.
   int move_row = 0;          // -1 up, +1 down.
   int adjust = 0;            // -1 left, +1 right.
   int switch_page = 0;       // -1 previous tab (LB / Shift+Tab), +1 next tab (RB / Tab).

@@ -1,0 +1,47 @@
+Pad button remapping: support comma-separated button sources for multi-slot bindings. In the PC options overlay, controller mapping allows both primary and secondary slots to be bound to physical buttons for each game action. BitForName previously only matched single button names, returning 0 if a cvar contained multiple buttons separated by commas (e.g. "a,lb"). BitForName now parses comma-separated tokens and returns the bitwise OR of all matched button masks, allowing multiple physical controller buttons to trigger the same game action.
+
+diff --git a/include/rex/input/pad_remap.h b/include/rex/input/pad_remap.h
+index 21dd179..264d6cc 100644
+--- a/include/rex/input/pad_remap.h
++++ b/include/rex/input/pad_remap.h
+@@ -28,7 +28,7 @@ inline constexpr std::array<Button, 14> kButtons = {{
+     {"dpad_right", 0x0008},
+ }};
+ 
+-constexpr uint16_t BitForName(std::string_view name) {
++constexpr uint16_t SingleBitForName(std::string_view name) {
+   for (const auto& btn : kButtons) {
+     if (btn.name == name) {
+       return btn.bit;
+@@ -37,6 +37,31 @@ constexpr uint16_t BitForName(std::string_view name) {
+   return 0;
+ }
+ 
++constexpr uint16_t BitForName(std::string_view name) {
++  uint16_t mask = 0;
++  size_t start = 0;
++  while (start < name.size()) {
++    while (start < name.size() && (name[start] == ' ' || name[start] == ',' || name[start] == '\t')) {
++      ++start;
++    }
++    if (start >= name.size()) {
++      break;
++    }
++    size_t end = start;
++    while (end < name.size() && name[end] != ',') {
++      ++end;
++    }
++    size_t token_end = end;
++    while (token_end > start && (name[token_end - 1] == ' ' || name[token_end - 1] == '\t')) {
++      --token_end;
++    }
++    std::string_view token = name.substr(start, token_end - start);
++    mask |= SingleBitForName(token);
++    start = end;
++  }
++  return mask;
++}
++
+ constexpr uint16_t Remap(uint16_t physical, const std::array<uint16_t, 14>& sources) {
+   uint16_t result = 0;
+   for (size_t i = 0; i < sources.size(); ++i) {

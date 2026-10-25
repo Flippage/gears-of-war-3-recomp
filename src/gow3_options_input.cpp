@@ -59,6 +59,13 @@ MenuEdges InputTracker::Step(const RawInput& now, bool menu_is_open) {
         out.confirm = true;
       }
 
+      // Clear slot: Delete, Backspace, or Gamepad X.
+      if ((now.key_delete && !prev_.key_delete) ||
+          (now.key_backspace && !prev_.key_backspace) ||
+          Pressed(now.pad_buttons, prev_.pad_buttons, kMaskX)) {
+        out.clear_slot = true;
+      }
+
       // Row navigation: Up/Down arrows, D-pad Up/Down, or left stick Y edge.
       if ((now.key_up && !prev_.key_up) ||
           Pressed(now.pad_buttons, prev_.pad_buttons, kMaskDpadUp) ||

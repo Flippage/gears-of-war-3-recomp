@@ -436,55 +436,108 @@ std::string ToLower(std::string s) {
   return s;
 }
 
+std::filesystem::path FindDirectGlyphFile(const std::filesystem::path& assets_dir,
+                                          const std::string& style,
+                                          const std::string& name) {
+  const std::string lower = ToLower(name);
+  if (style == "xbox") {
+    if (lower == "a") return assets_dir / "xbox" / "xbox_button_color_a.png";
+    if (lower == "b") return assets_dir / "xbox" / "xbox_button_color_b.png";
+    if (lower == "x") return assets_dir / "xbox" / "xbox_button_color_x.png";
+    if (lower == "y") return assets_dir / "xbox" / "xbox_button_color_y.png";
+    if (lower == "lb") return assets_dir / "xbox" / "xbox_lb.png";
+    if (lower == "rb") return assets_dir / "xbox" / "xbox_rb.png";
+    if (lower == "lt") return assets_dir / "xbox" / "xbox_lt.png";
+    if (lower == "rt") return assets_dir / "xbox" / "xbox_rt.png";
+    if (lower == "ls" || lower == "l3" || lower == "lspress") return assets_dir / "xbox" / "xbox_ls.png";
+    if (lower == "rs" || lower == "r3" || lower == "rspress") return assets_dir / "xbox" / "xbox_rs.png";
+    if (lower == "stickmove") return assets_dir / "xbox" / "xbox_stick_l.png";
+    if (lower == "back") return assets_dir / "xbox" / "xbox_button_back.png";
+    if (lower == "start") return assets_dir / "xbox" / "xbox_button_start.png";
+    if (lower == "dpadup" || lower == "dpad_up") return assets_dir / "xbox" / "xbox_dpad_up.png";
+    if (lower == "dpaddown" || lower == "dpad_down") return assets_dir / "xbox" / "xbox_dpad_down.png";
+    if (lower == "dpadleft" || lower == "dpad_left") return assets_dir / "xbox" / "xbox_dpad_left.png";
+    if (lower == "dpadright" || lower == "dpad_right") return assets_dir / "xbox" / "xbox_dpad_right.png";
+    if (lower == "dpadupdown" || lower == "dpad_up_down") return assets_dir / "xbox" / "xbox_dpad_up_down.png";
+    if (lower == "dpadleftright" || lower == "dpad_left_right") return assets_dir / "xbox" / "xbox_dpad_left_right.png";
+    if (lower == "dpadall" || lower == "dpad_all") return assets_dir / "xbox" / "xbox_dpad_all.png";
+  } else if (style == "playstation") {
+    if (lower == "a") return assets_dir / "playstation" / "playstation_button_color_cross.png";
+    if (lower == "b") return assets_dir / "playstation" / "playstation_button_color_circle.png";
+    if (lower == "x") return assets_dir / "playstation" / "playstation_button_color_square.png";
+    if (lower == "y") return assets_dir / "playstation" / "playstation_button_color_triangle.png";
+    if (lower == "lb" || lower == "l1") return assets_dir / "playstation" / "playstation_trigger_l1_alternative.png";
+    if (lower == "rb" || lower == "r1") return assets_dir / "playstation" / "playstation_trigger_r1_alternative.png";
+    if (lower == "lt" || lower == "l2") return assets_dir / "playstation" / "playstation_trigger_l2.png";
+    if (lower == "rt" || lower == "r2") return assets_dir / "playstation" / "playstation_trigger_r2.png";
+    if (lower == "ls" || lower == "l3" || lower == "lspress") return assets_dir / "playstation" / "playstation_button_l3.png";
+    if (lower == "rs" || lower == "r3" || lower == "rspress") return assets_dir / "playstation" / "playstation_button_r3.png";
+    if (lower == "stickmove") return assets_dir / "playstation" / "playstation_stick_l.png";
+    if (lower == "back" || lower == "create" || lower == "share") return assets_dir / "playstation" / "playstation5_button_create.png";
+    if (lower == "start" || lower == "options") return assets_dir / "playstation" / "playstation5_button_options.png";
+    if (lower == "dpadup" || lower == "dpad_up") return assets_dir / "playstation" / "playstation_dpad_up.png";
+    if (lower == "dpaddown" || lower == "dpad_down") return assets_dir / "playstation" / "playstation_dpad_down.png";
+    if (lower == "dpadleft" || lower == "dpad_left") return assets_dir / "playstation" / "playstation_dpad_left.png";
+    if (lower == "dpadright" || lower == "dpad_right") return assets_dir / "playstation" / "playstation_dpad_right.png";
+    if (lower == "dpadupdown" || lower == "dpad_up_down") return assets_dir / "playstation" / "playstation_dpad_up_down.png";
+    if (lower == "dpadleftright" || lower == "dpad_left_right") return assets_dir / "playstation" / "playstation_dpad_left_right.png";
+    if (lower == "dpadall" || lower == "dpad_all") return assets_dir / "playstation" / "playstation_dpad_all.png";
+  } else if (style == "keyboard") {
+    if (lower == "lmb" || lower == "mouse1" || lower == "mouse_left")
+      return assets_dir / "keyboard" / "mouse_left.png";
+    if (lower == "rmb" || lower == "mouse2" || lower == "mouse_right")
+      return assets_dir / "keyboard" / "mouse_right.png";
+    if (lower == "mmb" || lower == "mouse3" || lower == "mouse_middle")
+      return assets_dir / "keyboard" / "mouse_scroll.png";
+    if (lower == "mouse4" || lower == "mouse5" || lower == "mouse_side")
+      return assets_dir / "keyboard" / "mouse_side.png";
+    if (lower == "space") return assets_dir / "keyboard" / "keyboard_space.png";
+    if (lower == "shift" || lower == "lshift" || lower == "rshift")
+      return assets_dir / "keyboard" / "keyboard_shift.png";
+    if (lower == "ctrl" || lower == "control" || lower == "lctrl" || lower == "rctrl")
+      return assets_dir / "keyboard" / "keyboard_ctrl.png";
+    if (lower == "alt" || lower == "lalt" || lower == "ralt")
+      return assets_dir / "keyboard" / "keyboard_alt.png";
+    if (lower == "tab") return assets_dir / "keyboard" / "keyboard_tab.png";
+    if (lower == "return" || lower == "enter")
+      return assets_dir / "keyboard" / "keyboard_enter.png";
+    if (lower == "escape" || lower == "esc")
+      return assets_dir / "keyboard" / "keyboard_escape.png";
+    if (lower == "backspace")
+      return assets_dir / "keyboard" / "keyboard_backspace.png";
+    if (lower == "capslock")
+      return assets_dir / "keyboard" / "keyboard_capslock.png";
+    if (lower == "up") return assets_dir / "keyboard" / "keyboard_arrow_up.png";
+    if (lower == "down") return assets_dir / "keyboard" / "keyboard_arrow_down.png";
+    if (lower == "left") return assets_dir / "keyboard" / "keyboard_arrow_left.png";
+    if (lower == "right") return assets_dir / "keyboard" / "keyboard_arrow_right.png";
+
+    if (lower.size() == 1) {
+      char c = lower[0];
+      if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+        std::string fn = "keyboard_";
+        fn += c;
+        fn += ".png";
+        return assets_dir / "keyboard" / fn;
+      }
+    }
+
+    std::filesystem::path extra = assets_dir / "keyboard" / ("keyboard_" + lower + ".png");
+    std::error_code ec;
+    if (std::filesystem::exists(extra, ec)) {
+      return extra;
+    }
+  }
+  return {};
+}
+
 std::filesystem::path FindGlyphFile(const std::filesystem::path& assets_dir,
                                     const std::string& variant, const std::string& button) {
-  if (variant == "xbox") {
-    if (button == "A") return assets_dir / "xbox" / "xbox_button_color_a.png";
-    if (button == "B") return assets_dir / "xbox" / "xbox_button_color_b.png";
-    if (button == "X") return assets_dir / "xbox" / "xbox_button_color_x.png";
-    if (button == "Y") return assets_dir / "xbox" / "xbox_button_color_y.png";
-    if (button == "LB") return assets_dir / "xbox" / "xbox_lb.png";
-    if (button == "RB") return assets_dir / "xbox" / "xbox_rb.png";
-    if (button == "LT") return assets_dir / "xbox" / "xbox_lt.png";
-    if (button == "RT") return assets_dir / "xbox" / "xbox_rt.png";
-    if (button == "LS") return assets_dir / "xbox" / "xbox_stick_l.png";
-    if (button == "RS") return assets_dir / "xbox" / "xbox_stick_r.png";
-    if (button == "LSPress") return assets_dir / "xbox" / "xbox_ls.png";
-    if (button == "RSPress") return assets_dir / "xbox" / "xbox_rs.png";
-    if (button == "StickMove") return assets_dir / "xbox" / "xbox_stick_l.png";
-    if (button == "Back") return assets_dir / "xbox" / "xbox_button_back.png";
-    if (button == "Start") return assets_dir / "xbox" / "xbox_button_start.png";
-    if (button == "DpadUp") return assets_dir / "xbox" / "xbox_dpad_up.png";
-    if (button == "DpadDown") return assets_dir / "xbox" / "xbox_dpad_down.png";
-    if (button == "DpadLeft") return assets_dir / "xbox" / "xbox_dpad_left.png";
-    if (button == "DpadRight") return assets_dir / "xbox" / "xbox_dpad_right.png";
-    if (button == "DpadUpDown") return assets_dir / "xbox" / "xbox_dpad_up_down.png";
-    if (button == "DpadLeftRight") return assets_dir / "xbox" / "xbox_dpad_left_right.png";
-    if (button == "DpadAll") return assets_dir / "xbox" / "xbox_dpad_all.png";
-  } else if (variant == "playstation") {
-    if (button == "A") return assets_dir / "playstation" / "playstation_button_color_cross.png";
-    if (button == "B") return assets_dir / "playstation" / "playstation_button_color_circle.png";
-    if (button == "X") return assets_dir / "playstation" / "playstation_button_color_square.png";
-    if (button == "Y") return assets_dir / "playstation" / "playstation_button_color_triangle.png";
-    if (button == "LB") return assets_dir / "playstation" / "playstation_trigger_l1.png";
-    if (button == "RB") return assets_dir / "playstation" / "playstation_trigger_r1.png";
-    if (button == "LT") return assets_dir / "playstation" / "playstation_trigger_l2.png";
-    if (button == "RT") return assets_dir / "playstation" / "playstation_trigger_r2.png";
-    if (button == "LS") return assets_dir / "playstation" / "playstation_stick_l.png";
-    if (button == "RS") return assets_dir / "playstation" / "playstation_stick_r.png";
-    if (button == "LSPress") return assets_dir / "playstation" / "playstation_button_l3.png";
-    if (button == "RSPress") return assets_dir / "playstation" / "playstation_button_r3.png";
-    if (button == "StickMove") return assets_dir / "playstation" / "playstation_stick_l.png";
-    if (button == "Back") return assets_dir / "playstation" / "playstation4_button_share.png";
-    if (button == "Start") return assets_dir / "playstation" / "playstation4_button_options.png";
-    if (button == "DpadUp") return assets_dir / "playstation" / "playstation_dpad_up.png";
-    if (button == "DpadDown") return assets_dir / "playstation" / "playstation_dpad_down.png";
-    if (button == "DpadLeft") return assets_dir / "playstation" / "playstation_dpad_left.png";
-    if (button == "DpadRight") return assets_dir / "playstation" / "playstation_dpad_right.png";
-    if (button == "DpadUpDown") return assets_dir / "playstation" / "playstation_dpad_up_down.png";
-    if (button == "DpadLeftRight") return assets_dir / "playstation" / "playstation_dpad_left_right.png";
-    if (button == "DpadAll") return assets_dir / "playstation" / "playstation_dpad_all.png";
-  } else if (variant == "keyboard") {
+  if (variant == "xbox" || variant == "playstation") {
+    return FindDirectGlyphFile(assets_dir, variant, button);
+  }
+
+  if (variant == "keyboard") {
     std::string cvar;
     if (button == "A") cvar = "keybind_a";
     else if (button == "B") cvar = "keybind_b";
@@ -510,66 +563,29 @@ std::filesystem::path FindGlyphFile(const std::filesystem::path& assets_dir,
     std::string key;
     if (!cvar.empty()) {
       key = ToLower(FirstKey(rex::cvar::Query<std::string>(cvar.c_str())));
-    }
-    if (key.empty()) {
-      if (button == "X") key = "e";
-      else if (button == "A") key = "space";
-      else if (button == "B") key = "f";
-      else if (button == "Y") key = "q";
-      else if (button == "LB") key = "c";
-      else if (button == "RB") key = "r";
-      else if (button == "LT") key = "rmb";
-      else if (button == "RT") key = "lmb";
-      else if (button == "RS" || button == "RSPress") key = "z";
-      else if (button == "LS" || button == "LSPress") key = "shift";
-      else if (button == "Back") key = "tab";
-      else if (button == "Start") key = "return";
-      else if (button == "DpadUp") key = "4";
-      else if (button == "DpadDown") key = "3";
-      else if (button == "DpadLeft") key = "1";
-      else if (button == "DpadRight") key = "2";
+      if (key.empty()) {
+        if (button == "X") key = "e";
+        else if (button == "A") key = "space";
+        else if (button == "B") key = "f";
+        else if (button == "Y") key = "q";
+        else if (button == "LB") key = "c";
+        else if (button == "RB") key = "r";
+        else if (button == "LT") key = "rmb";
+        else if (button == "RT") key = "lmb";
+        else if (button == "RS" || button == "RSPress") key = "z";
+        else if (button == "LS" || button == "LSPress") key = "shift";
+        else if (button == "Back") key = "tab";
+        else if (button == "Start") key = "return";
+        else if (button == "DpadUp") key = "4";
+        else if (button == "DpadDown") key = "3";
+        else if (button == "DpadLeft") key = "1";
+        else if (button == "DpadRight") key = "2";
+      }
+    } else {
+      key = ToLower(button);
     }
 
-    if (key == "lmb" || key == "mouse1" || key == "mouse_left")
-      return assets_dir / "keyboard" / "mouse_left.png";
-    if (key == "rmb" || key == "mouse2" || key == "mouse_right")
-      return assets_dir / "keyboard" / "mouse_right.png";
-    if (key == "mmb" || key == "mouse3" || key == "mouse_middle")
-      return assets_dir / "keyboard" / "mouse_scroll.png";
-    if (key == "space") return assets_dir / "keyboard" / "keyboard_space.png";
-    if (key == "shift" || key == "lshift" || key == "rshift")
-      return assets_dir / "keyboard" / "keyboard_shift.png";
-    if (key == "ctrl" || key == "control" || key == "lctrl" || key == "rctrl")
-      return assets_dir / "keyboard" / "keyboard_ctrl.png";
-    if (key == "alt" || key == "lalt" || key == "ralt")
-      return assets_dir / "keyboard" / "keyboard_alt.png";
-    if (key == "tab") return assets_dir / "keyboard" / "keyboard_tab.png";
-    if (key == "return" || key == "enter")
-      return assets_dir / "keyboard" / "keyboard_enter.png";
-    if (key == "escape" || key == "esc")
-      return assets_dir / "keyboard" / "keyboard_escape.png";
-    if (key == "backspace")
-      return assets_dir / "keyboard" / "keyboard_backspace.png";
-    if (key == "up") return assets_dir / "keyboard" / "keyboard_arrow_up.png";
-    if (key == "down") return assets_dir / "keyboard" / "keyboard_arrow_down.png";
-    if (key == "left") return assets_dir / "keyboard" / "keyboard_arrow_left.png";
-    if (key == "right") return assets_dir / "keyboard" / "keyboard_arrow_right.png";
-
-    if (key.size() == 1) {
-      char c = key[0];
-      if (c >= 'a' && c <= 'z') {
-        std::string fn = "keyboard_";
-        fn += c;
-        fn += ".png";
-        return assets_dir / "keyboard" / fn;
-      }
-      if (c >= '0' && c <= '9') {
-        std::string fn = "keyboard_";
-        fn += c;
-        fn += ".png";
-        return assets_dir / "keyboard" / fn;
-      }
-    }
+    return FindDirectGlyphFile(assets_dir, "keyboard", key);
   }
   return {};
 }
@@ -719,20 +735,30 @@ void EnsureVariantOnDisk(const std::string& variant_dir_name, const std::string&
   std::snprintf(name256, sizeof(name256), "%016llx.dds", static_cast<unsigned long long>(kAtlas256Hash));
   const std::filesystem::path p512 = dir / name512;
   const std::filesystem::path p256 = dir / name256;
-  // The cell map changes between builds: a variant composed with another layout is composed again.
-  constexpr const char kLayoutVersion[] = "2";
+  // A variant is composed again when the cell map or any glyph image it uses changes: the stamp
+  // holds a layout version plus every cell's box and image file name.
+  std::string want = "3";
+  const std::filesystem::path assets = AssetsDir();
+  auto add_cells = [&](const auto& sprites) {
+    for (const SpriteDef& sp : sprites) {
+      want += fmt::format("|{},{},{},{}={}", sp.box[0], sp.box[1], sp.box[2], sp.box[3],
+                          FindGlyphFile(assets, style, sp.button).filename().string());
+    }
+  };
+  add_cells(kSprites512);
+  add_cells(kSprites256);
   const std::filesystem::path stamp = dir / "layout.txt";
   std::string have;
   if (FILE* f = std::fopen(stamp.string().c_str(), "rb")) {
-    char buf[16] = {};
-    have.assign(buf, std::fread(buf, 1, sizeof(buf) - 1, f));
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) have.append(buf, n);
     std::fclose(f);
   }
-  if (have != kLayoutVersion || !IsDdsValid(p512, kExpectedSize512) ||
-      !IsDdsValid(p256, kExpectedSize256)) {
+  if (have != want || !IsDdsValid(p512, kExpectedSize512) || !IsDdsValid(p256, kExpectedSize256)) {
     if (ComposeVariant(variant_dir_name, style)) {
       if (FILE* f = std::fopen(stamp.string().c_str(), "wb")) {
-        std::fwrite(kLayoutVersion, 1, sizeof(kLayoutVersion) - 1, f);
+        std::fwrite(want.data(), 1, want.size(), f);
         std::fclose(f);
       }
     }
@@ -922,6 +948,46 @@ void PollButtonPrompts() {
     rex::cvar::SetFlagByName("texture_replace_variant", target_variant);
     REXLOG_INFO("ButtonGlyphs: variant set to '{}' (mode '{}')", target_variant, mode);
   }
+}
+
+std::filesystem::path FindGlyphFile(const std::string& style, const std::string& button_or_key) {
+  return FindDirectGlyphFile(AssetsDir(), style, button_or_key);
+}
+
+std::string GetActiveControllerGlyphStyle() {
+  const std::string mode = rex::cvar::Query<std::string>("gow3_button_prompts");
+  if (mode == "playstation") {
+    return "playstation";
+  }
+  if (mode == "xbox") {
+    return "xbox";
+  }
+  if (mode == "auto") {
+    int pad_type = 0;
+#ifdef _WIN32
+    typedef uint64_t (*GetPadActivityFn)(int*);
+    static GetPadActivityFn s_get_pad_activity = []() -> GetPadActivityFn {
+      HMODULE mod = GetModuleHandleA("rexruntime.dll");
+      if (!mod) {
+        mod = LoadLibraryA("rexruntime.dll");
+      }
+      return mod ? reinterpret_cast<GetPadActivityFn>(
+                       GetProcAddress(mod, "rex_input_get_last_physical_activity"))
+                 : nullptr;
+    }();
+    if (s_get_pad_activity) {
+      (void)s_get_pad_activity(&pad_type);
+    }
+#endif
+    if (pad_type == 4 || pad_type == 5 || pad_type == 6) {
+      return "playstation";
+    }
+  }
+  return "xbox";
+}
+
+void NotifyBindingsChanged() {
+  g_worker_cv.notify_all();
 }
 
 }  // namespace rex::glue

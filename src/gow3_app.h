@@ -97,7 +97,7 @@ class Gow3App : public rex::ReXApp {
   }
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
     ApplyConfigUserRoot(options_paths_);
-    options_overlay_ = rex::glue::CreateOptionsOverlay(drawer, options_paths_);
+    options_overlay_ = rex::glue::CreateOptionsOverlay(drawer, options_paths_, immediate_drawer());
   }
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>

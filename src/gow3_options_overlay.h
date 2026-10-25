@@ -11,6 +11,7 @@
 #include <memory>
 
 #include <rex/rex_app.h>
+#include <rex/ui/immediate_drawer.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/imgui_drawer.h>
 
@@ -24,7 +25,8 @@ void AddOptionsFonts(ImFontAtlas* atlas);
 
 // Creates the persistent PC Options ImGui dialog attached to `drawer`.
 std::unique_ptr<rex::ui::ImGuiDialog> CreateOptionsOverlay(rex::ui::ImGuiDrawer* drawer,
-                                                           const rex::PathConfig& paths);
+                                                           const rex::PathConfig& paths,
+                                                           rex::ui::ImmediateDrawer* immediate_drawer = nullptr);
 
 // Flushes any open PC Options edits to gow3.toml and restores xam_input_block
 // before process shutdown.

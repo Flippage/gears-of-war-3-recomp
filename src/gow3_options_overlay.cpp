@@ -4,21 +4,26 @@
 
 #include "gow3_options_overlay.h"
 
+#include "gow3_button_glyphs.h"
 #include "gow3_options_actions.h"
 #include "gow3_options_catalog.h"
 #include "gow3_options_input.h"
 #include "gow3_options_model.h"
 #include "gow3_options_values.h"
 #include "gow3_options_values_text.h"
+#include "gow3_pad_remap.h"
 #include "gow3_xam_input_guard.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -28,8 +33,9 @@
 #include <rex/filesystem.h>
 #include <rex/input/input.h>
 #include <rex/input/input_system.h>
-#include "gow3_pad_remap.h"
 #include <rex/runtime.h>
+#include <rex/ui/image_decode.h>
+#include <rex/ui/immediate_drawer.h>
 #include <rex/ui/keybinds.h>
 #include <rex/ui/ui_event.h>
 
@@ -85,7 +91,8 @@ HostPadState ReadHostPad() {
   }
   auto* input_sys = static_cast<rex::input::InputSystem*>(rt->input_system());
   rex::input::X_INPUT_STATE state{};
-  rex::X_RESULT res = WithXamInputLock([&]() { return input_sys->GetState(0, &state); });
+  rex::X_RESULT res = X_ERROR_DEVICE_NOT_CONNECTED;
+  WithXamInputLock([&]() { res = input_sys->GetState(0, &state); });
   if (res == X_ERROR_SUCCESS) {
     out.buttons = static_cast<uint16_t>(state.gamepad.buttons);
     out.thumb_lx = static_cast<int16_t>(state.gamepad.thumb_lx);
@@ -156,6 +163,8 @@ RawInput SampleRawInput(const ImGuiIO& io, bool menu_open) {
     r.key_enter = KeyDown(VK_RETURN) || KeyDown(VK_SPACE);
     r.key_tab = KeyDown(VK_TAB);
     r.key_shift = KeyDown(VK_SHIFT);
+    r.key_delete = KeyDown(VK_DELETE);
+    r.key_backspace = KeyDown(VK_BACK);
   }
 #endif
 
@@ -169,6 +178,8 @@ RawInput SampleRawInput(const ImGuiIO& io, bool menu_open) {
                 ImGui::IsKeyDown(ImGuiKey_KeypadEnter) || ImGui::IsKeyDown(ImGuiKey_Space);
   r.key_tab = r.key_tab || ImGui::IsKeyDown(ImGuiKey_Tab);
   r.key_shift = r.key_shift || io.KeyShift;
+  r.key_delete = r.key_delete || ImGui::IsKeyDown(ImGuiKey_Delete);
+  r.key_backspace = r.key_backspace || ImGui::IsKeyDown(ImGuiKey_Backspace);
   r.text_input_active = io.WantTextInput;
   return r;
 }
@@ -205,16 +216,84 @@ std::string FirstBindableKeyDown() {
 }
 #endif
 
+std::vector<std::string> SplitKeys(std::string_view val) {
+  std::vector<std::string> keys;
+  size_t start = 0;
+  while (start < val.size()) {
+    size_t comma = val.find(',', start);
+    if (comma == std::string_view::npos) {
+      comma = val.size();
+    }
+    std::string_view part = val.substr(start, comma - start);
+    while (!part.empty() && (part.front() == ' ' || part.front() == '\t')) {
+      part.remove_prefix(1);
+    }
+    while (!part.empty() && (part.back() == ' ' || part.back() == '\t')) {
+      part.remove_suffix(1);
+    }
+    if (!part.empty()) {
+      keys.emplace_back(part);
+    }
+    start = comma + 1;
+  }
+  return keys;
+}
+
+std::string JoinKeys(const std::vector<std::string>& keys) {
+  std::string result;
+  for (size_t i = 0; i < keys.size(); ++i) {
+    if (i > 0) result += ",";
+    result += keys[i];
+  }
+  return result;
+}
+
+std::string GetButtonDisplayName(std::string_view btn, const std::string& style) {
+  const bool ps = (style == "playstation");
+  if (btn == "a") return ps ? "Cross" : "A";
+  if (btn == "b") return ps ? "Circle" : "B";
+  if (btn == "x") return ps ? "Square" : "X";
+  if (btn == "y") return ps ? "Triangle" : "Y";
+  if (btn == "lb") return ps ? "L1" : "LB";
+  if (btn == "rb") return ps ? "R1" : "RB";
+  if (btn == "ls") return ps ? "L3" : "LS";
+  if (btn == "rs") return ps ? "R3" : "RS";
+  if (btn == "start" || btn == "options") return ps ? "Options" : "Start";
+  if (btn == "back" || btn == "create" || btn == "share") return ps ? "Create" : "Back";
+  if (btn == "dpad_up") return "D-Pad Up";
+  if (btn == "dpad_down") return "D-Pad Down";
+  if (btn == "dpad_left") return "D-Pad Left";
+  if (btn == "dpad_right") return "D-Pad Right";
+  if (btn.empty() || btn == "none") return "—";
+  return std::string(btn);
+}
+
+std::string GetKeyDisplayName(std::string_view key) {
+  if (key.empty() || key == "none") return "—";
+  if (key == "Space") return "Space";
+  if (key == "Return") return "Enter";
+  if (key == "Escape") return "Esc";
+  if (key == "LMB") return "Left Click";
+  if (key == "RMB") return "Right Click";
+  if (key == "MMB") return "Middle Click";
+  return std::string(key);
+}
+
 class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
  public:
-  OptionsOverlayDialog(rex::ui::ImGuiDrawer* drawer, rex::PathConfig paths)
+  OptionsOverlayDialog(rex::ui::ImGuiDrawer* drawer, rex::PathConfig paths,
+                       rex::ui::ImmediateDrawer* immediate_drawer = nullptr)
       : rex::ui::ImGuiDialog(drawer),
         paths_(std::move(paths)),
+        immediate_drawer_(immediate_drawer),
         model_(CreateLiveModel(paths_)) {
     SyncTextBuffersFromModel();
   }
 
-  ~OptionsOverlayDialog() override { CloseForShutdown(); }
+  ~OptionsOverlayDialog() override {
+    CloseForShutdown();
+    glyph_cache_.clear();
+  }
 
   void CloseForShutdown() {
     if (open_) {
@@ -236,11 +315,22 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
       rex::cvar::SetFlagByName("xam_input_block", "false");
     }
 
-    // Handle the active keyboard / mouse capture on Page::kKeyBindings: wait until nothing is
-    // held (the click or Enter that started it), then take the next key or mouse button.
-    if (open_ && !key_capture_cvar_.empty()) {
+    // Handle the active keyboard / mouse or controller capture on Page::kKeyBindings / Page::kPadButtons
+    if (open_ && !capture_cvar_.empty()) {
       if (raw.key_escape && !prev_capture_esc_) {
-        key_capture_cvar_.clear();
+        capture_cvar_.clear();
+      } else if (capture_is_pad_) {
+        const uint16_t newly_pressed =
+            static_cast<uint16_t>(raw.pad_buttons & ~prev_capture_pad_);
+        if (!capture_armed_) {
+          capture_armed_ = (raw.pad_buttons == 0);
+        } else {
+          const std::string btn_name = ResolvePhysicalButtonName(newly_pressed);
+          if (!btn_name.empty()) {
+            ApplyPadBinding(capture_cvar_, capture_slot_, btn_name, CurrentLang());
+            capture_cvar_.clear();
+          }
+        }
       } else {
 #ifdef _WIN32
         HWND fg = GetForegroundWindow();
@@ -250,38 +340,19 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
         }
         const std::string key =
             fg_pid == GetCurrentProcessId() ? FirstBindableKeyDown() : std::string();
-        if (!key_capture_armed_) {
-          key_capture_armed_ = key.empty();
+        if (!capture_armed_) {
+          capture_armed_ = key.empty();
         } else if (!key.empty()) {
-          model_.Set(key_capture_cvar_, key);
-          SaveConfigToDisk(paths_.config_path, model_);
-          SyncTextBuffersFromModel();
-          key_capture_cvar_.clear();
+          ApplyKeyBinding(capture_cvar_, capture_slot_, key);
+          capture_cvar_.clear();
         }
 #else
-        key_capture_cvar_.clear();
+        capture_cvar_.clear();
 #endif
       }
       prev_capture_pad_ = raw.pad_buttons;
       prev_capture_esc_ = raw.key_escape;
-      // Eat navigation edges while capturing a key.
-      (void)input_.Step(raw, open_);
-    } else if (open_ && !pad_capture_cvar_.empty()) {
-      if (raw.key_escape && !prev_capture_esc_) {
-        pad_capture_cvar_.clear();
-      } else {
-        const uint16_t newly_pressed =
-            static_cast<uint16_t>(raw.pad_buttons & ~prev_capture_pad_);
-        const std::string_view btn_name = SingleBitPadName(newly_pressed);
-        if (!btn_name.empty()) {
-          model_.Set(pad_capture_cvar_, btn_name);
-          SaveConfigToDisk(paths_.config_path, model_);
-          pad_capture_cvar_.clear();
-        }
-      }
-      prev_capture_pad_ = raw.pad_buttons;
-      prev_capture_esc_ = raw.key_escape;
-      // Eat navigation edges while capturing a button.
+      // Eat navigation edges while capturing.
       (void)input_.Step(raw, open_);
     } else {
       prev_capture_pad_ = raw.pad_buttons;
@@ -316,9 +387,9 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
       RefreshDynamicRowChoices(model_, paths_);
       SyncTextBuffersFromModel();
       ClampSelectedRow();
+      selected_col_ = 0;
     } else {
-      pad_capture_cvar_.clear();
-      key_capture_cvar_.clear();
+      capture_cvar_.clear();
       FlushTextBuffersToModel();
       SaveConfigToDisk(paths_.config_path, model_);
       unblock_pending_ = true;  // OnDraw unblocks once the closing key is released
@@ -408,20 +479,18 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
       if (std::string_view(row.cvar) == "pad_buttons") {
         active_page_ = Page::kPadButtons;
         selected_row_ = 0;
+        selected_col_ = 0;
         scroll_to_selected_ = true;
       } else if (std::string_view(row.cvar) == "key_bindings") {
         active_page_ = Page::kKeyBindings;
         selected_row_ = 0;
+        selected_col_ = 0;
         scroll_to_selected_ = true;
       }
       return;
     }
-    if (row.page == Page::kPadButtons) {
-      pad_capture_cvar_ = row.cvar;
-      return;
-    }
-    if (row.page == Page::kKeyBindings) {
-      StartKeyCapture(row.cvar);
+    if (IsControlsSubPage(row.page)) {
+      StartCapture(row, selected_col_);
       return;
     }
     model_.Toggle(row.cvar);
@@ -433,6 +502,7 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
       if (IsControlsSubPage(active_page_)) {
         active_page_ = Page::kControls;
         selected_row_ = 0;
+        selected_col_ = 0;
         scroll_to_selected_ = true;
       } else {
         SetMenuOpen(false);
@@ -442,6 +512,7 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
 
     if (edges.switch_page != 0) {
       SwitchTab(edges.switch_page);
+      selected_col_ = 0;
     }
 
     auto rows = VisibleRows(ActivePageSpec());
@@ -458,20 +529,38 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
 
     const RowSpec& sel = *rows[static_cast<size_t>(selected_row_)];
     if (edges.adjust != 0) {
-      if (sel.control == Control::kToggle) {
-        model_.Toggle(sel.cvar);
-        SaveConfigToDisk(paths_.config_path, model_);
-      } else if (sel.control == Control::kChoice) {
-        model_.StepChoice(sel.cvar, edges.adjust);
-        SaveConfigToDisk(paths_.config_path, model_);
-      } else if (sel.control == Control::kSliderInt || sel.control == Control::kSliderFloat) {
-        model_.StepSlider(sel.cvar, edges.adjust);
-        SaveConfigToDisk(paths_.config_path, model_);
+      if (active_page_ == Page::kKeyBindings || active_page_ == Page::kPadButtons) {
+        if (edges.adjust < 0) {
+          selected_col_ = 0;
+        } else if (edges.adjust > 0) {
+          selected_col_ = 1;
+        }
+      } else {
+        if (sel.control == Control::kToggle) {
+          model_.Toggle(sel.cvar);
+          SaveConfigToDisk(paths_.config_path, model_);
+        } else if (sel.control == Control::kChoice) {
+          model_.StepChoice(sel.cvar, edges.adjust);
+          SaveConfigToDisk(paths_.config_path, model_);
+        } else if (sel.control == Control::kSliderInt || sel.control == Control::kSliderFloat) {
+          model_.StepSlider(sel.cvar, edges.adjust);
+          SaveConfigToDisk(paths_.config_path, model_);
+        }
       }
     }
 
     if (edges.confirm) {
-      ActivateRow(sel);
+      if (IsControlsSubPage(active_page_)) {
+        StartCapture(sel, selected_col_);
+      } else {
+        ActivateRow(sel);
+      }
+    }
+
+    if (edges.clear_slot) {
+      if (IsControlsSubPage(active_page_)) {
+        ClearSlot(sel, selected_col_, CurrentLang());
+      }
     }
   }
 
@@ -536,11 +625,8 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
       }
     }
 
-    const bool is_pad_row = (row.page == Page::kPadButtons);
-    const float remap_w = is_pad_row ? 76.0f * scale : 0.0f;
-    const float gap = is_pad_row ? 6.0f * scale : 0.0f;
     const float arrow_w = 30.0f * scale;
-    const float box_w = std::max(80.0f * scale, width - remap_w - gap - arrow_w * 2.0f);
+    const float box_w = std::max(80.0f * scale, width - arrow_w * 2.0f);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 base = ImGui::GetCursorScreenPos();
@@ -595,23 +681,6 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
     ImVec2 gt_sz = ImGui::CalcTextSize(">");
     dl->AddText(ImVec2(rt.x + (arrow_w - gt_sz.x) * 0.5f, rt.y + (height - gt_sz.y) * 0.5f),
                 kColTextPrimary, ">");
-
-    if (is_pad_row) {
-      ImGui::SameLine(0.0f, gap);
-      ImVec2 rp = ImGui::GetCursorScreenPos();
-      std::string remap_id = std::string("##remap_") + row.cvar;
-      if (ImGui::InvisibleButton(remap_id.c_str(), ImVec2(remap_w, height))) {
-        pad_capture_cvar_ = row.cvar;
-      }
-      bool rp_hov = ImGui::IsItemHovered();
-      dl->AddRectFilled(rp, ImVec2(rp.x + remap_w, rp.y + height),
-                        rp_hov ? kColAccentBright : kColAccentSoft, 4.0f * scale);
-      dl->AddRect(rp, ImVec2(rp.x + remap_w, rp.y + height), kColAccent, 4.0f * scale);
-      const char* remap_txt = UiText("pad_remap").For(lang);
-      ImVec2 rsz = ImGui::CalcTextSize(remap_txt);
-      dl->AddText(ImVec2(rp.x + (remap_w - rsz.x) * 0.5f, rp.y + (height - rsz.y) * 0.5f),
-                  kColTextPrimary, remap_txt);
-    }
   }
 
   void DrawSliderWidget(const RowSpec& row, float width, float height, float scale) {
@@ -644,18 +713,8 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
                 kColTextPrimary, val_text.c_str());
   }
 
-  void StartKeyCapture(const char* cvar) {
-    FlushTextBuffersToModel();
-    key_capture_cvar_ = cvar;
-    key_capture_armed_ = false;
-  }
-
   void DrawTextWidget(const RowSpec& row, float width, float height, float scale) {
     auto& buf = text_buffers_[row.cvar];
-    const bool is_key_row = (row.page == Page::kKeyBindings);
-    const float set_w = is_key_row ? 76.0f * scale : 0.0f;
-    const float set_gap = is_key_row ? 6.0f * scale : 0.0f;
-    width = std::max(80.0f * scale, width - set_w - set_gap);
     ImGui::PushItemWidth(width);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * scale, (height - ImGui::GetFontSize()) * 0.5f));
     ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::ColorConvertU32ToFloat4(kColControlBg));
@@ -676,23 +735,388 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
     ImGui::PopStyleColor(4);
     ImGui::PopStyleVar();
     ImGui::PopItemWidth();
+  }
 
-    if (is_key_row) {
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      ImGui::SameLine(0.0f, set_gap);
-      ImVec2 sp = ImGui::GetCursorScreenPos();
-      std::string set_id = std::string("##keyset_") + row.cvar;
-      if (ImGui::InvisibleButton(set_id.c_str(), ImVec2(set_w, height))) {
-        StartKeyCapture(row.cvar);
+  rex::ui::ImmediateTexture* GetOrLoadGlyphTexture(const std::string& style,
+                                                   const std::string& name) {
+    if (name.empty() || name == "none" || !immediate_drawer_) {
+      return nullptr;
+    }
+    std::string cache_key = style + ":" + name;
+    auto it = glyph_cache_.find(cache_key);
+    if (it != glyph_cache_.end()) {
+      return it->second.get();
+    }
+
+    std::filesystem::path path = FindGlyphFile(style, name);
+    if (path.empty()) {
+      glyph_cache_[cache_key] = nullptr;
+      return nullptr;
+    }
+
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+      glyph_cache_[cache_key] = nullptr;
+      return nullptr;
+    }
+    f.seekg(0, std::ios::end);
+    const size_t size = static_cast<size_t>(f.tellg());
+    if (size == 0) {
+      glyph_cache_[cache_key] = nullptr;
+      return nullptr;
+    }
+    f.seekg(0, std::ios::beg);
+    std::vector<uint8_t> bytes(size);
+    if (!f.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size))) {
+      glyph_cache_[cache_key] = nullptr;
+      return nullptr;
+    }
+
+    int w = 0, h = 0;
+    std::vector<uint8_t> rgba = rex::ui::DecodeImageRGBA(bytes.data(), bytes.size(), w, h);
+    if (rgba.empty() || w <= 0 || h <= 0) {
+      glyph_cache_[cache_key] = nullptr;
+      return nullptr;
+    }
+
+    auto tex = immediate_drawer_->CreateTexture(
+        static_cast<uint32_t>(w), static_cast<uint32_t>(h),
+        rex::ui::ImmediateTextureFilter::kLinear, false, rgba.data());
+    rex::ui::ImmediateTexture* raw = tex.get();
+    glyph_cache_[cache_key] = std::move(tex);
+    return raw;
+  }
+
+  void StartCapture(const RowSpec& row, int slot) {
+    FlushTextBuffersToModel();
+    capture_cvar_ = row.cvar;
+    capture_slot_ = slot;
+    capture_is_pad_ = (row.page == Page::kPadButtons);
+    capture_armed_ = false;
+  }
+
+  void ApplyKeyBinding(const std::string& cvar, int slot, const std::string& key) {
+    std::string cur = model_.Get(cvar);
+    std::vector<std::string> keys = SplitKeys(cur);
+    if (slot == 0) {
+      if (keys.empty()) {
+        keys.push_back(key);
+      } else {
+        keys[0] = key;
       }
-      bool sp_hov = ImGui::IsItemHovered();
-      dl->AddRectFilled(sp, ImVec2(sp.x + set_w, sp.y + height),
-                        sp_hov ? kColAccentBright : kColAccentSoft, 4.0f * scale);
-      dl->AddRect(sp, ImVec2(sp.x + set_w, sp.y + height), kColAccent, 4.0f * scale);
-      const char* set_txt = UiText("key_set").For(Lang::kEn);
-      ImVec2 ssz = ImGui::CalcTextSize(set_txt);
-      dl->AddText(ImVec2(sp.x + (set_w - ssz.x) * 0.5f, sp.y + (height - ssz.y) * 0.5f),
-                  kColTextPrimary, set_txt);
+    } else {
+      if (keys.empty()) {
+        keys.push_back(key);
+      } else if (keys.size() == 1) {
+        keys.push_back(key);
+      } else {
+        keys[1] = key;
+      }
+    }
+    std::string joined = JoinKeys(keys);
+    model_.Set(cvar, joined);
+    SaveConfigToDisk(paths_.config_path, model_);
+    SyncTextBuffersFromModel();
+    NotifyBindingsChanged();
+  }
+
+  void ClearKeyBinding(const std::string& cvar, int slot) {
+    std::string cur = model_.Get(cvar);
+    std::vector<std::string> keys = SplitKeys(cur);
+    if (slot == 0) {
+      if (keys.size() <= 1) {
+        keys.clear();
+      } else {
+        keys.erase(keys.begin());
+      }
+    } else if (slot == 1) {
+      if (keys.size() >= 2) {
+        keys.erase(keys.begin() + 1);
+      }
+    }
+    std::string joined = JoinKeys(keys);
+    model_.Set(cvar, joined);
+    SaveConfigToDisk(paths_.config_path, model_);
+    SyncTextBuffersFromModel();
+    NotifyBindingsChanged();
+  }
+
+  std::string ResolvePhysicalButtonName(uint16_t mask) const {
+    if (mask == 0 || (mask & (mask - 1)) != 0) {
+      return {};
+    }
+    for (const auto& btn : rex::input::pad_remap::kButtons) {
+      if (btn.bit == mask) {
+        return std::string(btn.name);
+      }
+    }
+    return {};
+  }
+
+  void ApplyPadBinding(const std::string& cvar, int slot, const std::string& btn, Lang lang) {
+    if (btn.empty() || btn == "none" || slot < 0 || slot > 1) {
+      return;
+    }
+
+    // Find if 'btn' is currently bound in any pad mapping row and slot.
+    std::string moved_from_cvar;
+    int moved_from_slot = -1;
+    std::string moved_from_label;
+
+    for (const auto& page : Catalog()) {
+      if (page.id == Page::kPadButtons) {
+        for (const auto& r : page.rows) {
+          std::vector<std::string> r_keys = SplitKeys(model_.Get(r.cvar));
+          for (size_t s = 0; s < r_keys.size() && s < 2; ++s) {
+            if (r_keys[s] == btn) {
+              moved_from_cvar = r.cvar;
+              moved_from_slot = static_cast<int>(s);
+              moved_from_label = r.label.For(lang);
+              break;
+            }
+          }
+          if (!moved_from_cvar.empty()) {
+            break;
+          }
+        }
+        break;
+      }
+    }
+
+    if (moved_from_cvar == cvar && moved_from_slot == slot) {
+      return;
+    }
+
+    // Target action label.
+    std::string target_label;
+    for (const auto& page : Catalog()) {
+      if (page.id == Page::kPadButtons) {
+        for (const auto& r : page.rows) {
+          if (r.cvar == cvar) {
+            target_label = r.label.For(lang);
+            break;
+          }
+        }
+        break;
+      }
+    }
+
+    // Current keys in target cvar.
+    std::vector<std::string> target_keys = SplitKeys(model_.Get(cvar));
+    std::string old_target_btn;
+    if (slot == 0) {
+      if (!target_keys.empty() && target_keys[0] != "none") {
+        old_target_btn = target_keys[0];
+      }
+    } else if (slot == 1) {
+      if (target_keys.size() > 1 && target_keys[1] != "none") {
+        old_target_btn = target_keys[1];
+      }
+    }
+
+    if (moved_from_cvar == cvar) {
+      // Swapping slots within the same row.
+      std::string slots[2] = {"none", "none"};
+      if (!target_keys.empty()) slots[0] = target_keys[0];
+      if (target_keys.size() > 1) slots[1] = target_keys[1];
+
+      slots[moved_from_slot] = old_target_btn.empty() ? "none" : old_target_btn;
+      slots[slot] = btn;
+
+      std::vector<std::string> new_keys;
+      if (slots[0] != "none" && !slots[0].empty()) new_keys.push_back(slots[0]);
+      if (slots[1] != "none" && !slots[1].empty()) new_keys.push_back(slots[1]);
+      model_.Set(cvar, new_keys.empty() ? "none" : JoinKeys(new_keys));
+    } else {
+      if (!moved_from_cvar.empty()) {
+        std::vector<std::string> moved_keys = SplitKeys(model_.Get(moved_from_cvar));
+        if (moved_from_slot < static_cast<int>(moved_keys.size())) {
+          if (!old_target_btn.empty()) {
+            moved_keys[static_cast<size_t>(moved_from_slot)] = old_target_btn;
+          } else {
+            if (moved_from_slot == 1) {
+              moved_keys.erase(moved_keys.begin() + 1);
+            } else {
+              if (moved_keys.size() > 1) {
+                moved_keys.erase(moved_keys.begin());
+              } else {
+                moved_keys.clear();
+              }
+            }
+          }
+        }
+        model_.Set(moved_from_cvar, moved_keys.empty() ? "none" : JoinKeys(moved_keys));
+      }
+
+      // Update target cvar.
+      if (slot == 0) {
+        if (target_keys.empty()) {
+          target_keys.push_back(btn);
+        } else {
+          target_keys[0] = btn;
+        }
+      } else if (slot == 1) {
+        if (target_keys.empty()) {
+          target_keys.push_back(btn);
+        } else if (target_keys.size() == 1) {
+          target_keys.push_back(btn);
+        } else {
+          target_keys[1] = btn;
+        }
+      }
+      model_.Set(cvar, target_keys.empty() ? "none" : JoinKeys(target_keys));
+    }
+
+    SaveConfigToDisk(paths_.config_path, model_);
+    SyncTextBuffersFromModel();
+
+    std::string style = GetActiveControllerGlyphStyle();
+    std::string btn_display = GetButtonDisplayName(btn, style);
+    if (!moved_from_label.empty()) {
+      status_message_ = "Moved " + btn_display + " from " + moved_from_label + " to " + target_label;
+    } else {
+      status_message_ = "Bound " + btn_display + " to " + target_label;
+    }
+    status_time_ = std::chrono::steady_clock::now();
+  }
+
+  void ClearPadBinding(const std::string& cvar, int slot, Lang lang) {
+    std::string cur = model_.Get(cvar);
+    std::vector<std::string> keys = SplitKeys(cur);
+    if (slot == 0) {
+      if (keys.size() <= 1) {
+        keys.clear();
+      } else {
+        keys.erase(keys.begin());
+      }
+    } else if (slot == 1) {
+      if (keys.size() >= 2) {
+        keys.erase(keys.begin() + 1);
+      }
+    }
+    std::string joined = keys.empty() ? "none" : JoinKeys(keys);
+    model_.Set(cvar, joined);
+    SaveConfigToDisk(paths_.config_path, model_);
+    SyncTextBuffersFromModel();
+
+    std::string target_label;
+    for (const auto& page : Catalog()) {
+      if (page.id == Page::kPadButtons) {
+        for (const auto& r : page.rows) {
+          if (r.cvar == cvar) {
+            target_label = r.label.For(lang);
+            break;
+          }
+        }
+        break;
+      }
+    }
+    if (!target_label.empty()) {
+      status_message_ = "Cleared " + target_label + (slot == 1 ? " (Secondary)" : " (Primary)");
+      status_time_ = std::chrono::steady_clock::now();
+    }
+  }
+
+  void ClearSlot(const RowSpec& row, int slot, Lang lang) {
+    if (row.page == Page::kKeyBindings) {
+      ClearKeyBinding(row.cvar, slot);
+    } else if (row.page == Page::kPadButtons) {
+      ClearPadBinding(row.cvar, slot, lang);
+    }
+  }
+
+  void DrawBindingsRowWidget(const RowSpec& row, int row_index, Lang lang,
+                             float ctrl_w, float ctrl_h, float scale) {
+    const float gap = 8.0f * scale;
+    const float slot_w = (ctrl_w - gap) * 0.5f;
+    const float slot_h = ctrl_h;
+    const ImVec2 base_pos = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    const bool is_row_selected = (row_index == selected_row_);
+    const std::string ctrl_style = GetActiveControllerGlyphStyle();
+
+    std::string bound[2];
+    std::string display[2];
+    rex::ui::ImmediateTexture* tex[2] = {nullptr, nullptr};
+
+    if (row.page == Page::kKeyBindings) {
+      std::vector<std::string> keys = SplitKeys(model_.Get(row.cvar));
+      if (!keys.empty()) bound[0] = keys[0];
+      if (keys.size() > 1) bound[1] = keys[1];
+
+      for (int s = 0; s < 2; ++s) {
+        display[s] = GetKeyDisplayName(bound[s]);
+        if (!bound[s].empty()) {
+          tex[s] = GetOrLoadGlyphTexture("keyboard", bound[s]);
+        }
+      }
+    } else {
+      std::vector<std::string> keys = SplitKeys(model_.Get(row.cvar));
+      if (!keys.empty() && keys[0] != "none") bound[0] = keys[0];
+      if (keys.size() > 1 && keys[1] != "none") bound[1] = keys[1];
+
+      for (int s = 0; s < 2; ++s) {
+        display[s] = GetButtonDisplayName(bound[s], ctrl_style);
+        if (!bound[s].empty() && bound[s] != "none") {
+          tex[s] = GetOrLoadGlyphTexture(ctrl_style, bound[s]);
+        }
+      }
+    }
+
+    for (int col = 0; col < 2; ++col) {
+      const ImVec2 s_pos(base_pos.x + col * (slot_w + gap), base_pos.y);
+      const ImVec2 s_end(s_pos.x + slot_w, s_pos.y + slot_h);
+
+      ImGui::SetCursorScreenPos(s_pos);
+      std::string btn_id = std::string("##slot_") + std::to_string(col) + "_" + row.cvar;
+      if (ImGui::InvisibleButton(btn_id.c_str(), ImVec2(slot_w, slot_h))) {
+        selected_row_ = row_index;
+        selected_col_ = col;
+        StartCapture(row, selected_col_);
+      }
+
+      const bool slot_hovered = ImGui::IsItemHovered();
+      const bool slot_focused = is_row_selected && (selected_col_ == col);
+
+      ImU32 slot_bg = slot_focused ? kColRowSelected : (slot_hovered ? kColRowHover : kColControlBg);
+      ImU32 slot_border = slot_focused ? kColAccentBright : (slot_hovered ? kColAccent : kColControlBorder);
+      dl->AddRectFilled(s_pos, s_end, slot_bg, 4.0f * scale);
+      dl->AddRect(s_pos, s_end, slot_border, 4.0f * scale, 0, slot_focused ? 1.8f * scale : 1.0f * scale);
+
+      dl->PushClipRect(ImVec2(s_pos.x + 4.0f * scale, s_pos.y),
+                       ImVec2(s_end.x - 4.0f * scale, s_end.y), true);
+
+      if (tex[col] != nullptr) {
+        float aspect = (tex[col]->height > 0)
+                           ? (static_cast<float>(tex[col]->width) / static_cast<float>(tex[col]->height))
+                           : 1.0f;
+        float glyph_h = std::clamp(slot_h - 6.0f * scale, 24.0f * scale, 30.0f * scale);
+        float glyph_w = glyph_h * aspect;
+        if (glyph_w > slot_w - 12.0f * scale) {
+          glyph_w = slot_w - 12.0f * scale;
+          glyph_h = glyph_w / aspect;
+        }
+        float img_x = s_pos.x + (slot_w - glyph_w) * 0.5f;
+        float img_y = s_pos.y + (slot_h - glyph_h) * 0.5f;
+
+        dl->AddImage(reinterpret_cast<ImTextureID>(tex[col]),
+                     ImVec2(img_x, img_y), ImVec2(img_x + glyph_w, img_y + glyph_h));
+      } else if (bound[col].empty() || display[col] == "—") {
+        const float dash_w = 14.0f * scale;
+        const float mid_x = s_pos.x + slot_w * 0.5f;
+        const float mid_y = s_pos.y + slot_h * 0.5f;
+        dl->AddLine(ImVec2(mid_x - dash_w * 0.5f, mid_y),
+                    ImVec2(mid_x + dash_w * 0.5f, mid_y),
+                    kColTextDim, 2.0f * scale);
+      } else {
+        ImVec2 txt_sz = ImGui::CalcTextSize(display[col].c_str());
+        float txt_x = s_pos.x + (slot_w - txt_sz.x) * 0.5f;
+        float txt_y = s_pos.y + (slot_h - txt_sz.y) * 0.5f;
+        dl->AddText(ImVec2(txt_x, txt_y), kColTextPrimary, display[col].c_str());
+      }
+
+      dl->PopClipRect();
     }
   }
 
@@ -868,6 +1292,39 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
 
       ImGui::Dummy(ImVec2(0.0f, 6.0f * scale));
 
+      // Header row for Primary and Secondary columns on bindings sub-pages.
+      if (IsControlsSubPage(active_page_)) {
+        const float avail_w = ImGui::GetContentRegionAvail().x;
+        const float ctrl_w = std::clamp(avail_w * 0.52f, 320.0f * scale, 480.0f * scale);
+        const float gap = 8.0f * scale;
+        const float slot_w = (ctrl_w - gap) * 0.5f;
+        const float hdr_h = 22.0f * scale;
+
+        ImVec2 hdr_pos = ImGui::GetCursorScreenPos();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+
+        // Action header on left
+        const char* act_hdr = "GAME ACTION";
+        dl->AddText(ImVec2(hdr_pos.x + 14.0f * scale, hdr_pos.y + (hdr_h - ImGui::GetFontSize()) * 0.5f),
+                    kColTextDim, act_hdr);
+
+        // Primary header
+        const char* pri_hdr = "PRIMARY";
+        ImVec2 pri_sz = ImGui::CalcTextSize(pri_hdr);
+        float pri_x = (hdr_pos.x + avail_w) - ctrl_w - 12.0f * scale;
+        dl->AddText(ImVec2(pri_x + (slot_w - pri_sz.x) * 0.5f, hdr_pos.y + (hdr_h - pri_sz.y) * 0.5f),
+                    kColTextDim, pri_hdr);
+
+        // Secondary header
+        const char* sec_hdr = "SECONDARY";
+        ImVec2 sec_sz = ImGui::CalcTextSize(sec_hdr);
+        float sec_x = pri_x + slot_w + gap;
+        dl->AddText(ImVec2(sec_x + (slot_w - sec_sz.x) * 0.5f, hdr_pos.y + (hdr_h - sec_sz.y) * 0.5f),
+                    kColTextDim, sec_hdr);
+
+        ImGui::Dummy(ImVec2(0.0f, hdr_h + 4.0f * scale));
+      }
+
       // Scrollable rows child region.
       const float footer_h = 148.0f * scale;
       const float list_h = std::max(160.0f, ImGui::GetContentRegionAvail().y - footer_h);
@@ -879,8 +1336,11 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
 
         const float avail_w = ImGui::GetContentRegionAvail().x;
         const float row_h = 46.0f * scale;
-        const float ctrl_w = std::clamp(avail_w * 0.40f, 240.0f * scale, 380.0f * scale);
-        const float ctrl_h = 30.0f * scale;
+        const bool is_bindings_subpage = IsControlsSubPage(active_page_);
+        const float ctrl_w = is_bindings_subpage
+                                 ? std::clamp(avail_w * 0.52f, 320.0f * scale, 480.0f * scale)
+                                 : std::clamp(avail_w * 0.40f, 240.0f * scale, 380.0f * scale);
+        const float ctrl_h = 32.0f * scale;
 
         for (size_t i = 0; i < rows.size(); ++i) {
           const RowSpec& row = *rows[i];
@@ -921,23 +1381,27 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
           ImGui::SetCursorScreenPos(
               ImVec2(row_end.x - ctrl_w - 12.0f * scale, row_pos.y + (row_h - ctrl_h) * 0.5f));
 
-          switch (row.control) {
-            case Control::kToggle:
-              DrawToggleWidget(row, lang, ctrl_w, ctrl_h, scale);
-              break;
-            case Control::kChoice:
-              DrawChoiceWidget(row, lang, ctrl_w, ctrl_h, scale);
-              break;
-            case Control::kSliderInt:
-            case Control::kSliderFloat:
-              DrawSliderWidget(row, ctrl_w, ctrl_h, scale);
-              break;
-            case Control::kText:
-              DrawTextWidget(row, ctrl_w, ctrl_h, scale);
-              break;
-            case Control::kAction:
-              DrawActionWidget(row, lang, ctrl_w, ctrl_h, scale);
-              break;
+          if (is_bindings_subpage) {
+            DrawBindingsRowWidget(row, static_cast<int>(i), lang, ctrl_w, ctrl_h, scale);
+          } else {
+            switch (row.control) {
+              case Control::kToggle:
+                DrawToggleWidget(row, lang, ctrl_w, ctrl_h, scale);
+                break;
+              case Control::kChoice:
+                DrawChoiceWidget(row, lang, ctrl_w, ctrl_h, scale);
+                break;
+              case Control::kSliderInt:
+              case Control::kSliderFloat:
+                DrawSliderWidget(row, ctrl_w, ctrl_h, scale);
+                break;
+              case Control::kText:
+                DrawTextWidget(row, ctrl_w, ctrl_h, scale);
+                break;
+              case Control::kAction:
+                DrawActionWidget(row, lang, ctrl_w, ctrl_h, scale);
+                break;
+            }
           }
 
           ImGui::SetCursorScreenPos(ImVec2(row_pos.x, row_end.y + 5.0f * scale));
@@ -1000,6 +1464,9 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
         SyncTextBuffersFromModel();
         RefreshDynamicRowChoices(model_, paths_);
         SaveConfigToDisk(paths_.config_path, model_);
+        if (active_page_ == Page::kKeyBindings) {
+          NotifyBindingsChanged();
+        }
       }
 
       ImGui::SameLine(0.0f, 10.0f * scale);
@@ -1025,17 +1492,26 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
 
       // Navigation hint bar.
       ImGui::SameLine(0.0f, 18.0f * scale);
-      ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextDim), "%s",
-                         UiText("hint_bar").For(lang));
+      const auto now_time = std::chrono::steady_clock::now();
+      const bool has_status = !status_message_.empty() &&
+          std::chrono::duration_cast<std::chrono::seconds>(now_time - status_time_).count() < 4;
+      if (has_status) {
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColAccentBright), "%s",
+                           status_message_.c_str());
+      } else {
+        const char* hint = IsControlsSubPage(active_page_) ? UiText("hint_bar_bindings").For(lang)
+                                                           : UiText("hint_bar").For(lang);
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kColTextDim), "%s", hint);
+      }
 
       // Controller button / key capture modal overlay. Drawn on the foreground list: on the
       // window's own list the scrolling rows (a child window, drawn later) covered it.
-      if (!pad_capture_cvar_.empty() || !key_capture_cvar_.empty()) {
+      if (!capture_cvar_.empty()) {
         ImDrawList* fg_dl = ImGui::GetForegroundDrawList();
         fg_dl->AddRectFilled(panel_pos, ImVec2(panel_pos.x + panel_w, panel_pos.y + panel_h),
                              IM_COL32(0, 0, 0, 195), 8.0f * scale);
         const char* prompt =
-            UiText(key_capture_cvar_.empty() ? "pad_press_button" : "key_press_key").For(lang);
+            UiText(capture_is_pad_ ? "pad_press_button" : "key_press_key").For(lang);
         ImVec2 psz = ImGui::CalcTextSize(prompt);
         ImVec2 box_min((disp_w - psz.x) * 0.5f - 28.0f * scale,
                        (disp_h - psz.y) * 0.5f - 20.0f * scale);
@@ -1058,20 +1534,24 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
   }
 
   rex::PathConfig paths_;
+  rex::ui::ImmediateDrawer* immediate_drawer_ = nullptr;
   Model model_;
   InputTracker input_;
   bool open_ = false;
   bool unblock_pending_ = false;
   Page active_page_ = Page::kDisplay;
   int selected_row_ = 0;
+  int selected_col_ = 0;
   bool scroll_to_selected_ = false;
-  std::string pad_capture_cvar_;
-  // Gears of War 3 recomp: keybind_* row waiting for a key, and whether the keys that started the
-  // capture have been released.
-  std::string key_capture_cvar_;
-  bool key_capture_armed_ = false;
+  std::string capture_cvar_;
+  int capture_slot_ = 0;
+  bool capture_is_pad_ = false;
+  bool capture_armed_ = false;
   uint16_t prev_capture_pad_ = 0;
   bool prev_capture_esc_ = false;
+  std::string status_message_;
+  std::chrono::steady_clock::time_point status_time_{};
+  std::unordered_map<std::string, std::unique_ptr<rex::ui::ImmediateTexture>> glyph_cache_;
   std::unordered_map<std::string, std::array<char, 256>> text_buffers_;
 };
 
@@ -1084,6 +1564,11 @@ void AddOptionsFonts(ImFontAtlas* atlas) {
     return;
   }
 #ifdef _WIN32
+  static const ImWchar kOptionsGlyphRanges[] = {
+      0x0020, 0x00FF,  // Basic Latin + Latin Supplement
+      0x2000, 0x206F,  // General Punctuation (includes U+2014 em-dash, U+2026 ellipsis)
+      0,
+  };
   wchar_t win_dir[MAX_PATH]{};
   if (GetWindowsDirectoryW(win_dir, MAX_PATH) > 0) {
     const std::filesystem::path fonts = std::filesystem::path(win_dir) / L"Fonts";
@@ -1092,11 +1577,11 @@ void AddOptionsFonts(ImFontAtlas* atlas) {
     std::error_code ec;
     if (std::filesystem::is_regular_file(segoe, ec)) {
       g_body_font =
-          atlas->AddFontFromFileTTF(rex::path_to_utf8(segoe).c_str(), 17.0f);
+          atlas->AddFontFromFileTTF(rex::path_to_utf8(segoe).c_str(), 17.0f, nullptr, kOptionsGlyphRanges);
     }
     if (std::filesystem::is_regular_file(segoe_sb, ec)) {
       g_heading_font =
-          atlas->AddFontFromFileTTF(rex::path_to_utf8(segoe_sb).c_str(), 21.0f);
+          atlas->AddFontFromFileTTF(rex::path_to_utf8(segoe_sb).c_str(), 21.0f, nullptr, kOptionsGlyphRanges);
     } else if (g_body_font) {
       g_heading_font = g_body_font;
     }
@@ -1106,11 +1591,12 @@ void AddOptionsFonts(ImFontAtlas* atlas) {
 }
 
 std::unique_ptr<rex::ui::ImGuiDialog> CreateOptionsOverlay(rex::ui::ImGuiDrawer* drawer,
-                                                           const rex::PathConfig& paths) {
+                                                           const rex::PathConfig& paths,
+                                                           rex::ui::ImmediateDrawer* immediate_drawer) {
   if (!drawer) {
     return nullptr;
   }
-  auto dlg = std::make_unique<OptionsOverlayDialog>(drawer, paths);
+  auto dlg = std::make_unique<OptionsOverlayDialog>(drawer, paths, immediate_drawer);
   g_active_overlay = dlg.get();
   return dlg;
 }

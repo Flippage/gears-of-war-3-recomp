@@ -31,13 +31,38 @@ inline constexpr std::array<Button, 14> kButtons = {{
     {"dpad_right", 0x0008},
 }};
 
-constexpr uint16_t BitForName(std::string_view name) {
+constexpr uint16_t SingleBitForName(std::string_view name) {
   for (const auto& btn : kButtons) {
     if (btn.name == name) {
       return btn.bit;
     }
   }
   return 0;
+}
+
+constexpr uint16_t BitForName(std::string_view name) {
+  uint16_t mask = 0;
+  size_t start = 0;
+  while (start < name.size()) {
+    while (start < name.size() && (name[start] == ' ' || name[start] == ',' || name[start] == '\t')) {
+      ++start;
+    }
+    if (start >= name.size()) {
+      break;
+    }
+    size_t end = start;
+    while (end < name.size() && name[end] != ',') {
+      ++end;
+    }
+    size_t token_end = end;
+    while (token_end > start && (name[token_end - 1] == ' ' || name[token_end - 1] == '\t')) {
+      --token_end;
+    }
+    std::string_view token = name.substr(start, token_end - start);
+    mask |= SingleBitForName(token);
+    start = end;
+  }
+  return mask;
 }
 
 constexpr uint16_t Remap(uint16_t physical, const std::array<uint16_t, 14>& sources) {

@@ -177,10 +177,14 @@ acceleration. **Mouse Sensitivity** (`gow3_mouse_scale`) and **Invert Mouse Y**
 | `Enter` or `Esc` | Pause (Start) |
 | `Tab` | Scoreboard / objectives (Back) |
 
-Rebind any of them on the PC Options menu's **Keyboard & Mouse Bindings** page (`F10`): pick a row,
-press **Set** and then the key or mouse button; **Reset Page to Defaults** restores the table above.
-`Shift`, `Ctrl` and `Alt` bind like any other key. Every binding is also a `keybind_*` setting in
-`gow3.toml` (key names, comma-separated; `LMB`, `RMB`, `MMB` for the mouse buttons). The game's own
+Rebind any of them on the PC Options menu's **Keyboard & Mouse Bindings** page (`F10`). Every action
+has a **Primary** and a **Secondary** slot, shown as key / button icons: click a slot (or select it and
+press Enter / A), then press the key or mouse button; Delete, Backspace or X clears a slot, and
+**Reset Page to Defaults** restores the table above. The **Controller Buttons** page works the same
+way for a controller, with Xbox or PlayStation icons; two buttons can press the same action, and a
+button bound to a new action moves from its old one. `Shift`, `Ctrl` and `Alt` bind like any other
+key. Every binding is also a `keybind_*` setting in `gow3.toml` (key names, comma-separated; `LMB`,
+`RMB`, `MMB` for the mouse buttons), and controller buttons are `pad_map_*`. The game's own
 menus are controller-style: use the keys above, the mouse does not point and click there (the
 console menus have no pointer; a known limitation).
 
