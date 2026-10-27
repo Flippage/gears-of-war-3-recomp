@@ -25,6 +25,9 @@ void ApplyRendererChoice() {
   rex::cvar::SetFlagByName("render_target_path_d3d12", choice == "rov" ? "rov" : "rtv");
   rex::cvar::SetFlagByName("gpu_native_surfaces", native ? "true" : "false");
   rex::cvar::SetFlagByName("gpu_native_resolves", native ? "true" : "false");
+  // The HUD reaches the upscaler no more (gow2_hud_separate); the old UI mask, which let parts of
+  // the scene fall back to the raw frame, stays off on the frames without the HUD-free copy too.
+  rex::cvar::SetFlagByName("gow2_ui_mask", "false");
   REXLOG_INFO("Renderer: {}", native ? "native" : choice);
 }
 

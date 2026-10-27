@@ -168,7 +168,7 @@ your changes back to `gow3.toml` while keeping its comments intact). Each row di
 takes effect:
 
 - **Applies now**: window mode/size, monitor, V-Sync, Unlock 30 FPS Cap, temporal upscaler
-  (Off / Auto / DLSS / FSR 3 / FSR 4), upscaler quality and HUD mask, post-process/shadow game
+  (Off / Auto / DLSS / FSR 3 / FSR 4), upscaler quality and DLSS preset, post-process/shadow game
   patches, button prompt style (Auto / Xbox / PlayStation / Keyboard / Original), keyboard/mouse
   toggles, mouse sensitivity, controller dead zone, and controller button remapping.
 - **Applies on next level load**: 16x Anisotropic Filtering (`gow3_aniso16`).
@@ -198,7 +198,7 @@ as `--name=value`.
 | `readback_memexport` | off | CPU readback of memexport (on = long load stalls) |
 | `gow2_temporal`, `gow2_upscaler` | off | Temporal upscaling: set `gow2_temporal = true` and `gow2_upscaler = "dlss"` (NVIDIA RTX), `"fsr4"`, `"fsr3"` or `"auto"` |
 | `gow2_hud_separate` | on | The upscaler takes the frame before the HUD; the HUD is added on top afterwards |
-| `gow2_ui_mask` | on | Keeps the upscaler from warping the HUD on frames without that copy |
+| `gow2_ui_mask` | off | The old HUD mask for frames without that copy (it let parts of the scene fall back to the raw frame) |
 
 ## Co-op
 

@@ -251,16 +251,6 @@ std::vector<PageSpec> BuildCatalog() {
               },
           },
           {
-              "gow2_ui_mask",
-              Page::kGraphics,
-              Control::kToggle,
-              Apply::kNow,
-              {"Protect HUD from Upscaler"},
-              {"Captures the scene before 2D HUD draws and supplies a reactive mask so crosshairs, subtitles, and menus do not ghost during temporal upscaling."},
-              "true",
-              {},
-          },
-          {
               "resolution_scale",
               Page::kGraphics,
               Control::kChoice,
