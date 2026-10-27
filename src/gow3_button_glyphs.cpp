@@ -47,6 +47,9 @@ namespace {
 
 constexpr uint64_t kAtlas512Hash = UINT64_C(0xa000624a174e08ba);
 constexpr uint64_t kAtlas256Hash = UINT64_C(0xae5c68a9d7f7398c);
+// Returning to the main menu loads the 256x256 atlas again, laid out one 4 KB page earlier, which
+// hashes differently (the same blocks: compared from dumps). Its replacement is the same image.
+constexpr uint64_t kAtlas256MenuHash = UINT64_C(0x2587228e1f70bb5f);
 constexpr const char kAtlasDumpHashes[] = "a000624a174e08ba,ae5c68a9d7f7398c";
 
 constexpr size_t kExpectedSize512 = 1398248;
@@ -719,8 +722,13 @@ bool ComposeVariant(const std::string& variant_dir_name, const std::string& styl
   std::snprintf(name512, sizeof(name512), "%016llx.dds", static_cast<unsigned long long>(kAtlas512Hash));
   std::snprintf(name256, sizeof(name256), "%016llx.dds", static_cast<unsigned long long>(kAtlas256Hash));
 
+  char name256_menu[32];
+  std::snprintf(name256_menu, sizeof(name256_menu), "%016llx.dds",
+                static_cast<unsigned long long>(kAtlas256MenuHash));
+
   const bool ok1 = !g_have512 || WriteDds(out_dir / name512, comp512);
-  const bool ok2 = !g_have256 || WriteDds(out_dir / name256, comp256);
+  const bool ok2 = !g_have256 || (WriteDds(out_dir / name256, comp256) &&
+                                  WriteDds(out_dir / name256_menu, comp256));
   return ok1 && ok2;
 }
 
@@ -737,9 +745,13 @@ void EnsureVariantOnDisk(const std::string& variant_dir_name, const std::string&
   std::snprintf(name256, sizeof(name256), "%016llx.dds", static_cast<unsigned long long>(kAtlas256Hash));
   const std::filesystem::path p512 = dir / name512;
   const std::filesystem::path p256 = dir / name256;
+  char name256_menu[32];
+  std::snprintf(name256_menu, sizeof(name256_menu), "%016llx.dds",
+                static_cast<unsigned long long>(kAtlas256MenuHash));
+  const std::filesystem::path p256_menu = dir / name256_menu;
   // A variant is composed again when the cell map or any glyph image it uses changes: the stamp
   // holds a layout version plus every cell's box and image file name.
-  std::string want = fmt::format("4|512={}|256={}", g_have512, g_have256);
+  std::string want = fmt::format("5|512={}|256={}", g_have512, g_have256);
   const std::filesystem::path assets = AssetsDir();
   auto add_cells = [&](const auto& sprites) {
     for (const SpriteDef& sp : sprites) {
@@ -758,7 +770,8 @@ void EnsureVariantOnDisk(const std::string& variant_dir_name, const std::string&
     std::fclose(f);
   }
   if (have != want || (g_have512 && !IsDdsValid(p512, kExpectedSize512)) ||
-      (g_have256 && !IsDdsValid(p256, kExpectedSize256))) {
+      (g_have256 && (!IsDdsValid(p256, kExpectedSize256) ||
+                     !IsDdsValid(p256_menu, kExpectedSize256)))) {
     if (ComposeVariant(variant_dir_name, style)) {
       if (FILE* f = std::fopen(stamp.string().c_str(), "wb")) {
         std::fwrite(want.data(), 1, want.size(), f);
