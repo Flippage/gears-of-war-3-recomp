@@ -68,3 +68,7 @@ clear_memory_page_state = false
 # Xenia's default (the Gears of War 2 port turned it back on in v0.2.11): estimate on the CPU which part of
 # the EDRAM a draw without clipping (a Direct3D clear) touches, instead of assuming all of it.
 execute_unclipped_draw_vs_on_cpu = true
+
+# ---------- UI ----------
+# Add "Exit Game" to the main menu (replaces the defunct console Xbox LIVE Marketplace entry).
+gow3_main_menu_exit = true

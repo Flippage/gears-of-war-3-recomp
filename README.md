@@ -58,6 +58,7 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
       [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md))
 - [x] In-game PC options menu (`F10` on keyboard or `Back + Start` on a controller)
 - [x] Dynamic on-screen button prompts: replaces original round Xbox 360 buttons with clean Kenney Input Prompts (Xbox, PlayStation, or Keyboard & Mouse matching player keybindings), switching on the fly in Auto mode
+- [x] Exit Game on the main menu, in place of the defunct Xbox LIVE Marketplace entry (`gow3_main_menu_exit`)
 - [ ] FSR 3.1 / FSR 4 on AMD cards: built in and calibrated the same way, but untested
 - [x] Two-player campaign co-op over System Link, tested with two instances on one PC
       (see [Co-op](#co-op)); over the internet not yet tested

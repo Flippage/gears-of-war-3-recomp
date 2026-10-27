@@ -29,6 +29,7 @@
 #include "gow3_button_glyphs.h"
 #include "gow3_unlocks.h"
 #include "gow3_renderer.h"
+#include "gow3_main_menu_exit.h"
 
 class Gow3App : public rex::ReXApp {
  public:
@@ -59,7 +60,7 @@ class Gow3App : public rex::ReXApp {
     rex::glue::InstallXamTrace();  // dev tool, GOW3_XAM_TRACE=1
     // Native mouse look replaces the mouse-to-right-stick emulation (gow3_mouse_aim).
     rex::glue::PrepareNativeMouseAim();
-    // Edited copies of the Coalesced bundles (menu mouse), served in place of the originals.
+    // Edited copies of the Coalesced bundles (menu mouse, exit game), served in place of the originals.
     coalesced_hashes_ = rex::glue::PrepareCoalescedOverrides(game_data_root(), cache_root());
     SetUpscaleTarget();
   }

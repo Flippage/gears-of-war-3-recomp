@@ -32,6 +32,7 @@ set(GOW3_SOURCES
     src/gow3_unlocks.cpp
     src/gow3_loading_screen.cpp
     src/gow3_renderer.cpp
+    src/gow3_main_menu_exit.cpp
 )
 
 if(WIN32)

@@ -34,6 +34,10 @@ REXCVAR_DEFINE_BOOL(gow3_menu_mouse, false, "input",
                     "restart")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(gow3_main_menu_exit, true, "ui",
+                    "Add Exit Game to the main menu (replaces Xbox LIVE Marketplace); restart")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 namespace rex::glue {
 
 namespace {
@@ -183,6 +187,66 @@ FStr MakeLike(const FStr& like, std::string_view text) {
   return s;
 }
 
+FStr MakeLikeWide(const FStr& like, std::wstring_view text) {
+  FStr s;
+  s.wide = like.wide;
+  if (s.wide) {
+    for (wchar_t c : text) {
+      uint16_t u = static_cast<uint16_t>(c);
+      s.raw.push_back(static_cast<uint8_t>(u & 0xFF));
+      s.raw.push_back(static_cast<uint8_t>((u >> 8) & 0xFF));
+    }
+    s.raw.push_back(0);
+    s.raw.push_back(0);
+  } else {
+    for (wchar_t c : text) {
+      s.raw.push_back(static_cast<uint8_t>(c < 0x80 ? c : '?'));
+    }
+    s.raw.push_back(0);
+  }
+  return s;
+}
+
+struct ExitStrings {
+  const wchar_t* label;
+  const wchar_t* tooltip;
+};
+
+ExitStrings GetExitStringsForLang(std::string_view lang) {
+  if (lang == "FRA") return {L"Quitter le jeu", L"Quitter Gears of War 3 et revenir au bureau."};
+  if (lang == "PTB") return {L"Sair do Jogo", L"Sair de Gears of War 3 para a \u00e1rea de trabalho."};
+  if (lang == "POL") return {L"Wyjd\u017a z gry", L"Wyjd\u017a z Gears of War 3 do pulpitu."};
+  if (lang == "RUS") return {L"\u0412\u044b\u0445\u043e\u0434 \u0438\u0437 \u0438\u0433\u0440\u044b", L"\u0412\u044b\u0439\u0442\u0438 \u0438\u0437 Gears of War 3 \u043d\u0430 \u0440\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b."};
+  if (lang == "CZE") return {L"Ukon\u010dit hru", L"Ukon\u010dit Gears of War 3 a p\u0159ej\u00edt na plochu."};
+  if (lang == "HUN") return {L"Kil\u00e9p\u00e9s a j\u00e1t\u00e9kb\u00f3l", L"Kil\u00e9p\u00e9s a Gears of War 3 j\u00e1t\u00e9kb\u00f3l az asztalra."};
+  if (lang == "KOR") return {L"\uac8c\uc784 \uc885\ub8cc", L"Gears of War 3\ub97c \uc885\ub8cc\ud558\uace0 \ubc14\ud0d5 \ud654\uba74\uc73c\ub85c \ub3cc\uc544\uac11\ub2c8\ub2e4."};
+  if (lang == "CHN") return {L"\u96e2\u958b\u904a\u6232", L"\u96e2\u958b Gears of War 3 \u4e26\u8fd4\u56de\u684c\u9762\u3002"};
+  return {L"Exit Game", L"Exit Gears of War 3 to desktop."};
+}
+
+int ApplyMainMenuExit(std::string_view lang, std::vector<IniFile>* files) {
+  const auto strings = GetExitStringsForLang(lang);
+  int changed = 0;
+  for (IniFile& file : *files) {
+    for (Section& section : file.sections) {
+      const std::string name = Text(section.name);
+      if (name == "MainMenu") {
+        for (Entry& e : section.entries) {
+          const std::string key = Text(e.key);
+          if (key == "DLC") {
+            e.value = MakeLikeWide(e.value, strings.label);
+            ++changed;
+          } else if (key == "TOOLTIP_DLC") {
+            e.value = MakeLikeWide(e.value, strings.tooltip);
+            ++changed;
+          }
+        }
+      }
+    }
+  }
+  return changed;
+}
+
 // Applies the edits; returns the number of values changed (0: nothing to do in this bundle).
 int ApplyMenuMouse(std::vector<IniFile>* files) {
   int changed = 0;
@@ -235,7 +299,10 @@ bool ReadAll(const std::filesystem::path& path, std::vector<uint8_t>* out) {
 std::vector<CoalescedHash> PrepareCoalescedOverrides(const std::filesystem::path& game_root,
                                                      const std::filesystem::path& cache_root) {
   std::vector<CoalescedHash> hashes;
-  if (!REXCVAR_GET(gow3_menu_mouse)) return hashes;
+  const bool menu_mouse = REXCVAR_GET(gow3_menu_mouse);
+  const bool menu_exit = REXCVAR_GET(gow3_main_menu_exit);
+  if (!menu_mouse && !menu_exit) return hashes;
+
   const std::filesystem::path cooked = game_root / "GearGame" / "CookedXbox360";
   const std::filesystem::path out_dir = cache_root / "coalesced";
   std::error_code ec;
@@ -248,15 +315,33 @@ std::vector<CoalescedHash> PrepareCoalescedOverrides(const std::filesystem::path
     const std::string name = item.path().filename().string();
     if (name.size() < 15 || name.rfind("Coalesced_", 0) != 0 || item.path().extension() != ".bin")
       continue;
+    std::string lang = "INT";
+    if (name.size() >= 14) {
+      lang = name.substr(10, name.size() - 14);
+      std::transform(lang.begin(), lang.end(), lang.begin(),
+                     [](unsigned char c) { return char(std::toupper(c)); });
+    }
     std::vector<uint8_t> bytes;
     std::vector<IniFile> files;
-    if (!ReadAll(item.path(), &bytes) || !Parse(bytes, &files) ||
-        Serialize(files) != bytes || ApplyMenuMouse(&files) == 0) {
-      ++skipped;  // unknown layout, trailing data, or nothing to edit: served unchanged
+    if (!ReadAll(item.path(), &bytes) || !Parse(bytes, &files) || Serialize(files) != bytes) {
+      ++skipped;  // unknown layout or trailing data
+      continue;
+    }
+    int changed = 0;
+    if (menu_exit) {
+      changed += ApplyMainMenuExit(lang, &files);
+    }
+    if (menu_mouse) {
+      changed += ApplyMenuMouse(&files);
+    }
+    if (changed == 0) {
+      ++skipped;
       continue;
     }
     std::vector<uint8_t> edited = Serialize(files);
     if (edited.size() > bytes.size()) {
+      REXLOG_WARN("COALESCED: {} edited size ({} bytes) exceeds original ({} bytes); skipping",
+                  name, edited.size(), bytes.size());
       ++skipped;  // must fit the TOC size (= the original size)
       continue;
     }
@@ -289,7 +374,7 @@ std::vector<CoalescedHash> PrepareCoalescedOverrides(const std::filesystem::path
       overrides = std::string(existing) + ";" + overrides;
     _putenv_s("GOW2_VFS_OVERRIDES", overrides.c_str());
   }
-  REXLOG_INFO("COALESCED: menu mouse edits in {} bundle(s), {} left unchanged; the game folder is "
+  REXLOG_INFO("COALESCED: main menu exit / mouse edits in {} bundle(s), {} left unchanged; the game folder is "
               "not modified",
               done, skipped);
   return hashes;
