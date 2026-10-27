@@ -127,6 +127,7 @@ The release zip has no DLSS. Building it yourself takes about half an hour, most
    ```
 
 5. **Run** `out\build\release\gow3.exe`. Pick **NVIDIA DLSS** under F10 → Graphics → Temporal Upscaler.
+   **DLSS Preset** (same page) picks the DLSS model; Default lets DLSS choose for each quality mode.
 
 The first command downloads the NVIDIA DLSS SDK for your own use and puts `nvngx_dlss.dll` next to
 the game. Full details and options: [BUILDING.md](BUILDING.md).

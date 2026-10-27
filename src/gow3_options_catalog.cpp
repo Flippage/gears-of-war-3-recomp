@@ -206,6 +206,22 @@ std::vector<PageSpec> BuildCatalog() {
               },
           },
           {
+              "gow2_dlss_preset",
+              Page::kGraphics,
+              Control::kChoice,
+              Apply::kNow,
+              {"DLSS Preset"},
+              {"The DLSS model. Default lets DLSS pick: K for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance. K is the sharpest transformer model; J ghosts slightly less but flickers more."},
+              "default",
+              {
+                  {"default", {"Default (Recommended)"}},
+                  {"k", {"K (Transformer, Best Quality)"}},
+                  {"j", {"J (Transformer, Less Ghosting)"}},
+                  {"m", {"M (Transformer, Performance)"}},
+                  {"l", {"L (Transformer, Ultra Performance)"}},
+              },
+          },
+          {
               "gow2_ui_mask",
               Page::kGraphics,
               Control::kToggle,
@@ -683,6 +699,8 @@ std::vector<PageSpec> BuildCatalog() {
   std::error_code ec;
   if (!std::filesystem::exists(rex::filesystem::GetExecutableFolder() / dlss_dll, ec)) {
     for (auto& page : pages) {
+      std::erase_if(page.rows,
+                    [](const RowSpec& row) { return std::string_view(row.cvar) == "gow2_dlss_preset"; });
       for (auto& row : page.rows) {
         if (std::string_view(row.cvar) != "upscaler") continue;
         std::erase_if(row.choices, [](const Choice& c) { return std::string_view(c.value) == "dlss"; });

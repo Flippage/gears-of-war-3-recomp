@@ -1,0 +1,80 @@
+Gears of War 3: gow2_dlss_preset, the DLSS model preset for every quality mode (default, j, k, l,
+m). Set on the creation parameters; a change recreates the feature.
+
+diff --git a/src/graphics/d3d12/gow2_dlss.cpp b/src/graphics/d3d12/gow2_dlss.cpp
+index 0c23af2..7717295 100644
+--- a/src/graphics/d3d12/gow2_dlss.cpp
++++ b/src/graphics/d3d12/gow2_dlss.cpp
+@@ -4,6 +4,7 @@
+ #include <rex/graphics/d3d12/gow2_dlss.h>
+ 
+ #include <filesystem>
++#include <string>
+ 
+ #include <rex/cvar.h>
+ #include <rex/logging.h>
+@@ -17,6 +18,10 @@
+ #endif
+ 
+ REXCVAR_DECLARE(bool, gow2_depth_reversed);
++REXCVAR_DEFINE_STRING(gow2_dlss_preset, "default", "gfx",
++                      "DLSS model preset for every quality mode: default (the DLSS DLL picks: K "
++                      "for DLAA/Quality/Balanced, M for Performance, L for Ultra Performance), "
++                      "j, k, l, m");
+ 
+ namespace rex::graphics::d3d12::gow2 {
+ 
+@@ -30,6 +35,17 @@ bool g_init_tried = false;
+ bool g_ok = false;
+ uint32_t g_in_w, g_in_h, g_out_w, g_out_h;
+ int g_quality = -1;
++int g_preset = -1;
++
++// gow2_dlss_preset as an NVSDK_NGX_DLSS_Hint_Render_Preset; anything else is the default (0).
++int PresetValue() {
++  const std::string p = REXCVAR_GET(gow2_dlss_preset);
++  if (p == "j" || p == "J") return NVSDK_NGX_DLSS_Hint_Render_Preset_J;
++  if (p == "k" || p == "K") return NVSDK_NGX_DLSS_Hint_Render_Preset_K;
++  if (p == "l" || p == "L") return NVSDK_NGX_DLSS_Hint_Render_Preset_L;
++  if (p == "m" || p == "M") return NVSDK_NGX_DLSS_Hint_Render_Preset_M;
++  return NVSDK_NGX_DLSS_Hint_Render_Preset_Default;
++}
+ }  // namespace
+ 
+ static void NgxLog(const char* msg, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature) {
+@@ -126,12 +142,22 @@ bool DlssInit(ID3D12Device* device) {
+ 
+ bool DlssEvaluate(ID3D12GraphicsCommandList* list, const DlssEval& e) {
+   if (!g_ok) return false;
++  const int preset = PresetValue();
+   if (!g_feature || g_in_w != e.render_w || g_in_h != e.render_h || g_out_w != e.out_w ||
+-      g_out_h != e.out_h || g_quality != e.quality) {
++      g_out_h != e.out_h || g_quality != e.quality || g_preset != preset) {
+     if (g_feature) {
+       NVSDK_NGX_D3D12_ReleaseFeature(g_feature);
+       g_feature = nullptr;
+     }
++    // The preset is read when the feature is created, so a change recreates it.
++    for (const char* hint : {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA,
++                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
++                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced,
++                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance,
++                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance,
++                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality}) {
++      NVSDK_NGX_Parameter_SetUI(g_params, hint, uint32_t(preset));
++    }
+     NVSDK_NGX_DLSS_Create_Params cp = {};
+     cp.Feature.InWidth = e.render_w;
+     cp.Feature.InHeight = e.render_h;
+@@ -155,8 +181,9 @@ bool DlssEvaluate(ID3D12GraphicsCommandList* list, const DlssEval& e) {
+     g_out_w = e.out_w;
+     g_out_h = e.out_h;
+     g_quality = e.quality;
+-    REXGPU_WARN("DLSS: feature created {}x{} -> {}x{} quality {}", e.render_w, e.render_h, e.out_w,
+-                e.out_h, e.quality);
++    g_preset = preset;
++    REXGPU_WARN("DLSS: feature created {}x{} -> {}x{} quality {} preset {}", e.render_w, e.render_h,
++                e.out_w, e.out_h, e.quality, preset);
+   }
+   NVSDK_NGX_D3D12_DLSS_Eval_Params ep = {};
+   ep.Feature.pInColor = e.color;
