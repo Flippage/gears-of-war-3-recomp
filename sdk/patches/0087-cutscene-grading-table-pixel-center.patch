@@ -1,0 +1,17 @@
+Gears of War 3: green colours in in-engine cutscenes at 2x internal resolution. Cutscenes build the
+colour grading table with another pixel shader (65DF74D4BE69FC68, computed rather than sampled from
+a strip); it joins 5FD384E4DE20CAC8 in the gpu_guest_pixel_center_ps default.
+
+diff --git a/src/graphics/util/draw.cpp b/src/graphics/util/draw.cpp
+index efecb08..8a021f4 100644
+--- a/src/graphics/util/draw.cpp
++++ b/src/graphics/util/draw.cpp
+@@ -48,7 +48,7 @@ REXCVAR_DEFINE_BOOL(resolve_resolution_scale_fill_half_pixel_offset, true, "GPU"
+ // the whole image at 2x). Evaluated at the guest pixel centre, every host pixel
+ // computes the 1x entry; gpu_unscaled_resolve_max_pitch then makes the table a
+ // 1x texture (a scaled copy of duplicated entries bands when filtered).
+-REXCVAR_DEFINE_STRING(gpu_guest_pixel_center_ps, "5FD384E4DE20CAC8", "GPU",
++REXCVAR_DEFINE_STRING(gpu_guest_pixel_center_ps, "5FD384E4DE20CAC8,65DF74D4BE69FC68", "GPU",
+                       "With resolution scaling, pixel shaders (comma-separated ucode hashes) whose "
+                       "interpolants are evaluated at the centre of the guest pixel, as at 1x, instead "
+                       "of each host pixel. For passes that compute table indices from their "
