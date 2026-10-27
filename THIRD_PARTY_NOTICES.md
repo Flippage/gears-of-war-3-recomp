@@ -58,6 +58,9 @@ Files in this repository derived from it:
   `ResolveContentRoot` / `OnConfigurePaths`.
 - `scripts/build.ps1`, `scripts/harvest-loop.ps1`: modelled on its `scripts/build.ps1` and
   `scripts/run-harvest-loop.sh`.
+- `src/gow3_widescreen.cpp`, `src/gow3_widescreen.h`, `src/gow3_widescreen_math.h`: adapted from its
+  `src/gow2_widescreen.*` (back buffer width, Hor+ field of view) for Gears of War 3's back buffer
+  setup and camera sites, with the field of view setting added.
 - `tools/patch_game_patches.py`: modelled on its `tools/patch_game_patches.py` (patching the
   generated C++ behind a cvar switch).
 

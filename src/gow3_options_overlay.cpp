@@ -685,32 +685,67 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
 
   void DrawSliderWidget(const RowSpec& row, float width, float height, float scale) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 pos = ImGui::GetCursorScreenPos();
+    const float btn_w = std::max(22.0f * scale, height);
+    const float track_w = std::max(10.0f * scale, width - 2.0f * btn_w);
 
+    // Left "-" button
+    ImVec2 base = ImGui::GetCursorScreenPos();
+    std::string minus_id = std::string("##minus_") + row.cvar;
+    if (ImGui::InvisibleButton(minus_id.c_str(), ImVec2(btn_w, height))) {
+      model_.StepSlider(row.cvar, -1);
+      SaveConfigToDisk(paths_.config_path, model_);
+    }
+    bool prev_hov = ImGui::IsItemHovered();
+    dl->AddRectFilled(base, ImVec2(base.x + btn_w, base.y + height),
+                      prev_hov ? kColAccent : kColControlBg, 4.0f * scale);
+    dl->AddRect(base, ImVec2(base.x + btn_w, base.y + height), kColControlBorder, 4.0f * scale);
+    ImVec2 minus_sz = ImGui::CalcTextSize("-");
+    dl->AddText(ImVec2(base.x + (btn_w - minus_sz.x) * 0.5f, base.y + (height - minus_sz.y) * 0.5f),
+                kColTextPrimary, "-");
+
+    // Center draggable slider track
+    ImGui::SameLine(0.0f, 0.0f);
+    ImVec2 mid = ImGui::GetCursorScreenPos();
     std::string id = std::string("##slider_") + row.cvar;
-    ImGui::InvisibleButton(id.c_str(), ImVec2(width, height));
+    ImGui::InvisibleButton(id.c_str(), ImVec2(track_w, height));
     if (ImGui::IsItemActive()) {
-      float t = (ImGui::GetIO().MousePos.x - pos.x) / std::max(1.0f, width);
+      float t = (ImGui::GetIO().MousePos.x - mid.x) / std::max(1.0f, track_w);
       model_.SetSliderNormalized(row.cvar, static_cast<double>(t));
       SaveConfigToDisk(paths_.config_path, model_);
     }
 
     const double norm = model_.SliderNormalized(row.cvar);
-    const float fill_w = static_cast<float>(norm) * width;
+    const float fill_w = static_cast<float>(norm) * track_w;
 
-    dl->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), kColControlBg, 4.0f * scale);
+    dl->AddRectFilled(mid, ImVec2(mid.x + track_w, mid.y + height), kColControlBg, 0.0f);
     if (fill_w > 1.0f) {
-      dl->AddRectFilled(pos, ImVec2(pos.x + fill_w, pos.y + height), kColAccent, 4.0f * scale);
+      dl->AddRectFilled(mid, ImVec2(mid.x + fill_w, mid.y + height), kColAccent, 0.0f);
     }
-    dl->AddRect(pos, ImVec2(pos.x + width, pos.y + height), kColControlBorder, 4.0f * scale);
+    dl->AddRect(mid, ImVec2(mid.x + track_w, mid.y + height), kColControlBorder, 0.0f);
 
     std::string val_text = model_.Get(row.cvar);
     if (row.unit && *row.unit) {
       val_text += row.unit;
     }
     ImVec2 ts = ImGui::CalcTextSize(val_text.c_str());
-    dl->AddText(ImVec2(pos.x + (width - ts.x) * 0.5f, pos.y + (height - ts.y) * 0.5f),
+    dl->AddText(ImVec2(mid.x + (track_w - ts.x) * 0.5f, mid.y + (height - ts.y) * 0.5f),
                 kColTextPrimary, val_text.c_str());
+
+    // Right "+" button
+    ImGui::SameLine(0.0f, 0.0f);
+    ImVec2 rt = ImGui::GetCursorScreenPos();
+    std::string plus_id = std::string("##plus_") + row.cvar;
+    if (ImGui::InvisibleButton(plus_id.c_str(), ImVec2(btn_w, height))) {
+      model_.StepSlider(row.cvar, +1);
+      SaveConfigToDisk(paths_.config_path, model_);
+    }
+    bool next_hov = ImGui::IsItemHovered();
+    dl->AddRectFilled(rt, ImVec2(rt.x + btn_w, rt.y + height),
+                      next_hov ? kColAccent : kColControlBg, 4.0f * scale);
+    dl->AddRect(rt, ImVec2(rt.x + btn_w, rt.y + height), kColControlBorder, 4.0f * scale);
+    ImVec2 plus_sz = ImGui::CalcTextSize("+");
+    dl->AddText(ImVec2(rt.x + (btn_w - plus_sz.x) * 0.5f, rt.y + (height - plus_sz.y) * 0.5f),
+                kColTextPrimary, "+");
   }
 
   void DrawTextWidget(const RowSpec& row, float width, float height, float scale) {

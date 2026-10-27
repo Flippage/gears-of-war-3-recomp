@@ -36,6 +36,12 @@ REXCVAR_DEFINE_BOOL(gow3_shadow_perf_b, false, "GameFixes",
 REXCVAR_DEFINE_BOOL(gow3_disable_dynamic_shadows, false, "GameFixes",
                     "No dynamic shadows at all (Performance Patch Option A without its broken byte).");
 
+#include "gow3_widescreen.h"
+
+extern "C" double Gow3WidescreenHalfFov(double half_fov, int site) {
+  return rex::glue::WidescreenHalfFov(half_fov, site);
+}
+
 extern "C" int Gow3GamePatch(int id) {
   switch (id) {
     case 1: return REXCVAR_GET(gow3_black_shading_fix);
@@ -51,6 +57,7 @@ extern "C" int Gow3GamePatch(int id) {
     case 11: return REXCVAR_GET(gow3_texture_pool_mb);
     case 12: return REXCVAR_GET(gow3_shadow_perf_b);
     case 13: return REXCVAR_GET(gow3_disable_dynamic_shadows);
+    case 14: return rex::glue::WidescreenBackBufferWidth();
     default: return 0;
   }
 }

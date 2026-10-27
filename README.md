@@ -59,6 +59,9 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
 - [x] In-game PC options menu (`F10` on keyboard or `Back + Start` on a controller)
 - [x] Dynamic on-screen button prompts: replaces original round Xbox 360 buttons with clean Kenney Input Prompts (Xbox, PlayStation, or Keyboard & Mouse matching player keybindings), switching on the fly in Auto mode
 - [x] Exit Game on the main menu, in place of the defunct Xbox LIVE Marketplace entry (`gow3_main_menu_exit`)
+- [x] Ultrawide up to 21:9 with a wider view instead of side bars (Hor+, `gow3_widescreen`, automatic on
+      wide displays; 21:9 is the widest the Xbox 360's render memory fits, so 32:9 shows 21:9 with bars)
+      and a field of view slider, 65-100 degrees (`gow3_fov`), in PC Options -> Display
 - [ ] FSR 3.1 / FSR 4 on AMD cards: built in and calibrated the same way, but untested
 - [x] Two-player campaign co-op over System Link, tested with two instances on one PC
       (see [Co-op](#co-op)); over the internet not yet tested

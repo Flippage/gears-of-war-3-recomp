@@ -73,7 +73,8 @@ import sys
 from pathlib import Path
 
 MARK = "GOW3 GAMEPATCH"
-DECL = f'extern "C" int Gow3GamePatch(int id);  // {MARK}\n'
+DECL = (f'extern "C" int Gow3GamePatch(int id);  // {MARK}\n'
+        f'extern "C" double Gow3WidescreenHalfFov(double half_fov, int site);  // {MARK}\n')
 GEN = "generated/default"
 
 # (address, expected disassembly, patched form, id). Patched forms:
@@ -112,6 +113,23 @@ SITES = [
     (0x827CACC4, "mr r21,r19", ("li", "r21", 1), 12),
     (0x829A138C, "lwz r3,108(r10)", ("li", "r3", 0), 12),
     (0x827CE810, "lwz r11,1044(r21)", ("li", "r11", 0), 13),
+    # Ultrawide (Hor+) back buffer setup:
+    (0x82960C68, "lfs f13,2492(r20)", ("code",
+        "ctx.fpscr.disableFlushMode(); temp.u32 = REX_LOAD_U32(ctx.r20.u32 + 2492); "
+        "ctx.f13.f64 = Gow3GamePatch(14) ? (double(Gow3GamePatch(14)) + 0.25) / 720.0 : double(temp.f32);"), 14),
+    (0x82960F60, "blt cr6,0x82960ca4", ("code",
+        "if (ctx.cr6.lt || Gow3GamePatch(14)) goto loc_82960CA4;"), 14),
+    # Camera Field of View (FOV) Hor+ and player multiplier scaling sites:
+    (0x82364E3C, "fmuls f31,f13,f0", ("code",
+        "ctx.f31.f64 = double(float(Gow3WidescreenHalfFov(double(float(ctx.f13.f64 * ctx.f0.f64)), 1)));"), 14),
+    (0x8261BE94, "fmuls f1,f31,f0", ("code",
+        "ctx.f1.f64 = double(float(Gow3WidescreenHalfFov(double(float(ctx.f31.f64 * ctx.f0.f64)), 2)));"), 14),
+    (0x8261BEF8, "fmuls f2,f31,f0", ("code",
+        "ctx.f2.f64 = double(float(Gow3WidescreenHalfFov(double(float(ctx.f31.f64 * ctx.f0.f64)), 3)));"), 14),
+    (0x8262E5D0, "fmuls f1,f13,f0", ("code",
+        "ctx.f1.f64 = double(float(Gow3WidescreenHalfFov(double(float(ctx.f13.f64 * ctx.f0.f64)), 4)));"), 14),
+    (0x8262E660, "fmuls f1,f13,f0", ("code",
+        "ctx.f1.f64 = double(float(Gow3WidescreenHalfFov(double(float(ctx.f13.f64 * ctx.f0.f64)), 5)));"), 14),
 ]
 
 
@@ -199,11 +217,22 @@ def main() -> int:
         count += 1
         print(f"patch {sid}: {addr:08X} {expect} in {Path(path).name}")
     for path, lines in changed.items():
-        text = "\n".join(lines)
-        if DECL not in text:
-            first = text.find("DEFINE_REX_FUNC(")
-            text = text[:first] + DECL + "\n" + text[first:]
-        Path(path).write_text(text, encoding="utf-8", newline="\n")
+        Path(path).write_text("\n".join(lines), encoding="utf-8", newline="\n")
+
+    for path in glob.glob(f"{GEN}/gow3_recomp.*.cpp"):
+        text = Path(path).read_text(encoding="utf-8")
+        if MARK in text:
+            changed_decl = False
+            if 'Gow3GamePatch' in text and 'extern "C" int Gow3GamePatch' not in text:
+                first = text.find("DEFINE_REX_FUNC(")
+                text = text[:first] + f'extern "C" int Gow3GamePatch(int id);  // {MARK}\n' + text[first:]
+                changed_decl = True
+            if 'Gow3WidescreenHalfFov' in text and 'extern "C" double Gow3WidescreenHalfFov' not in text:
+                first = text.find("DEFINE_REX_FUNC(")
+                text = text[:first] + f'extern "C" double Gow3WidescreenHalfFov(double half_fov, int site);  // {MARK}\n' + text[first:]
+                changed_decl = True
+            if changed_decl:
+                Path(path).write_text(text, encoding="utf-8", newline="\n")
     print(f"game patches: {count}/{len(SITES)} sites patched")
     return 0
 

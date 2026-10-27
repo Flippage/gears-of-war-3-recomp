@@ -33,6 +33,7 @@ set(GOW3_SOURCES
     src/gow3_loading_screen.cpp
     src/gow3_renderer.cpp
     src/gow3_main_menu_exit.cpp
+    src/gow3_widescreen.cpp
 )
 
 if(WIN32)
