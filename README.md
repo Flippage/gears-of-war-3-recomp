@@ -216,9 +216,9 @@ the game, dumped from their own disc.
 
 ## Keyboard and mouse
 
-Turn on **Keyboard & Mouse Input** and **Mouse Look & Aim** on the PC Options menu's Controls page (or
-`mnk_mode = true` and `mnk_mouse = true` in `gow3.toml`), then click the game window to capture the
-mouse. The mouse goes into the game's own PC mouse axes (Unreal Engine 3's `MouseX` / `MouseY`
+**Keyboard & Mouse Input** and **Mouse Look & Aim** are on by default, next to the controller (PC
+Options menu, Controls page, or `mnk_mode` and `mnk_mouse` in `gow3.toml`). Click the game window to
+capture the mouse. The mouse goes into the game's own PC mouse axes (Unreal Engine 3's `MouseX` / `MouseY`
 bindings, still present in Gears 3's input config), so aiming has no stick dead zone or stick
 acceleration. **Mouse Sensitivity** (`gow3_mouse_scale`) and **Invert Mouse Y**
 (`gow3_mouse_invert_y`) apply at once.

@@ -84,6 +84,7 @@ Both SDK builds apply every patch here in file-name order on top of ReXGlue comm
 | `0080-native-resolves-16-16-float-fill.patch` | Native resolves 16 16 float fill: support exponent bias and scaled half-pixel offset gap fills for `k_16_16_FLOAT` native resolves by creating matching textures with unordered access and using the compute shader. Vulkan and GLSL portions skipped. Ported from Gears of War 2 port patch 0045 by santiquiroz. |
 | `0081-native-surfaces-keep-list.patch` | Gears of War 3: `gpu_native_surfaces_keep`, EDRAM ownership copy kinds the native surfaces mode keeps on top of its own rule (`source->dest` as the NATIVESURF log prints them, `C*` / `D*` / `*` wildcards). For finding the copies a game needs. |
 | `0082-native-surfaces-keep-depth-to-color.patch` | Gears of War 3: native surfaces keep depth to colour copies (Gears 3 reads scene depth back through colour surfaces at the same EDRAM base; dropped, character lighting went dark). |
+| `0083-mnk-on-by-default.patch` | Gears of War 3: keyboard and mouse (`mnk_mode`, `mnk_mouse`) on by default, alongside the controller. |
 
 ## Working on a patch
 

@@ -417,7 +417,7 @@ std::vector<PageSpec> BuildCatalog() {
               Apply::kNow,
               {"Keyboard & Mouse Input"},
               {"Enables keyboard and mouse controls in addition to a controller."},
-              "false",
+              "true",
               {},
           },
           {
@@ -427,7 +427,7 @@ std::vector<PageSpec> BuildCatalog() {
               Apply::kNow,
               {"Mouse Look & Aim"},
               {"Captures the mouse when the game window is focused and uses it to look and aim."},
-              "false",
+              "true",
               {},
           },
           {

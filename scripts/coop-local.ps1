@@ -72,6 +72,7 @@ foreach ($i in 1, 2) {
         '--gow2_temporal=false', '--gow2_upscaler=off'
     )
     if ($i -eq 2 -and -not $P2Controller) { $gameArgs += '--input_backend=xinput', '--mnk_mode=true' }
+    else { $gameArgs += '--mnk_mode=false' }  # on by default; the controller players don't take keys
     $p = Start-Process -FilePath $Exe -ArgumentList $gameArgs -WorkingDirectory (Split-Path $Exe) -PassThru
     $ids += $p.Id
     Write-Host "Player $i started (pid $($p.Id)), data in $dir"

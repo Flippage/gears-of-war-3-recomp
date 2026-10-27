@@ -1,0 +1,18 @@
+Gears of War 3: keyboard and mouse on by default (mnk_mode and mnk_mouse), so a new player can use
+the keyboard and mouse without changing a setting first. A controller still works alongside them.
+
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index 2498e7f..765fc69 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -24,8 +24,8 @@
+ #include <cstring>
+ #include <string_view>
+ 
+-REXCVAR_DEFINE_BOOL(mnk_mode, false, "Input", "Enable keyboard/mouse controller emulation");
+-REXCVAR_DEFINE_BOOL(mnk_mouse, false, "Input",
++REXCVAR_DEFINE_BOOL(mnk_mode, true, "Input", "Enable keyboard/mouse controller emulation");
++REXCVAR_DEFINE_BOOL(mnk_mouse, true, "Input",
+                     "Use the mouse for the right stick. Off means the right stick comes "
+                     "from the keybind_rstick_* keys only");
+ REXCVAR_DEFINE_DOUBLE(mnk_sensitivity, 1.0, "Input", "Mouse sensitivity for right stick")
