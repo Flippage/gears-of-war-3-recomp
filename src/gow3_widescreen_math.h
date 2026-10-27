@@ -16,7 +16,14 @@ constexpr int kOriginalWidth = 1280;    // what the game builds at 16:9
 constexpr int kTileWidth = 80;          // an EDRAM tile at 32 bits per pixel is 80 pixels wide
 constexpr double kAutoMinAspect = 1.85; // above 16:9 (1.78) with room for 16:9.5 panels
 constexpr int kMinWidth = 960;
-constexpr int kMaxWidth = 1680;         // 21:9; scene colour and depth then use 9.5 of the 10 MB of EDRAM
+// The widest back buffer for the EDRAM a renderer emulates. Gears 3's frame layout at 720 lines: scene
+// depth from tile 0, scene colour after it (each width / 80 * 45 tiles), then the 1120x1120 shadow
+// depth map (980 tiles) after the colour; the half-size post-process targets stay below that.
+// The RTV path has the console's 2048 tiles: no wider than the game's own 1280 (at 1680 the
+// post-process targets would wrap onto the scene depth). Native surfaces and ROV have 4096 virtual
+// tiles: 2560 (32:9) reaches about tile 3860.
+constexpr int kMaxWidthConsoleEdram = 1280;
+constexpr int kMaxWidthVirtualEdram = 2560;
 
 // "off", "", "0", "false" -> 0; "auto" -> display_aspect when it is wider than 16:9, else 0; "21:9" or "2.39" -> that
 // aspect. Anything outside 1.2 .. 4 names no widescreen (0).
@@ -36,13 +43,13 @@ inline double ParseAspect(const std::string& text, double display_aspect) {
   return (a >= 1.2 && a <= 4.0) ? a : 0.0;
 }
 
-// The back buffer width for an aspect at the given height: a multiple of 80 between 960 and 1680, or 0
-// when it is what the game builds anyway (1280 at 720 lines) or the aspect is 0.
-inline int BackBufferWidth(double aspect, int height) {
+// The back buffer width for an aspect at the given height: a multiple of 80 between 960 and max_width,
+// or 0 when it is what the game builds anyway (1280 at 720 lines) or the aspect is 0.
+inline int BackBufferWidth(double aspect, int height, int max_width) {
   if (aspect <= 0.0) return 0;
   int w = int(std::lround(aspect * height / double(kTileWidth))) * kTileWidth;
   if (w < kMinWidth) w = kMinWidth;
-  if (w > kMaxWidth) w = kMaxWidth;
+  if (w > max_width) w = max_width;
   return (w == kOriginalWidth && height == 720) ? 0 : w;
 }
 

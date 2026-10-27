@@ -24,6 +24,8 @@ REXCVAR_DEFINE_STRING(gow3_widescreen, "auto", "Display",
                       "field of view is widened to keep the vertical view. Takes effect on the next start.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DECLARE(std::string, gow3_renderer);
+
 REXCVAR_DEFINE_INT32(gow3_fov, 80, "Display",
                      "Player camera field of view (FOV) in degrees. 80 is default console FOV. "
                      "Higher values (up to 100) widen your peripheral vision. Takes effect immediately.");
@@ -59,7 +61,15 @@ int WidescreenBackBufferHeight() {
 
 int WidescreenBackBufferWidth() {
   static const int width = [] {
-    return widescreen::BackBufferWidth(WidescreenAspect(), WidescreenBackBufferHeight());
+    // Wider than 16:9 needs the 4096-tile EDRAM of the native and ROV renderers.
+    const bool console_edram = REXCVAR_GET(gow3_renderer) == "rtv";
+    const int max_width =
+        console_edram ? widescreen::kMaxWidthConsoleEdram : widescreen::kMaxWidthVirtualEdram;
+    if (console_edram && WidescreenAspect() > 16.0 / 9.0 + 0.01) {
+      REXLOG_INFO("WIDESCREEN off: wider than 16:9 needs the Native or ROV renderer (RTV has the "
+                  "console's 10 MB of EDRAM)");
+    }
+    return widescreen::BackBufferWidth(WidescreenAspect(), WidescreenBackBufferHeight(), max_width);
   }();
   return width;
 }

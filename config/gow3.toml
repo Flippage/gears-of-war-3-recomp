@@ -74,8 +74,8 @@ execute_unclipped_draw_vs_on_cpu = true
 gow3_main_menu_exit = true
 
 # ---------- Display & Camera (Configurable in F10 options menu) ----------
-# Ultrawide support: auto (on when display > 16:9), off, or an aspect (21:9, 16:10). The widest the game
-# can render is 21:9 (1680x720 fills the Xbox 360's 10 MB of EDRAM), so 32:9 displays get 21:9 with bars.
+# Ultrawide support: auto (on when display > 16:9), off, or an aspect (21:9, 32:9, 16:10). Wider than
+# 16:9 needs the Native or ROV renderer (their emulated EDRAM is twice the Xbox 360's 10 MB); up to 32:9.
 gow3_widescreen = "auto"
 # Camera FOV in degrees (80 is default console FOV; range 65 to 100).
 gow3_fov = 80
