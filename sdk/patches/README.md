@@ -89,6 +89,7 @@ Both SDK builds apply every patch here in file-name order on top of ReXGlue comm
 | `0085-texpack-prompt-atlas-log.patch` | Gears of War 3: texture pack log lines for textures of the button prompt atlases' size and format (512x512 and 256x256 DXT4/5): replaced, or why not. |
 | `0086-texpack-dxt-in-gpu-written-memory.patch` | Gears of War 3: the texture pack hashes block-compressed textures even in memory still flagged GPU-written (resolves cannot write DXT), so the prompt atlases keep their replacement after checkpoint reloads. |
 | `0088-no-scaled-resolve-for-compressed.patch` | Gears of War 3: block-compressed textures are never taken as scaled resolves (resolves cannot write DXT). As one, a prompt atlas loaded into memory that was a resolve destination skipped the texture pack at 2x. |
+| `0089-upscale-hud-separate.patch` | Gears of War 3: `gow2_hud_separate` (and `gow2_hud_final_ps`): the upscaler takes a copy of the frame made just before the first HUD draw (after the last full-screen pass), converted like the frame's resolve to the screen (red/blue swap, exponent bias); the HUD is then added on top of the upscaled image. Frames without the copy use `gow2_ui_mask`. |
 
 ## Working on a patch
 

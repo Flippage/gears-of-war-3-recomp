@@ -51,7 +51,8 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
       texture streaming pool, and optional AO / motion blur / bloom / lens flares / depth of field /
       post-processing / shadow cuts toggles (off by default: the game runs well with its original look)
 - [x] DLSS temporal upscaling calibrated for Gears 3 (camera, depth convention, camera cuts), with
-      the HUD, popups, subtitles and chapter titles shown untouched by the upscaler; 2x internal
+      the HUD, popups, subtitles and chapter titles kept out of the upscaler (it upscales the frame
+      as it was before the HUD, then the HUD is added on top); 2x internal
       resolution (2560x1440) renders correctly and runs DLSS as DLAA
 - [x] Faces render cleanly in in-engine cutscenes (the black blotches are fixed, see
       [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md))
@@ -191,7 +192,8 @@ as `--name=value`.
 | `gow3_texture_pool_mb` | 196 | Texture streaming pool (the game's own is 145) |
 | `readback_memexport` | off | CPU readback of memexport (on = long load stalls) |
 | `gow2_temporal`, `gow2_upscaler` | off | Temporal upscaling: set `gow2_temporal = true` and `gow2_upscaler = "dlss"` (NVIDIA RTX), `"fsr4"`, `"fsr3"` or `"auto"` |
-| `gow2_ui_mask` | on | Keeps the upscaler from warping the HUD and subtitles |
+| `gow2_hud_separate` | on | The upscaler takes the frame before the HUD; the HUD is added on top afterwards |
+| `gow2_ui_mask` | on | Keeps the upscaler from warping the HUD on frames without that copy |
 
 ## Co-op
 
