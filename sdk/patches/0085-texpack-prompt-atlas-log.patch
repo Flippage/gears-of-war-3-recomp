@@ -1,0 +1,88 @@
+Gears of War 3: texture pack log lines for textures of the button prompt atlases' size and format
+(512x512 and 256x256 DXT4/5): replaced, or why not (GPU-written memory, new content without a
+file, no usable file). For prompts that go back to the Xbox 360 glyphs after checkpoint reloads.
+
+diff --git a/src/graphics/d3d12/texture_cache.cpp b/src/graphics/d3d12/texture_cache.cpp
+index 4389001..e4c4add 100644
+--- a/src/graphics/d3d12/texture_cache.cpp
++++ b/src/graphics/d3d12/texture_cache.cpp
+@@ -30,6 +30,7 @@
+ #include <rex/graphics/pipeline/texture/info.h>
+ #include <rex/graphics/pipeline/texture/util.h>
+ #include <rex/graphics/xenos.h>
++#include <atomic>
+ #include <rex/logging.h>
+ #include <rex/perf/counter.h>
+ #include <rex/math.h>
+@@ -2070,6 +2071,25 @@ std::unique_ptr<TextureCache::Texture> D3D12TextureCache::CreateTexture(TextureK
+   return std::unique_ptr<Texture>(new D3D12Texture(*this, key, resource.Get(), resource_state));
+ }
+ 
++namespace {
++// Gears of War 3: what happens to textures of the button prompt atlases' size and format (512x512
++// and 256x256 DXT4/5) when they are loaded, to see why a replacement is not applied (capped).
++void LogPromptSizedTexture(xenos::TextureFormat format, uint32_t w, uint32_t h,
++                           uint32_t base_address, const char* what, uint64_t hash) {
++  static std::atomic<int> count{0};
++  if (format != xenos::TextureFormat::k_DXT4_5) {
++    return;
++  }
++  if (!((w == 512 && h == 512) || (w == 256 && h == 256))) {
++    return;
++  }
++  if (count.fetch_add(1) >= 400) {
++    return;
++  }
++  REXLOG_INFO("[texpack] {}x{} at {:08X}: {} (hash {:016x})", w, h, base_address, what, hash);
++}
++}  // namespace
++
+ void D3D12TextureCache::MaybeUpdateReplacement(D3D12Texture& texture) {
+   if (!texture_replacement_) {
+     return;
+@@ -2092,6 +2112,8 @@ void D3D12TextureCache::MaybeUpdateReplacement(D3D12Texture& texture) {
+   // after a level, when the menu loaded them back into a reused slot. While a pack has files,
+   // dynamic textures are still hashed, and replaced when their content has a file.
+   if (texture.is_dynamic_content() && !texture_replacement_->HasAnyReplacementFiles()) {
++    LogPromptSizedTexture(key.format, key.GetWidth(), key.GetHeight(),
++                          uint32_t(key.base_page) << 12, "dynamic content, no pack files", 0);
+     return;
+   }
+   uint32_t base_size = texture.GetGuestBaseSize();
+@@ -2133,6 +2155,12 @@ void D3D12TextureCache::MaybeUpdateReplacement(D3D12Texture& texture) {
+           : nullptr;
+   uint64_t hash = 0;
+   if (!texture_replacement_->HashGuest(desc, base_bytes, mips_bytes, gpu_written, &hash)) {
++    LogPromptSizedTexture(key.format, key.GetWidth(), key.GetHeight(), base_address,
++                          gpu_written ? (texture.has_replacement()
++                                             ? "GPU-written memory, not hashed, replacement dropped"
++                                             : "GPU-written memory, not hashed")
++                                      : "not hashed",
++                          0);
+     if (texture.has_replacement()) {
+       texture.ClearReplacement();
+     }
+@@ -2140,6 +2168,7 @@ void D3D12TextureCache::MaybeUpdateReplacement(D3D12Texture& texture) {
+   }
+   if (!texture.NoteContentHash(hash) && !texture_replacement_->HasReplacementFile(hash)) {
+     if (texture.has_replacement()) {
++      LogPromptSizedTexture(key.format, key.GetWidth(), key.GetHeight(), base_address, "new content has no file, replacement dropped", hash);
+       texture.ClearReplacement();
+     }
+     return;
+@@ -2156,6 +2185,7 @@ void D3D12TextureCache::MaybeUpdateReplacement(D3D12Texture& texture) {
+                                              GetMaxHostTextureWidthHeight(key.dimension),
+                                              provider.AreUnalignedBlockTexturesSupported(),
+                                              &image)) {
++    LogPromptSizedTexture(key.format, key.GetWidth(), key.GetHeight(), base_address, "no usable file", hash);
+     if (texture.has_replacement()) {
+       texture.ClearReplacement();
+     }
+@@ -2197,6 +2227,7 @@ void D3D12TextureCache::MaybeUpdateReplacement(D3D12Texture& texture) {
+   command_processor_.SubmitBarriers();
+   texture.SetReplacement(replacement_resource.Get(), image->format, image->mip_levels, hash);
+   texture.set_replacement_epoch(texture_replacement_->variant_epoch());
++  LogPromptSizedTexture(key.format, key.GetWidth(), key.GetHeight(), base_address, "replaced", hash);
+ }
+ 
+ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base,

@@ -1,0 +1,24 @@
+Gears of War 3: block-compressed textures are never taken as scaled resolves. Resolves cannot write
+DXT, so such a texture in memory that was a resolve destination earlier holds data the CPU loaded.
+As a scaled resolve it skipped the texture pack: at 2x the button prompt atlases went back to the
+original Xbox 360 glyphs after checkpoint reloads.
+
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index b5bb8f8..03e6ac9 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -1076,7 +1076,13 @@ void TextureCache::DestroyAllTextures(bool from_destructor) {
+ 
+ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
+   // Check if the texture is a scaled resolve texture.
+-  if (IsDrawResolutionScaled() && key.tiled && IsScaledResolveSupportedForFormat(key)) {
++  // Gears of War 3: never for block-compressed formats - resolves cannot write them, so such a
++  // texture holds data the CPU loaded into memory that was a resolve destination earlier. Taken as
++  // a scaled resolve it skipped the texture pack (the button prompt atlases went back to the
++  // original glyphs after checkpoint reloads at 2x).
++  if (IsDrawResolutionScaled() && key.tiled &&
++      FormatInfo::Get(key.format)->type != FormatType::kCompressed &&
++      IsScaledResolveSupportedForFormat(key)) {
+     texture_util::TextureGuestLayout scaled_resolve_guest_layout = key.GetGuestLayout();
+     if ((scaled_resolve_guest_layout.base.level_data_extent_bytes &&
+          IsRangeScaledResolved(key.base_page << 12,

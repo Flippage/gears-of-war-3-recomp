@@ -86,6 +86,9 @@ Both SDK builds apply every patch here in file-name order on top of ReXGlue comm
 | `0082-native-surfaces-keep-depth-to-color.patch` | Gears of War 3: native surfaces keep depth to colour copies (Gears 3 reads scene depth back through colour surfaces at the same EDRAM base; dropped, character lighting went dark). |
 | `0083-mnk-on-by-default.patch` | Gears of War 3: keyboard and mouse (`mnk_mode`, `mnk_mouse`) on by default, alongside the controller. |
 | `0087-cutscene-grading-table-pixel-center.patch` | Gears of War 3: green colours in in-engine cutscenes at 2x. Cutscenes build the colour grading table with another pixel shader (`65DF74D4BE69FC68`, computed rather than sampled), which joins `5FD384E4DE20CAC8` in the `gpu_guest_pixel_center_ps` default. |
+| `0085-texpack-prompt-atlas-log.patch` | Gears of War 3: texture pack log lines for textures of the button prompt atlases' size and format (512x512 and 256x256 DXT4/5): replaced, or why not. |
+| `0086-texpack-dxt-in-gpu-written-memory.patch` | Gears of War 3: the texture pack hashes block-compressed textures even in memory still flagged GPU-written (resolves cannot write DXT), so the prompt atlases keep their replacement after checkpoint reloads. |
+| `0088-no-scaled-resolve-for-compressed.patch` | Gears of War 3: block-compressed textures are never taken as scaled resolves (resolves cannot write DXT). As one, a prompt atlas loaded into memory that was a resolve destination skipped the texture pack at 2x. |
 
 ## Working on a patch
 

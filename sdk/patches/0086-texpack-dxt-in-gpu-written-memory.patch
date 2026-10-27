@@ -1,0 +1,46 @@
+Gears of War 3: the texture pack hashes block-compressed (DXT) textures even in memory still flagged
+GPU-written. Resolves cannot write DXT, so that memory holds CPU-loaded data; after checkpoint
+reloads the game streams its button prompt atlases into such memory, and the prompts went back to
+the original Xbox 360 glyphs.
+
+diff --git a/src/graphics/d3d12/texture_replacement.cpp b/src/graphics/d3d12/texture_replacement.cpp
+index 7b8f34b..64e8bf3 100644
+--- a/src/graphics/d3d12/texture_replacement.cpp
++++ b/src/graphics/d3d12/texture_replacement.cpp
+@@ -245,6 +245,23 @@ bool IsDumpableGuest(xenos::TextureFormat format) {
+   return DumpDxgiForGuest(format) != DXGI_FORMAT_UNKNOWN;
+ }
+ 
++// Block-compressed guest formats: the GPU never writes them (resolves cannot output DXT), so their
++// memory holds data the CPU loaded even where it is still flagged GPU-written from earlier use.
++bool IsBlockCompressedGuest(xenos::TextureFormat format) {
++  switch (format) {
++    case xenos::TextureFormat::k_DXT1:
++    case xenos::TextureFormat::k_DXT2_3:
++    case xenos::TextureFormat::k_DXT4_5:
++    case xenos::TextureFormat::k_DXN:
++    case xenos::TextureFormat::k_DXT3A:
++    case xenos::TextureFormat::k_DXT5A:
++    case xenos::TextureFormat::k_CTX1:
++      return true;
++    default:
++      return false;
++  }
++}
++
+ // Conservative guest allowlist for replacement. Depth, YUV/video, MPEG,
+ // interlaced, EDRAM and integer/expand families sample differently enough
+ // from plain color data that a static DDS would corrupt them.
+@@ -470,7 +487,11 @@ bool TextureReplacementManager::HashGuest(const GuestTextureDesc& desc, const ui
+   if (!want_dump && !want_replace) {
+     return false;
+   }
+-  if (desc.scaled_resolve || gpu_written || desc.force_3d_tiling) {
++  // Gears of War 3: block-compressed textures in memory still flagged GPU-written are hashed as
++  // usual. After checkpoint reloads the game streams its button prompt atlases into such memory,
++  // and they went back to the original glyphs.
++  if (desc.scaled_resolve || desc.force_3d_tiling ||
++      (gpu_written && !IsBlockCompressedGuest(desc.format))) {
+     return false;
+   }
+   if (desc.dimension != xenos::DataDimension::k2DOrStacked || desc.depth_or_array != 1) {
