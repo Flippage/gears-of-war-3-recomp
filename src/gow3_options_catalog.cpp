@@ -4,6 +4,8 @@
 
 #include "gow3_options_catalog.h"
 
+#include "gow3_language.h"
+
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -177,6 +179,33 @@ std::vector<PageSpec> BuildCatalog() {
               100.0,
               1.0,
               "°",
+          },
+          {
+              "gow3_language",
+              Page::kDisplay,
+              Control::kChoice,
+              Apply::kRestart,
+              {"Game Language"},
+              {"Text and subtitles, and speech where your copy of the game has it (otherwise English speech). Only the languages your copy contains are listed. Automatic follows Windows' display language. Takes effect on next start."},
+              "auto",
+              {
+                  {"auto", {"Automatic (Windows Language)"}},
+                  {"INT", {"English"}},
+                  {"FRA", {"French"}},
+                  {"DEU", {"German"}},
+                  {"ITA", {"Italian"}},
+                  {"ESN", {"Spanish (Spain)"}},
+                  {"ESM", {"Spanish (Latin America)"}},
+                  {"PTB", {"Portuguese (Brazil)"}},
+                  {"POL", {"Polish"}},
+                  {"RUS", {"Russian"}},
+                  {"CZE", {"Czech"}},
+                  {"HUN", {"Hungarian"}},
+                  {"JPN", {"Japanese"}},
+                  {"KOR", {"Korean"}},
+                  {"CHN", {"Chinese"}},
+                  {"CHT", {"Chinese (Traditional)"}},
+              },
           },
       },
   });
@@ -710,6 +739,16 @@ std::vector<PageSpec> BuildCatalog() {
           },
       },
   });
+
+  // Game Language lists only the languages this copy of the game has (gow3_language.cpp).
+  for (auto& page : pages) {
+    for (auto& row : page.rows) {
+      if (std::string_view(row.cvar) != "gow3_language") continue;
+      std::erase_if(row.choices, [](const Choice& c) {
+        return std::string_view(c.value) != "auto" && !GameHasLanguage(c.value);
+      });
+    }
+  }
 
   // Release builds have no DLSS (built with -NoDlss, without the DLSS runtime DLL): the choice is
   // only offered when that DLL sits next to the exe, as a build from source puts it there.

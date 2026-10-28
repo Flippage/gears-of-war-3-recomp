@@ -31,6 +31,7 @@
 #include "gow3_renderer.h"
 #include "gow3_main_menu_exit.h"
 #include "gow3_widescreen.h"
+#include "gow3_language.h"
 
 class Gow3App : public rex::ReXApp {
  public:
@@ -48,6 +49,8 @@ class Gow3App : public rex::ReXApp {
     rex::glue::options_actions::WaitForPreviousInstance();
     config.gpu_plugin = "xenos";
     rex::glue::ApplyRendererChoice();
+    // Game language: the console language / region the kernel reports, from gow3_language.
+    rex::glue::PrepareLanguage(game_data_root());
     // Enable runtime texture replacement for button prompts.
     rex::glue::PrepareButtonGlyphs();
     // Guest content names are raw bytes; the runtime's UTF-8 decoder throws on a bad lead byte.

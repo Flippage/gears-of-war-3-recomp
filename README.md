@@ -60,6 +60,9 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
 - [x] Dynamic on-screen button prompts: replaces original round Xbox 360 buttons with clean Kenney Input Prompts (Xbox, PlayStation, or Keyboard & Mouse matching player keybindings), switching on the fly in Auto mode.
       Covers menus, the HUD and chainsaw duels, and stays replaced after checkpoint reloads and on the main menu
 - [x] Exit Game on the main menu, in place of the defunct Xbox LIVE Marketplace entry (`gow3_main_menu_exit`)
+- [x] Game language in PC Options -> Display (`gow3_language`): Automatic (Windows' display language)
+      or any language your copy of the game contains (text and subtitles; speech too where the disc
+      has it)
 - [x] Ultrawide up to 32:9 with a wider view instead of side bars (Hor+, `gow3_widescreen`, automatic
       on wide displays; needs the Native or ROV renderer, whose emulated render memory is twice the
       Xbox 360's 10 MB), and a field of view slider, 65-100 degrees (`gow3_fov`), both in
@@ -205,6 +208,7 @@ as `--name=value`.
 | `gow3_fov` | 80 | Field of view in degrees, 65-100 |
 | `gow2_dlss_preset` | default | DLSS model: `default`, `k`, `j`, `m`, `l` (DLSS builds only) |
 | `gow3_main_menu_exit` | on | Exit Game on the main menu |
+| `gow3_language` | auto | Game language: `auto` (Windows' display language) or a code your game has (`INT`, `FRA`, `RUS`, `PTB`, `POL`, `CZE`, `HUN`, `KOR`, `CHN`, ...); restart |
 | `gow2_hud_separate` | on | The upscaler takes the frame before the HUD; the HUD is added on top afterwards |
 | `gow2_ui_mask` | off | The old HUD mask for frames without that copy (it let parts of the scene fall back to the raw frame) |
 

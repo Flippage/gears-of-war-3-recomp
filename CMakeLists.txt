@@ -34,6 +34,7 @@ set(GOW3_SOURCES
     src/gow3_renderer.cpp
     src/gow3_main_menu_exit.cpp
     src/gow3_widescreen.cpp
+    src/gow3_language.cpp
 )
 
 if(WIN32)
