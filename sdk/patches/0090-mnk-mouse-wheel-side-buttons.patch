@@ -1,0 +1,244 @@
+Gears of War 3: mouse side buttons and wheel in the keyboard/mouse binds, and mnk_wheel_weapon_cycle.
+The back and forward buttons bind as Mouse4 and Mouse5. A wheel notch is held briefly as WheelUp /
+WheelDown (60 ms, then 40 ms released before the next, at most 4 waiting), so a bind can use it like a
+button. With mnk_wheel_weapon_cycle on, a notch instead presses the next (up) or previous (down) weapon's
+d-pad button, in the order left, right, down, up, starting from the slot a d-pad bind last selected.
+Wheel input is ignored while xam_input_block is set (an overlay is open).
+
+diff --git a/include/rex/input/mnk/mnk_input_driver.h b/include/rex/input/mnk/mnk_input_driver.h
+index c8751b7..10d6fb8 100644
+--- a/include/rex/input/mnk/mnk_input_driver.h
++++ b/include/rex/input/mnk/mnk_input_driver.h
+@@ -15,7 +15,9 @@
+ #include <rex/ui/window_listener.h>
+ 
+ #include <atomic>
++#include <chrono>
+ #include <cstdint>
++#include <deque>
+ #include <mutex>
+ #include <queue>
+ #include <string>
+@@ -50,6 +52,7 @@ class MnkInputDriver final : public InputDriver,
+   void OnMouseDown(rex::ui::MouseEvent& e) override;
+   void OnMouseUp(rex::ui::MouseEvent& e) override;
+   void OnMouseMove(rex::ui::MouseEvent& e) override;
++  void OnMouseWheel(rex::ui::MouseEvent& e) override;
+ 
+   // WindowListener
+   void OnClosing(rex::ui::UIEvent& e) override;
+@@ -60,6 +63,7 @@ class MnkInputDriver final : public InputDriver,
+   bool IsEnabled() const;
+   void SetKeyState(uint16_t vk, bool down);
+   void EnqueueKeystroke(uint16_t vk_pad, bool down);
++  uint16_t UpdateWheelPulse();
+ 
+   // Called from the guest thread. The rest of the capture path stays on the UI
+   // thread, since every Window call in it reaches SDL.
+@@ -104,6 +108,17 @@ class MnkInputDriver final : public InputDriver,
+ 
+   // Packet number incremented on state change
+   uint32_t packet_number_ = 0;
++
++  // Mouse wheel notches, played back one at a time as a short press and release of WheelUp /
++  // WheelDown (or, with mnk_wheel_weapon_cycle, of the next / previous weapon's d-pad button).
++  int32_t wheel_scroll_ = 0;          // scroll not yet a full notch
++  std::deque<int8_t> wheel_notches_;  // +1 up, -1 down
++  int8_t wheel_held_ = 0;             // the notch being held, 0 when none
++  uint16_t wheel_held_button_ = 0;    // the d-pad button it holds when cycling weapons
++  std::chrono::steady_clock::time_point wheel_until_{};
++  // The weapon slot last selected through a d-pad bind or the wheel (0..3: left, right, down, up).
++  int weapon_slot_ = 0;
++  uint16_t prev_dpad_ = 0;
+ };
+ 
+ }  // namespace rex::input::mnk
+diff --git a/include/rex/ui/virtual_key.h b/include/rex/ui/virtual_key.h
+index 3e1b948..7039562 100644
+--- a/include/rex/ui/virtual_key.h
++++ b/include/rex/ui/virtual_key.h
+@@ -39,6 +39,11 @@ enum class VirtualKey : uint16_t {
+   kXButton1 = 0x05,  // Not contiguous with kLButton and kRButton.
+   kXButton2 = 0x06,  // Not contiguous with kLButton and kRButton.
+ 
++  // Not Windows keys: one notch of the mouse wheel, held briefly by the keyboard/mouse driver so a
++  // bind can use it like a button. 0x0E and 0x0F are unassigned in Windows.
++  kWheelUp = 0x0E,
++  kWheelDown = 0x0F,
++
+   kBack = 0x08,  // Backspace.
+   kTab = 0x09,
+ 
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index 765fc69..016ad00 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -36,6 +36,10 @@ REXCVAR_DEFINE_BOOL(mnk_mouse_stick, true, "Input",
+ REXCVAR_DEFINE_BOOL(mnk_keys, true, "Input",
+                     "The keyboard drives the emulated pad buttons and sticks. A game that reads keys "
+                     "itself turns this off (the mouse and its capture are not affected)");
++REXCVAR_DEFINE_BOOL(mnk_wheel_weapon_cycle, false, "Input",
++                    "The mouse wheel selects the next (up) or previous (down) weapon: d-pad left, "
++                    "right, down and up in turn, the slots the keybind_dpad_* keys select. "
++                    "WheelUp / WheelDown binds do nothing while this is on");
+ 
+ REXCVAR_DEFINE_STRING(keybind_a, "Semicolon,Space", "Input/Keybinds/Controller", "A button");
+ REXCVAR_DEFINE_STRING(keybind_b, "Quote,Backspace", "Input/Keybinds/Controller", "B button");
+@@ -72,6 +76,16 @@ namespace {
+ // A single device, so its handle is a constant.
+ constexpr rex::input::DeviceId kMnkDevice = static_cast<rex::input::DeviceId>(0x4D4E4B00);
+ 
++// A wheel notch is held this long, then released for kWheelGap before the next one, so a game that
++// reads the pad once per frame sees each one as a separate press. At most kMaxWheelNotches wait.
++constexpr auto kWheelPress = std::chrono::milliseconds(60);
++constexpr auto kWheelGap = std::chrono::milliseconds(40);
++constexpr size_t kMaxWheelNotches = 4;
++
++// The weapon slots in wheel order: d-pad left, right, down, up.
++constexpr uint16_t kWeaponSlotButtons[4] = {X_INPUT_GAMEPAD_DPAD_LEFT, X_INPUT_GAMEPAD_DPAD_RIGHT,
++                                            X_INPUT_GAMEPAD_DPAD_DOWN, X_INPUT_GAMEPAD_DPAD_UP};
++
+ // Bind values are a comma-separated list of alternatives, each optionally
+ // carrying modifier prefixes: "Q,I" or "Shift+W". Modifier matching is exact,
+ // so "Up" stays silent while Shift is held and "Shift+Up" stays silent without
+@@ -284,6 +298,8 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+ 
+   std::lock_guard lock(state_mutex_);
+ 
++  const uint16_t wheel_button = UpdateWheelPulse();
++
+   // With mnk_keys off the keyboard reads as nothing pressed (the mouse is handled below).
+   static const bool kNoKeys[256] = {};
+   const bool(&kd)[256] = REXCVAR_GET(mnk_keys) ? key_down_ : kNoKeys;
+@@ -318,6 +334,17 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+     buttons |= X_INPUT_GAMEPAD_DPAD_LEFT;
+   if (IsBindPressed(kd, REXCVAR_GET(keybind_dpad_right)))
+     buttons |= X_INPUT_GAMEPAD_DPAD_RIGHT;
++  // A d-pad bind pressed selects that weapon slot, so the wheel continues from it.
++  const uint16_t dpad = buttons & (X_INPUT_GAMEPAD_DPAD_UP | X_INPUT_GAMEPAD_DPAD_DOWN |
++                                   X_INPUT_GAMEPAD_DPAD_LEFT | X_INPUT_GAMEPAD_DPAD_RIGHT);
++  const uint16_t dpad_pressed = dpad & ~prev_dpad_;
++  prev_dpad_ = dpad;
++  for (int slot = 0; slot < 4; ++slot) {
++    if (dpad_pressed & kWeaponSlotButtons[slot]) {
++      weapon_slot_ = slot;
++    }
++  }
++  buttons |= wheel_button;
+ 
+   uint8_t lt = IsBindPressed(kd, REXCVAR_GET(keybind_left_trigger)) ? 0xFF : 0;
+   uint8_t rt = IsBindPressed(kd, REXCVAR_GET(keybind_right_trigger)) ? 0xFF : 0;
+@@ -494,6 +521,37 @@ void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
+   }
+ }
+ 
++// Advances the wheel playback: ends the held notch after kWheelPress, starts the next waiting one
++// after kWheelGap. Returns the d-pad button the held notch presses (0 unless cycling weapons).
++uint16_t MnkInputDriver::UpdateWheelPulse() {
++  const auto now = std::chrono::steady_clock::now();
++  if (wheel_held_ != 0) {
++    if (now < wheel_until_) {
++      return wheel_held_button_;
++    }
++    key_down_[static_cast<uint16_t>(VirtualKey::kWheelUp)] = false;
++    key_down_[static_cast<uint16_t>(VirtualKey::kWheelDown)] = false;
++    wheel_held_ = 0;
++    wheel_held_button_ = 0;
++    wheel_until_ = now + kWheelGap;
++    return 0;
++  }
++  if (now < wheel_until_ || wheel_notches_.empty()) {
++    return 0;
++  }
++  wheel_held_ = wheel_notches_.front();
++  wheel_notches_.pop_front();
++  wheel_until_ = now + kWheelPress;
++  if (REXCVAR_GET(mnk_wheel_weapon_cycle)) {
++    weapon_slot_ = (weapon_slot_ + (wheel_held_ > 0 ? 1 : 3)) % 4;
++    wheel_held_button_ = kWeaponSlotButtons[weapon_slot_];
++  } else {
++    key_down_[static_cast<uint16_t>(wheel_held_ > 0 ? VirtualKey::kWheelUp
++                                                    : VirtualKey::kWheelDown)] = true;
++  }
++  return wheel_held_button_;
++}
++
+ void MnkInputDriver::SetKeyState(uint16_t vk, bool down) {
+   if (vk < 256) {
+     key_down_[vk] = down;
+@@ -530,6 +588,12 @@ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
+     case rex::ui::MouseEvent::Button::kMiddle:
+       SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), true);
+       break;
++    case rex::ui::MouseEvent::Button::kX1:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton1), true);
++      break;
++    case rex::ui::MouseEvent::Button::kX2:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton2), true);
++      break;
+     default:
+       break;
+   }
+@@ -549,6 +613,12 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
+     case rex::ui::MouseEvent::Button::kMiddle:
+       SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), false);
+       break;
++    case rex::ui::MouseEvent::Button::kX1:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton1), false);
++      break;
++    case rex::ui::MouseEvent::Button::kX2:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton2), false);
++      break;
+     default:
+       break;
+   }
+@@ -578,6 +648,23 @@ void MnkInputDriver::OnMouseMove(rex::ui::MouseEvent& e) {
+   }
+ }
+ 
++void MnkInputDriver::OnMouseWheel(rex::ui::MouseEvent& e) {
++  // Not while an overlay blocks the game's input, or scrolling it would switch weapons on close.
++  if (!IsEnabled() || !has_focus_ || REXCVAR_GET(xam_input_block))
++    return;
++  std::lock_guard lock(state_mutex_);
++  // A high-resolution wheel reports parts of a notch; they add up to whole ones.
++  constexpr int32_t kNotch = rex::ui::MouseEvent::kScrollPerDetent;
++  wheel_scroll_ += e.scroll_y();
++  while (wheel_scroll_ >= kNotch || wheel_scroll_ <= -kNotch) {
++    const int8_t dir = wheel_scroll_ > 0 ? 1 : -1;
++    wheel_scroll_ -= dir * kNotch;
++    if (wheel_notches_.size() < kMaxWheelNotches) {
++      wheel_notches_.push_back(dir);
++    }
++  }
++}
++
+ void MnkInputDriver::OnLostFocus(rex::ui::UISetupEvent&) {
+   has_focus_ = false;
+   // Withdraw the request too, or an update queued before the focus loss grabs
+@@ -586,6 +673,10 @@ void MnkInputDriver::OnLostFocus(rex::ui::UISetupEvent&) {
+   {
+     std::lock_guard lock(state_mutex_);
+     std::memset(key_down_, 0, sizeof(key_down_));
++    wheel_scroll_ = 0;
++    wheel_notches_.clear();
++    wheel_held_ = 0;
++    wheel_held_button_ = 0;
+     mouse_dx_ = 0.0f;
+     mouse_dy_ = 0.0f;
+   }
+diff --git a/src/ui/keybinds.cpp b/src/ui/keybinds.cpp
+index 9822f3b..5b376f5 100644
+--- a/src/ui/keybinds.cpp
++++ b/src/ui/keybinds.cpp
+@@ -141,6 +141,10 @@ static const std::unordered_map<std::string, VirtualKey> kKeyNames = {
+     {"LMB", VirtualKey::kLButton},
+     {"RMB", VirtualKey::kRButton},
+     {"MMB", VirtualKey::kMButton},
++    {"Mouse4", VirtualKey::kXButton1},  // back
++    {"Mouse5", VirtualKey::kXButton2},  // forward
++    {"WheelUp", VirtualKey::kWheelUp},
++    {"WheelDown", VirtualKey::kWheelDown},
+ };
+ 
+ VirtualKey ParseVirtualKey(std::string_view name) {

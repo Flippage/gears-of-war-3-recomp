@@ -506,6 +506,16 @@ std::vector<PageSpec> BuildCatalog() {
               {},
           },
           {
+              "mnk_wheel_weapon_cycle",
+              Page::kControls,
+              Control::kToggle,
+              Apply::kNow,
+              {"Mouse Wheel Weapon Cycling"},
+              {"Scroll up for the next weapon and down for the previous one, through the four weapon slots (D-pad left, right, down, up). Wheel Up / Wheel Down bindings do nothing while this is on."},
+              "false",
+              {},
+          },
+          {
               "gow3_mouse_scale",
               Page::kControls,
               Control::kSliderFloat,

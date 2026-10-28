@@ -599,6 +599,8 @@ std::filesystem::path FindDirectGlyphFile(const std::filesystem::path& assets_di
       return assets_dir / "keyboard" / "mouse_scroll.png";
     if (lower == "mouse4" || lower == "mouse5" || lower == "mouse_side")
       return assets_dir / "keyboard" / "mouse_side.png";
+    if (lower == "wheelup" || lower == "wheeldown")
+      return assets_dir / "keyboard" / "mouse_scroll.png";
     if (lower == "space") return assets_dir / "keyboard" / "keyboard_space.png";
     if (lower == "shift" || lower == "lshift" || lower == "rshift")
       return assets_dir / "keyboard" / "keyboard_shift.png";

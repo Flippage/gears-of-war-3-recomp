@@ -276,6 +276,10 @@ std::string GetKeyDisplayName(std::string_view key) {
   if (key == "LMB") return "Left Click";
   if (key == "RMB") return "Right Click";
   if (key == "MMB") return "Middle Click";
+  if (key == "Mouse4") return "Mouse Back";
+  if (key == "Mouse5") return "Mouse Forward";
+  if (key == "WheelUp") return "Wheel Up";
+  if (key == "WheelDown") return "Wheel Down";
   return std::string(key);
 }
 
@@ -338,8 +342,17 @@ class OptionsOverlayDialog final : public rex::ui::ImGuiDialog {
         if (fg) {
           GetWindowThreadProcessId(fg, &fg_pid);
         }
-        const std::string key =
+        std::string key =
             fg_pid == GetCurrentProcessId() ? FirstBindableKeyDown() : std::string();
+        // The wheel has no key state: a notch while armed binds WheelUp / WheelDown.
+        if (key.empty() && capture_armed_ && fg_pid == GetCurrentProcessId()) {
+          const float wheel = ImGui::GetIO().MouseWheel;
+          if (wheel > 0.0f) {
+            key = "WheelUp";
+          } else if (wheel < 0.0f) {
+            key = "WheelDown";
+          }
+        }
         if (!capture_armed_) {
           capture_armed_ = key.empty();
         } else if (!key.empty()) {

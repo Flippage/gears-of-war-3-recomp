@@ -31,7 +31,8 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
 - [x] Saving and loading checkpoints, Continue, across game restarts
 - [x] Controller (tested with a DualSense)
 - [x] Keyboard and mouse: native mouse aim through the game's own PC mouse input (no stick dead zone
-      or acceleration); left click fires, right click aims, middle click zooms (see
+      or acceleration); left click fires, right click aims, middle click zooms; the mouse back /
+      forward buttons and the wheel can be bound too, and the wheel can cycle weapons (see
       [Keyboard and mouse](#keyboard-and-mouse))
 - [x] Shader pipelines compiled off the draw thread and cached between runs; models and textures
       no longer pop in late or hitch while streaming
@@ -262,12 +263,15 @@ acceleration. **Mouse Sensitivity** (`gow3_mouse_scale`) and **Invert Mouse Y**
 
 Rebind any of them on the PC Options menu's **Keyboard & Mouse Bindings** page (`F10`). Every action
 has a **Primary** and a **Secondary** slot, shown as key / button icons: click a slot (or select it and
-press Enter / A), then press the key or mouse button; Delete, Backspace or X clears a slot, and
+press Enter / A), then press the key or mouse button, or scroll the mouse wheel; Delete, Backspace or X clears a slot, and
 **Reset Page to Defaults** restores the table above. The **Controller Buttons** page works the same
 way for a controller, with Xbox or PlayStation icons; two buttons can press the same action, and a
 button bound to a new action moves from its old one. `Shift`, `Ctrl` and `Alt` bind like any other
 key. Every binding is also a `keybind_*` setting in `gow3.toml` (key names, comma-separated; `LMB`,
-`RMB`, `MMB` for the mouse buttons), and controller buttons are `pad_map_*`. The game's own
+`RMB`, `MMB`, `Mouse4` (back), `Mouse5` (forward) for the mouse buttons, `WheelUp` / `WheelDown` for one
+notch of the wheel), and controller buttons are `pad_map_*`. **Mouse Wheel Weapon Cycling** (Controls page,
+`mnk_wheel_weapon_cycle`, off by default) makes wheel up / down select the next / previous weapon, in
+the `1` to `4` order, from the one last picked with a weapon key or the wheel. The game's own
 menus are controller-style: use the keys above, the mouse does not point and click there (the
 console menus have no pointer; a known limitation).
 

@@ -91,6 +91,7 @@ Both SDK builds apply every patch here in file-name order on top of ReXGlue comm
 | `0087-cutscene-grading-table-pixel-center.patch` | Gears of War 3: green colours in in-engine cutscenes at 2x. Cutscenes build the colour grading table with another pixel shader (`65DF74D4BE69FC68`, computed rather than sampled), which joins `5FD384E4DE20CAC8` in the `gpu_guest_pixel_center_ps` default. |
 | `0088-no-scaled-resolve-for-compressed.patch` | Gears of War 3: block-compressed textures are never taken as scaled resolves (resolves cannot write DXT). As one, a prompt atlas loaded into memory that was a resolve destination skipped the texture pack at 2x. |
 | `0089-upscale-hud-separate.patch` | Gears of War 3: `gow2_hud_separate` (and `gow2_hud_final_ps`): the upscaler takes a copy of the frame made just before the first HUD draw (after the last full-screen pass), converted like the frame's resolve to the screen (red/blue swap, exponent bias); the HUD is then added on top of the upscaled image. Frames without the copy use `gow2_ui_mask`. |
+| `0090-mnk-mouse-wheel-side-buttons.patch` | Gears of War 3: the mouse back / forward buttons bind as `Mouse4` / `Mouse5`, and each wheel notch is held briefly as `WheelUp` / `WheelDown` so binds can use it. `mnk_wheel_weapon_cycle`: a notch instead presses the next (up) or previous (down) weapon's d-pad button, in the order left, right, down, up, from the slot a d-pad bind last selected. |
 
 ## Working on a patch
 
