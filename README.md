@@ -57,8 +57,8 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
 - [x] Faces render cleanly in in-engine cutscenes (the black blotches are fixed, see
       [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md))
 - [x] In-game PC options menu (`F10` on keyboard or `Back + Start` on a controller)
-- [x] Dynamic on-screen button prompts: replaces original round Xbox 360 buttons with clean Kenney Input Prompts (Xbox, PlayStation, or Keyboard & Mouse matching player keybindings), switching on the fly in Auto mode;
-      menus, the HUD and chainsaw duels, and they stay replaced after checkpoint reloads and on the main menu
+- [x] Dynamic on-screen button prompts: replaces original round Xbox 360 buttons with clean Kenney Input Prompts (Xbox, PlayStation, or Keyboard & Mouse matching player keybindings), switching on the fly in Auto mode.
+      Covers menus, the HUD and chainsaw duels, and stays replaced after checkpoint reloads and on the main menu
 - [x] Exit Game on the main menu, in place of the defunct Xbox LIVE Marketplace entry (`gow3_main_menu_exit`)
 - [x] Ultrawide up to 32:9 with a wider view instead of side bars (Hor+, `gow3_widescreen`, automatic
       on wide displays; needs the Native or ROV renderer, whose emulated render memory is twice the
