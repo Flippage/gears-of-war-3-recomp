@@ -57,17 +57,19 @@ Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0
 - [x] Faces render cleanly in in-engine cutscenes (the black blotches are fixed, see
       [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md))
 - [x] In-game PC options menu (`F10` on keyboard or `Back + Start` on a controller)
-- [x] Dynamic on-screen button prompts: replaces original round Xbox 360 buttons with clean Kenney Input Prompts (Xbox, PlayStation, or Keyboard & Mouse matching player keybindings), switching on the fly in Auto mode
+- [x] Dynamic on-screen button prompts: replaces original round Xbox 360 buttons with clean Kenney Input Prompts (Xbox, PlayStation, or Keyboard & Mouse matching player keybindings), switching on the fly in Auto mode;
+      menus, the HUD and chainsaw duels, and they stay replaced after checkpoint reloads and on the main menu
 - [x] Exit Game on the main menu, in place of the defunct Xbox LIVE Marketplace entry (`gow3_main_menu_exit`)
-- [x] Ultrawide up to 32:9 with a wider view instead of side bars (Hor+, `gow3_widescreen`, automatic on
-      wide displays; needs the Native or ROV renderer, whose emulated render memory is twice the Xbox
-      360's 10 MB)
-      and a field of view slider, 65-100 degrees (`gow3_fov`), in PC Options -> Display
+- [x] Ultrawide up to 32:9 with a wider view instead of side bars (Hor+, `gow3_widescreen`, automatic
+      on wide displays; needs the Native or ROV renderer, whose emulated render memory is twice the
+      Xbox 360's 10 MB), and a field of view slider, 65-100 degrees (`gow3_fov`), both in
+      PC Options -> Display
 - [ ] FSR 3.1 / FSR 4 on AMD cards: built in and calibrated the same way, but untested
 - [x] Two-player campaign co-op over System Link, tested with two instances on one PC
       (see [Co-op](#co-op)); over the internet not yet tested
 - [ ] Full campaign play-through; Horde, Beast and Versus untested
-- [ ] Ultrawide; mouse in the game's own menus; 3x internal resolution (wrong colours)
+- [ ] Mouse in the game's own menus; 3x internal resolution (wrong colours); the main menu and
+      full-screen menu tints at ultrawide (16:9 only)
 
 ## Download
 
@@ -198,6 +200,11 @@ as `--name=value`.
 | `gow3_texture_pool_mb` | 196 | Texture streaming pool (the game's own is 145) |
 | `readback_memexport` | off | CPU readback of memexport (on = long load stalls) |
 | `gow2_temporal`, `gow2_upscaler` | off | Temporal upscaling: set `gow2_temporal = true` and `gow2_upscaler = "dlss"` (NVIDIA RTX), `"fsr4"`, `"fsr3"` or `"auto"` |
+| `gow3_renderer` | native | Renderer: `native` (fastest), `rtv`, `rov` (most exact, slowest); restart |
+| `gow3_widescreen` | auto | Ultrawide: `auto`, `off`, `21:9`, `32:9`, `16:10` (wider than 16:9 needs Native or ROV); restart |
+| `gow3_fov` | 80 | Field of view in degrees, 65-100 |
+| `gow2_dlss_preset` | default | DLSS model: `default`, `k`, `j`, `m`, `l` (DLSS builds only) |
+| `gow3_main_menu_exit` | on | Exit Game on the main menu |
 | `gow2_hud_separate` | on | The upscaler takes the frame before the HUD; the HUD is added on top afterwards |
 | `gow2_ui_mask` | off | The old HUD mask for frames without that copy (it let parts of the scene fall back to the raw frame) |
 

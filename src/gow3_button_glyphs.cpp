@@ -50,7 +50,9 @@ constexpr uint64_t kAtlas256Hash = UINT64_C(0xae5c68a9d7f7398c);
 // Returning to the main menu loads the 256x256 atlas again, laid out one 4 KB page earlier, which
 // hashes differently (the same blocks: compared from dumps). Its replacement is the same image.
 constexpr uint64_t kAtlas256MenuHash = UINT64_C(0x2587228e1f70bb5f);
-constexpr const char kAtlasDumpHashes[] = "a000624a174e08ba,ae5c68a9d7f7398c";
+// 256x256 melee atlas: chainsaw duel "mash B", LT/RT and Y (found in a dump of a duel).
+constexpr uint64_t kAtlasDuelHash = UINT64_C(0x30d01cc6c7ff5cd3);
+constexpr const char kAtlasDumpHashes[] = "a000624a174e08ba,ae5c68a9d7f7398c,30d01cc6c7ff5cd3";
 
 constexpr size_t kExpectedSize512 = 1398248;
 constexpr size_t kExpectedSize256 = 349672;
@@ -137,6 +139,22 @@ const SpriteDef kSprites256[] = {
     {"RSPress", {82, 162, 107, 188}, {94, 175}, 24},
     {"LSPress", {145, 162, 170, 188}, {157, 175}, 24},
     {"StickMove", {61, 216, 84, 242}, {72, 229}, 24},
+};
+
+// 256x256 melee atlas (chainsaw duels). Each pair is a large and a small frame (the prompt pulses),
+// so these cells are replaced by ReplaceButtonInPlace at each frame's own size: box is the area to
+// look in, center a point inside the button. size 1 marks B and Y, whose box also holds three empty
+// buttons showing where the button sits on an Xbox pad (wrong once rebound): the whole box is
+// cleared, leaving only the new glyph.
+const SpriteDef kSpritesDuel[] = {
+    {"B", {80, 0, 127, 31}, {112, 15}, 1},
+    {"B", {80, 32, 127, 63}, {112, 46}, 1},
+    {"LT", {0, 128, 34, 166}, {17, 147}, 0},
+    {"RT", {50, 131, 80, 163}, {65, 147}, 0},
+    {"LT", {2, 168, 33, 201}, {17, 185}, 0},
+    {"RT", {47, 166, 83, 204}, {65, 185}, 0},
+    {"Y", {2, 203, 38, 250}, {18, 221}, 1},
+    {"Y", {42, 203, 75, 250}, {58, 222}, 1},
 };
 
 struct Image {
@@ -382,6 +400,92 @@ void ClearBox(Image& dst, int x0, int y0, int x1, int y1) {
   }
 }
 
+// The part of an image with any opacity (the glyph images have a transparent margin).
+Image CropToContent(const Image& src) {
+  int x0 = src.width, y0 = src.height, x1 = -1, y1 = -1;
+  for (int y = 0; y < src.height; ++y) {
+    for (int x = 0; x < src.width; ++x) {
+      if (src.rgba[(size_t(y) * src.width + x) * 4 + 3] > 8) {
+        x0 = std::min(x0, x);
+        y0 = std::min(y0, y);
+        x1 = std::max(x1, x);
+        y1 = std::max(y1, y);
+      }
+    }
+  }
+  if (x1 < x0) return src;
+  Image out;
+  out.width = x1 - x0 + 1;
+  out.height = y1 - y0 + 1;
+  out.rgba.resize(size_t(out.width) * out.height * 4);
+  for (int y = 0; y < out.height; ++y) {
+    std::memcpy(&out.rgba[size_t(y) * out.width * 4],
+                &src.rgba[(size_t(y + y0) * src.width + x0) * 4], size_t(out.width) * 4);
+  }
+  return out;
+}
+
+void Blit(Image& dst, const Image& src, int dx, int dy, int dw, int dh);
+
+// Replaces one button of an atlas exactly where and as large as it is drawn: its solid body (alpha
+// over 120, connected to (cx, cy) inside box) and its soft edge and shadow (3 pixels round it) are
+// cleared, and the glyph's visible part is fitted into the body's bounds, centred. Anything further
+// out is left alone, unless clear_box: then everything in box goes.
+void ReplaceButtonInPlace(Image& dst, const Image& glyph, const int box[4], int cx, int cy,
+                          bool clear_box) {
+  const int bx0 = std::clamp(box[0], 0, dst.width - 1), by0 = std::clamp(box[1], 0, dst.height - 1);
+  const int bx1 = std::clamp(box[2], 0, dst.width - 1), by1 = std::clamp(box[3], 0, dst.height - 1);
+  auto alpha = [&](int x, int y) { return dst.rgba[(size_t(y) * dst.width + x) * 4 + 3]; };
+  if (cx < bx0 || cx > bx1 || cy < by0 || cy > by1 || alpha(cx, cy) <= 120) return;
+  std::vector<uint8_t> body(size_t(dst.width) * dst.height, 0);
+  std::vector<std::pair<int, int>> stack{{cx, cy}};
+  body[size_t(cy) * dst.width + cx] = 1;
+  int x0 = cx, y0 = cy, x1 = cx, y1 = cy;
+  while (!stack.empty()) {
+    const auto [x, y] = stack.back();
+    stack.pop_back();
+    x0 = std::min(x0, x);
+    y0 = std::min(y0, y);
+    x1 = std::max(x1, x);
+    y1 = std::max(y1, y);
+    const int nx[4] = {x + 1, x - 1, x, x};
+    const int ny[4] = {y, y, y + 1, y - 1};
+    for (int i = 0; i < 4; ++i) {
+      if (nx[i] < bx0 || nx[i] > bx1 || ny[i] < by0 || ny[i] > by1) continue;
+      uint8_t& seen = body[size_t(ny[i]) * dst.width + nx[i]];
+      if (seen || alpha(nx[i], ny[i]) <= 120) continue;
+      seen = 1;
+      stack.push_back({nx[i], ny[i]});
+    }
+  }
+  constexpr int kEdge = 3;
+  for (int y = std::max(by0, y0 - kEdge); y <= std::min(by1, y1 + kEdge); ++y) {
+    for (int x = std::max(bx0, x0 - kEdge); x <= std::min(bx1, x1 + kEdge); ++x) {
+      bool near_body = false;
+      for (int dy = -kEdge; dy <= kEdge && !near_body; ++dy) {
+        for (int dx = -kEdge; dx <= kEdge && !near_body; ++dx) {
+          const int sx = x + dx, sy = y + dy;
+          if (dx * dx + dy * dy > kEdge * kEdge || sx < 0 || sy < 0 || sx >= dst.width ||
+              sy >= dst.height) {
+            continue;
+          }
+          near_body = body[size_t(sy) * dst.width + sx] != 0;
+        }
+      }
+      if (!near_body) continue;
+      uint8_t* p = &dst.rgba[(size_t(y) * dst.width + x) * 4];
+      p[0] = p[1] = p[2] = p[3] = 0;
+    }
+  }
+  if (clear_box) ClearBox(dst, bx0, by0, bx1, by1);
+  const Image content = CropToContent(glyph);
+  const int bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+  const float scale = std::min(float(bw) / content.width, float(bh) / content.height);
+  const int w = std::max(1, int(std::lround(content.width * scale)));
+  const int h = std::max(1, int(std::lround(content.height * scale)));
+  Blit(dst, content, x0 + (bw - w) / 2, y0 + (bh - h) / 2, w, h);
+}
+
 void Blit(Image& dst, const Image& src, int dx, int dy, int dw, int dh) {
   if (dw <= 0 || dh <= 0 || src.width <= 0 || src.height <= 0) return;
   for (int y = 0; y < dh; ++y) {
@@ -622,6 +726,7 @@ ButtonGlyphWindowListener g_window_listener;
 
 Image g_base512;
 Image g_base256;
+Image g_base_duel;
 
 std::unordered_map<std::string, Image> g_glyph_cache;
 
@@ -669,6 +774,7 @@ std::filesystem::path AssetsDir() {
 // Each is used as soon as it exists, so the menus switch before a level has been loaded.
 bool g_have512 = false;
 bool g_have256 = false;
+bool g_have_duel = false;  // only once a chainsaw duel has been seen
 
 bool LoadBaseIfDumped(bool* have, Image* image, const char* hash, const char* size) {
   if (*have) return false;
@@ -686,11 +792,12 @@ bool LoadBaseIfDumped(bool* have, Image* image, const char* hash, const char* si
 bool LoadNewBases() {
   bool added = LoadBaseIfDumped(&g_have512, &g_base512, "a000624a174e08ba", "512x512");
   added |= LoadBaseIfDumped(&g_have256, &g_base256, "ae5c68a9d7f7398c", "256x256");
+  added |= LoadBaseIfDumped(&g_have_duel, &g_base_duel, "30d01cc6c7ff5cd3", "256x256");
   return added;
 }
 
 bool ComposeVariant(const std::string& variant_dir_name, const std::string& style) {
-  if (!g_have512 && !g_have256) return false;
+  if (!g_have512 && !g_have256 && !g_have_duel) return false;
   const std::filesystem::path assets = AssetsDir();
   const std::filesystem::path out_dir = TitleDir() / variant_dir_name;
 
@@ -718,9 +825,21 @@ bool ComposeVariant(const std::string& variant_dir_name, const std::string& styl
     }
   }
 
-  char name512[32], name256[32];
+  Image comp_duel = g_base_duel;
+  for (const auto& sp : kSpritesDuel) {
+    if (!g_have_duel) break;
+    std::filesystem::path gf = FindGlyphFile(assets, style, sp.button);
+    Image glyph;
+    if (!gf.empty() && LoadPng(gf, &glyph)) {
+      ReplaceButtonInPlace(comp_duel, glyph, sp.box, sp.center[0], sp.center[1], sp.size == 1);
+    }
+  }
+
+  char name512[32], name256[32], name_duel[32];
   std::snprintf(name512, sizeof(name512), "%016llx.dds", static_cast<unsigned long long>(kAtlas512Hash));
   std::snprintf(name256, sizeof(name256), "%016llx.dds", static_cast<unsigned long long>(kAtlas256Hash));
+  std::snprintf(name_duel, sizeof(name_duel), "%016llx.dds",
+                static_cast<unsigned long long>(kAtlasDuelHash));
 
   char name256_menu[32];
   std::snprintf(name256_menu, sizeof(name256_menu), "%016llx.dds",
@@ -729,7 +848,8 @@ bool ComposeVariant(const std::string& variant_dir_name, const std::string& styl
   const bool ok1 = !g_have512 || WriteDds(out_dir / name512, comp512);
   const bool ok2 = !g_have256 || (WriteDds(out_dir / name256, comp256) &&
                                   WriteDds(out_dir / name256_menu, comp256));
-  return ok1 && ok2;
+  const bool ok3 = !g_have_duel || WriteDds(out_dir / name_duel, comp_duel);
+  return ok1 && ok2 && ok3;
 }
 
 bool IsDdsValid(const std::filesystem::path& path, size_t expected_size) {
@@ -749,9 +869,13 @@ void EnsureVariantOnDisk(const std::string& variant_dir_name, const std::string&
   std::snprintf(name256_menu, sizeof(name256_menu), "%016llx.dds",
                 static_cast<unsigned long long>(kAtlas256MenuHash));
   const std::filesystem::path p256_menu = dir / name256_menu;
+  char name_duel[32];
+  std::snprintf(name_duel, sizeof(name_duel), "%016llx.dds",
+                static_cast<unsigned long long>(kAtlasDuelHash));
+  const std::filesystem::path p_duel = dir / name_duel;
   // A variant is composed again when the cell map or any glyph image it uses changes: the stamp
   // holds a layout version plus every cell's box and image file name.
-  std::string want = fmt::format("5|512={}|256={}", g_have512, g_have256);
+  std::string want = fmt::format("9|512={}|256={}|duel={}", g_have512, g_have256, g_have_duel);
   const std::filesystem::path assets = AssetsDir();
   auto add_cells = [&](const auto& sprites) {
     for (const SpriteDef& sp : sprites) {
@@ -761,6 +885,7 @@ void EnsureVariantOnDisk(const std::string& variant_dir_name, const std::string&
   };
   add_cells(kSprites512);
   add_cells(kSprites256);
+  add_cells(kSpritesDuel);
   const std::filesystem::path stamp = dir / "layout.txt";
   std::string have;
   if (FILE* f = std::fopen(stamp.string().c_str(), "rb")) {
@@ -771,7 +896,8 @@ void EnsureVariantOnDisk(const std::string& variant_dir_name, const std::string&
   }
   if (have != want || (g_have512 && !IsDdsValid(p512, kExpectedSize512)) ||
       (g_have256 && (!IsDdsValid(p256, kExpectedSize256) ||
-                     !IsDdsValid(p256_menu, kExpectedSize256)))) {
+                     !IsDdsValid(p256_menu, kExpectedSize256))) ||
+      (g_have_duel && !IsDdsValid(p_duel, kExpectedSize256))) {
     if (ComposeVariant(variant_dir_name, style)) {
       if (FILE* f = std::fopen(stamp.string().c_str(), "wb")) {
         std::fwrite(want.data(), 1, want.size(), f);
@@ -834,8 +960,8 @@ void WorkerThreadFunc() {
       }
       g_base_generation.fetch_add(1, std::memory_order_acq_rel);
       g_variants_ready.store(true, std::memory_order_release);
-      REXLOG_INFO("ButtonGlyphs: variants composed (512x512: {}, 256x256: {})", g_have512,
-                  g_have256);
+      REXLOG_INFO("ButtonGlyphs: variants composed (512x512: {}, 256x256: {}, duel: {})", g_have512,
+                  g_have256, g_have_duel);
     } else if (g_variants_ready.load(std::memory_order_acquire)) {
       // Key binding changes, composed off the input thread into the slot not in use.
       const std::string current_sig = KeyboardSignature();
