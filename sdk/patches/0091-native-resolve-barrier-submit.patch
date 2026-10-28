@@ -1,0 +1,20 @@
+Gears of War 3 (issue #20 investigation): a native resolve's barrier that returns the source render
+target to its previous state is submitted on its own. Batched with the next draw's barrier for the same
+render target, it made two transitions of one subresource in one ResourceBarrier call, which the D3D12
+debug layer reports (message 1008) thousands of times per run. Legal, but the kind of thing drivers
+differ on.
+
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+index a781b3a..c953eec 100644
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -6371,6 +6371,9 @@ void D3D12RenderTargetCache::WriteResolveToTextures(const draw_util::ResolveInfo
+   D3D12TextureCache::NativeResolveWriteCounts counts;
+   texture_cache.WriteNativeResolveToTextures(write, rt_state, counts);
+   command_processor_.PushTransitionBarrier(render_target.resource(), rt_state, rt_state_before);
++  // On its own: otherwise the next draw's barrier for this render target joins the same batch, two
++  // transitions of one subresource in one ResourceBarrier call (D3D12 debug layer warning 1008).
++  command_processor_.SubmitBarriers();
+   render_target.SetResourceState(rt_state_before);
+ 
+   native_resolve_written_ += counts.written;
