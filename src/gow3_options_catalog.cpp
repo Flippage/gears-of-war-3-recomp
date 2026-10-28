@@ -156,7 +156,7 @@ std::vector<PageSpec> BuildCatalog() {
               Control::kChoice,
               Apply::kRestart,
               {"Ultrawide (Aspect Ratio)"},
-              {"Expands the view horizontally (Hor+) for wide monitors instead of side bars, up to 32:9. Wider than 16:9 needs the Native or ROV renderer (RTV has the console's 10 MB of render memory). Automatic turns it on for displays wider than 16:9. Takes effect on next start."},
+              {"Expands the view horizontally (Hor+) for wide monitors instead of side bars, up to 32:9; 16:10, 4:3 and 5:4 keep the width of view and show more above and below. Wider than 16:9 needs the Native or ROV renderer (RTV has the console's 10 MB of render memory). Automatic turns it on for displays wider than 16:9. Takes effect on next start."},
               "auto",
               {
                   {"auto", {"Automatic (Auto-Detect)"}},
@@ -164,6 +164,8 @@ std::vector<PageSpec> BuildCatalog() {
                   {"21:9", {"21:9 (Native / ROV Renderer)"}},
                   {"32:9", {"32:9 (Native / ROV Renderer)"}},
                   {"16:10", {"16:10 (Handheld / Steam Deck)"}},
+                  {"4:3", {"4:3"}},
+                  {"5:4", {"5:4"}},
               },
           },
           {

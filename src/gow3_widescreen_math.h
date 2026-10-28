@@ -15,7 +15,7 @@ namespace rex::glue::widescreen {
 constexpr int kOriginalWidth = 1280;    // what the game builds at 16:9
 constexpr int kTileWidth = 80;          // an EDRAM tile at 32 bits per pixel is 80 pixels wide
 constexpr double kAutoMinAspect = 1.85; // above 16:9 (1.78) with room for 16:9.5 panels
-constexpr int kMinWidth = 960;
+constexpr int kMinWidth = 880;  // 5:4 at 720 lines (900) rounds to 880
 // The widest back buffer for the EDRAM a renderer emulates. Gears 3's frame layout at 720 lines: scene
 // depth from tile 0, scene colour after it (each width / 80 * 45 tiles), then the 1120x1120 shadow
 // depth map (980 tiles) after the colour; the half-size post-process targets stay below that.
