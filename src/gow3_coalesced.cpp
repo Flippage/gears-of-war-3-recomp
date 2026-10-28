@@ -212,16 +212,18 @@ struct ExitStrings {
   const wchar_t* tooltip;
 };
 
+// The labels are capitals: the main menu's font has capitals only, and other letters (Cyrillic,
+// accented) come from a lower-case fallback font.
 ExitStrings GetExitStringsForLang(std::string_view lang) {
-  if (lang == "FRA") return {L"Quitter le jeu", L"Quitter Gears of War 3 et revenir au bureau."};
-  if (lang == "PTB") return {L"Sair do Jogo", L"Sair de Gears of War 3 para a \u00e1rea de trabalho."};
-  if (lang == "POL") return {L"Wyjd\u017a z gry", L"Wyjd\u017a z Gears of War 3 do pulpitu."};
-  if (lang == "RUS") return {L"\u0412\u044b\u0445\u043e\u0434 \u0438\u0437 \u0438\u0433\u0440\u044b", L"\u0412\u044b\u0439\u0442\u0438 \u0438\u0437 Gears of War 3 \u043d\u0430 \u0440\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b."};
-  if (lang == "CZE") return {L"Ukon\u010dit hru", L"Ukon\u010dit Gears of War 3 a p\u0159ej\u00edt na plochu."};
-  if (lang == "HUN") return {L"Kil\u00e9p\u00e9s a j\u00e1t\u00e9kb\u00f3l", L"Kil\u00e9p\u00e9s a Gears of War 3 j\u00e1t\u00e9kb\u00f3l az asztalra."};
+  if (lang == "FRA") return {L"QUITTER LE JEU", L"Quitter Gears of War 3 et revenir au bureau."};
+  if (lang == "PTB") return {L"SAIR DO JOGO", L"Sair de Gears of War 3 para a \u00e1rea de trabalho."};
+  if (lang == "POL") return {L"WYJD\u0179 Z GRY", L"Wyjd\u017a z Gears of War 3 do pulpitu."};
+  if (lang == "RUS") return {L"\u0412\u042b\u0425\u041e\u0414 \u0418\u0417 \u0418\u0413\u0420\u042b", L"\u0412\u044b\u0439\u0442\u0438 \u0438\u0437 Gears of War 3 \u043d\u0430 \u0440\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b."};
+  if (lang == "CZE") return {L"UKON\u010cIT HRU", L"Ukon\u010dit Gears of War 3 a p\u0159ej\u00edt na plochu."};
+  if (lang == "HUN") return {L"KIL\u00c9P\u00c9S A J\u00c1T\u00c9KB\u00d3L", L"Kil\u00e9p\u00e9s a Gears of War 3 j\u00e1t\u00e9kb\u00f3l az asztalra."};
   if (lang == "KOR") return {L"\uac8c\uc784 \uc885\ub8cc", L"Gears of War 3\ub97c \uc885\ub8cc\ud558\uace0 \ubc14\ud0d5 \ud654\uba74\uc73c\ub85c \ub3cc\uc544\uac11\ub2c8\ub2e4."};
   if (lang == "CHN") return {L"\u96e2\u958b\u904a\u6232", L"\u96e2\u958b Gears of War 3 \u4e26\u8fd4\u56de\u684c\u9762\u3002"};
-  return {L"Exit Game", L"Exit Gears of War 3 to desktop."};
+  return {L"EXIT GAME", L"Exit Gears of War 3 to desktop."};
 }
 
 int ApplyMainMenuExit(std::string_view lang, std::vector<IniFile>* files) {
