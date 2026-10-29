@@ -7,6 +7,9 @@
 #include <string_view>
 #include <vector>
 
+#include "setup/finder.h"
+#include "setup/state.h"
+
 namespace gow3_test {
 struct Test {
   const char* name;
@@ -69,3 +72,19 @@ std::vector<uint8_t> MakeXiso(uint64_t partition_offset,
                               std::vector<std::pair<std::string, std::vector<uint8_t>>> files);
 // default.xex (Gears 3 title id) and an empty GearGame\ folder under dir.
 void MakeFakeGame(const std::filesystem::path& dir);
+
+// FoundPackage fixtures (id via PackageId; no file is created).
+gow3::setup::FoundPackage FakeDlc(const std::string& name, uint64_t size);
+gow3::setup::FoundPackage FakeTu(const std::string& name, uint64_t size, bool matches_disc);
+// <System32>\<name>.
+std::filesystem::path SystemExe(const std::string& name);
+// A started child process; terminated on destruction unless already killed.
+struct TestProcess {
+  void* handle = nullptr;
+  TestProcess() = default;
+  TestProcess(TestProcess&& o) noexcept : handle(o.handle) { o.handle = nullptr; }
+  TestProcess(const TestProcess&) = delete;
+  ~TestProcess();
+};
+TestProcess StartProcess(const std::filesystem::path& exe, const std::wstring& args);
+void KillProcess(TestProcess& p);

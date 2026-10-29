@@ -292,3 +292,49 @@ void MakeFakeGame(const fs::path& dir) {
   std::error_code ec;
   fs::create_directories(dir / "GearGame", ec);
 }
+
+gow3::setup::FoundPackage FakeDlc(const std::string& name, uint64_t size) {
+  gow3::setup::FoundPackage p{};
+  p.file = fs::path(name);
+  p.size = size;
+  p.id = gow3::setup::PackageId(p.file, size);
+  p.is_tu = false;
+  p.matches_disc = true;
+  return p;
+}
+
+gow3::setup::FoundPackage FakeTu(const std::string& name, uint64_t size, bool matches_disc) {
+  auto p = FakeDlc(name, size);
+  p.is_tu = true;
+  p.matches_disc = matches_disc;
+  return p;
+}
+
+fs::path SystemExe(const std::string& name) {
+  wchar_t buf[MAX_PATH];
+  UINT n = GetSystemDirectoryW(buf, MAX_PATH);
+  return fs::path(std::wstring(buf, n)) / name;
+}
+
+TestProcess StartProcess(const fs::path& exe, const std::wstring& args) {
+  std::wstring cmd = L"\"" + exe.wstring() + L"\" " + args;
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  TestProcess p;
+  if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    CloseHandle(pi.hThread);
+    p.handle = pi.hProcess;
+  }
+  return p;
+}
+
+void KillProcess(TestProcess& p) {
+  if (!p.handle) return;
+  TerminateProcess(p.handle, 1);
+  WaitForSingleObject(p.handle, 5000);
+  CloseHandle(p.handle);
+  p.handle = nullptr;
+}
+
+TestProcess::~TestProcess() { KillProcess(*this); }
