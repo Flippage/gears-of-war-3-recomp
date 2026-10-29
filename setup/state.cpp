@@ -127,7 +127,7 @@ std::optional<std::array<int, 3>> ParseVersion(std::string_view v) {
   while (true) {
     const size_t dot = v.find('.');
     const std::string_view part = v.substr(0, dot);
-    if (part.empty() || parts >= 3) return std::nullopt;
+    if (part.empty() || parts >= 3 || part.front() < '0' || part.front() > '9') return std::nullopt;
     int n = 0;
     const auto res = std::from_chars(part.data(), part.data() + part.size(), n);
     if (res.ec != std::errc() || res.ptr != part.data() + part.size()) return std::nullopt;

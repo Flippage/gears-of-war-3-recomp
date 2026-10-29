@@ -34,6 +34,8 @@ TEST(game_path_non_ascii) {
   WriteFile(dir / "crlf.txt", "C:\\Games\\G3  \r\nsecond line\r\n");
   CHECK(gow3::setup::ReadGamePathFile(dir / "crlf.txt") == std::filesystem::path("C:\\Games\\G3"));
   CHECK(gow3::setup::ReadGamePathFile(dir / "none.txt").empty());
+  WriteFile(dir / "bom.txt", "\xEF\xBB\xBF" "C:\\Games\\G3\n");
+  CHECK(gow3::setup::ReadGamePathFile(dir / "bom.txt") == std::filesystem::path("C:\\Games\\G3"));
 }
 TEST(version_compare) {
   CHECK(gow3::setup::IsNewer("v0.3.0", "0.2.2"));
@@ -44,6 +46,9 @@ TEST(version_compare) {
   CHECK(!gow3::setup::ParseVersion("0.3.0-test"));
   CHECK(!gow3::setup::ParseVersion("0..1"));
   CHECK(!gow3::setup::ParseVersion("1.2.3.4"));
+  CHECK(!gow3::setup::ParseVersion("-1.2"));
+  CHECK(!gow3::setup::ParseVersion("0.-3"));
+  CHECK(!gow3::setup::ParseVersion("+1.2"));
   CHECK(!gow3::setup::ParseVersion("1"));
   CHECK(!gow3::setup::ParseVersion(""));
 }
