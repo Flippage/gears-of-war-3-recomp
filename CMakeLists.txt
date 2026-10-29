@@ -39,13 +39,9 @@ set(GOW3_SOURCES
     src/gow3_launch_check.cpp
     src/gow3_game_patches.cpp
     src/gow3_options_actions.cpp
-    src/gow3_options_catalog.cpp
     src/gow3_options_input.cpp
-    src/gow3_options_model.cpp
     src/gow3_options_overlay.cpp
     src/gow3_options_values.cpp
-    src/gow3_options_values_text.cpp
-    src/gow3_toml_edit.cpp
     src/gow3_mouse_aim.cpp
     src/gow3_coalesced.cpp
     src/gow3_button_glyphs.cpp
@@ -55,6 +51,7 @@ set(GOW3_SOURCES
     src/gow3_main_menu_exit.cpp
     src/gow3_widescreen.cpp
     src/gow3_language.cpp
+    src/gow3_keybind_text.cpp
 )
 
 if(WIN32)

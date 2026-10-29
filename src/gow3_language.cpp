@@ -36,8 +36,6 @@ constexpr GameLanguage kLanguages[] = {
     {"PTB", 9, 13}, {"POL", 11, 0},  {"RUS", 12, 0}, {"CZE", 1, 23}, {"HUN", 1, 42},
 };
 
-std::set<std::string> g_available;
-
 const GameLanguage* Find(std::string_view code) {
   for (const GameLanguage& l : kLanguages) {
     if (code == l.code) return &l;
@@ -51,7 +49,7 @@ std::string FromSystem() {
   const WORD primary = PRIMARYLANGID(id), sub = SUBLANGID(id);
   auto first = [](std::initializer_list<const char*> codes) -> std::string {
     for (const char* c : codes) {
-      if (g_available.count(c)) return c;
+      if (GameHasLanguage(c)) return c;
     }
     return "INT";
   };
@@ -79,10 +77,6 @@ std::string FromSystem() {
 
 }  // namespace
 
-bool GameHasLanguage(std::string_view code) {
-  return g_available.count(std::string(code)) != 0;
-}
-
 void PrepareLanguage(const std::filesystem::path& game_root) {
   std::error_code ec;
   for (const auto& item :
@@ -92,11 +86,11 @@ void PrepareLanguage(const std::filesystem::path& game_root) {
     if (name.size() == 17 && name.rfind("Coalesced_", 0) == 0 && name.substr(13) == ".bin") {
       std::string code = name.substr(10, 3);
       for (char& c : code) c = char(std::toupper(static_cast<unsigned char>(c)));
-      if (Find(code)) g_available.insert(code);
+      if (Find(code)) NoteGameLanguage(code);
     }
   }
   std::string list;
-  for (const std::string& code : g_available) list += (list.empty() ? "" : " ") + code;
+  for (const std::string& code : GameLanguages()) list += (list.empty() ? "" : " ") + code;
   REXLOG_INFO("LANGUAGE game languages: {}", list.empty() ? "none found" : list);
 
   const std::string setting = REXCVAR_GET(gow3_language);
@@ -108,7 +102,7 @@ void PrepareLanguage(const std::filesystem::path& game_root) {
   }
   std::string code = automatic ? FromSystem() : setting;
   for (char& c : code) c = char(std::toupper(static_cast<unsigned char>(c)));
-  if (!g_available.count(code)) {
+  if (!GameHasLanguage(code)) {
     REXLOG_INFO("LANGUAGE {} not in this copy of the game, English instead", code);
     code = "INT";
   }

@@ -6,6 +6,8 @@
 #pragma once
 
 #include <filesystem>
+#include <set>
+#include <string>
 #include <string_view>
 
 namespace rex::glue {
@@ -15,5 +17,8 @@ namespace rex::glue {
 void PrepareLanguage(const std::filesystem::path& game_root);
 // Whether this copy of the game has the language (Unreal Engine's code: INT, FRA, RUS, ...).
 bool GameHasLanguage(std::string_view code);
+// The registry behind GameHasLanguage (gow3_language_registry.cpp, no rex runtime needed).
+void NoteGameLanguage(const std::string& code);
+const std::set<std::string>& GameLanguages();
 
 }  // namespace rex::glue

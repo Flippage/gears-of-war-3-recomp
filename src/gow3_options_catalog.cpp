@@ -10,9 +10,26 @@
 #include <string>
 #include <utility>
 
-#include <rex/filesystem.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 namespace rex::glue::options {
+namespace {
+
+// The folder of the running exe (no rex runtime needed, so the launcher can build this file).
+std::filesystem::path ExeFolder() {
+  wchar_t buf[MAX_PATH * 4];
+  const DWORD n = GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
+  if (n == 0 || n >= std::size(buf)) return {};
+  return std::filesystem::path(buf).parent_path();
+}
+
+}  // namespace
 namespace {
 
 std::vector<Choice> PadButtonChoices() {
@@ -768,7 +785,7 @@ std::vector<PageSpec> BuildCatalog() {
   // scripts\ngx-scan.ps1 treats as NVIDIA code and refuses to package.
   const std::string dlss_dll = std::string("nv") + "ngx" + "_dlss.dll";
   std::error_code ec;
-  if (!std::filesystem::exists(rex::filesystem::GetExecutableFolder() / dlss_dll, ec)) {
+  if (!std::filesystem::exists(ExeFolder() / dlss_dll, ec)) {
     for (auto& page : pages) {
       std::erase_if(page.rows,
                     [](const RowSpec& row) { return std::string_view(row.cvar) == "gow2_dlss_preset"; });
