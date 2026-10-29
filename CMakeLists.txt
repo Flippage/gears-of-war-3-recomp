@@ -22,6 +22,9 @@ else()
     message(FATAL_ERROR "GOW3_GAME_VERSION must be base or tu6, not '${GOW3_GAME_VERSION}'")
 endif()
 include(cmake/gow3_rexglue.cmake)
+add_subdirectory(setup)
+enable_testing()
+add_subdirectory(tests)
 
 # Sources
 set(GOW3_SOURCES
@@ -60,6 +63,7 @@ else()
 endif()
 
 rexglue_setup_target(gow3 GPU_PLUGINS xenos)
+target_link_libraries(gow3 PRIVATE gow3_setup)
 if(GOW3_GAME_VERSION STREQUAL "tu6")
     target_compile_definitions(gow3 PRIVATE GOW3_TU6=1)
 endif()
