@@ -39,6 +39,9 @@ namespace {
 constexpr const wchar_t* kApiUrl = L"https://api.github.com/repos/Flippage/gears-of-war-3-recomp/releases/latest";
 constexpr const wchar_t* kDownloadBase = L"https://github.com/Flippage/gears-of-war-3-recomp/releases/download/";
 constexpr int64_t kCheckInterval = 86400;
+constexpr const char* kBackupPending =
+    "A previous update could not be fully undone. Your original files are in update.tmp\\backup next to the "
+    "launcher: move them back into the launcher's folder, then delete update.tmp.";
 
 std::wstring g_user_agent = L"gow3-launcher/dev";  // set by InitUpdate, before any request
 
@@ -224,8 +227,8 @@ std::string ReadAll(const fs::path& file) {
   return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-// The body of an HTTPS GET (see HttpGet), with the user agent passed in: the check thread may
-// outlive wWinMain, so it holds its own copy.
+// The body of an HTTPS GET (Fetch, at most 8 MB), with the user agent passed in: the check thread
+// may outlive wWinMain, so it holds its own copy.
 std::optional<std::string> GetBody(const std::wstring& url, const std::wstring& user_agent, std::string* error) {
   std::string body;
   const bool ok = Fetch(url, user_agent, L"application/vnd.github+json",
@@ -243,10 +246,6 @@ std::optional<std::string> GetBody(const std::wstring& url, const std::wstring& 
 }
 
 }  // namespace
-
-std::optional<std::string> HttpGet(const std::wstring& url, std::string* error) {
-  return GetBody(url, g_user_agent, error);
-}
 
 bool HttpDownload(const std::wstring& url, const fs::path& to, const std::function<bool(uint64_t, uint64_t)>& progress,
                   std::string* error) {
@@ -317,6 +316,11 @@ UpdateResult ApplyUpdate(const fs::path& release_dir, const fs::path& zip, Build
     cleanup();
     return UpdateResult::kFailed;
   };
+  // A failed rollback's originals are in update.tmp\backup: never clean them up (or add to them).
+  if (gow3::setup::UpdateBackupPending(release_dir)) {
+    if (error) *error = kBackupPending;
+    return UpdateResult::kFailed;
+  }
   std::error_code ec;
   fs::create_directories(tmp, ec);
   if (ec) return fail("Could not create " + Utf8(tmp) + ".");
@@ -358,13 +362,11 @@ UpdateResult ApplyUpdate(const fs::path& release_dir, const fs::path& zip, Build
   }
   const std::vector<fs::path> files = gow3::setup::FilesToCopy(src);
 
-  for (int i = 0; gow3::setup::IsGameRunning(release_dir / "gow3.exe"); ++i) {
-    if (i >= 120) {
-      if (error) *error = "Close Gears of War 3 first, then try again.";
-      cleanup();
-      return UpdateResult::kGameRunning;
-    }
-    Sleep(250);
+  if (gow3::setup::WaitForGameExit(release_dir / "gow3.exe", std::chrono::seconds(30)) !=
+      gow3::setup::WaitResult::kExited) {
+    if (error) *error = "Close Gears of War 3 first, then try again.";
+    cleanup();
+    return UpdateResult::kGameRunning;
   }
   if (cancelled && cancelled()) return fail("The update was cancelled. Nothing was changed.");
 
@@ -395,12 +397,14 @@ UpdateResult ApplyUpdate(const fs::path& release_dir, const fs::path& zip, Build
       stuck.push_back("launcher.exe (it is launcher.old.exe now)");
     }
     if (stuck.empty()) return fail(std::move(msg) + " Nothing was changed.");
-    // Keep update.tmp: the originals that could not go back are in update.tmp\backup.
+    // Keep update.tmp: the originals that could not go back are in update.tmp\backup, and the
+    // marker (naming them) stops any later start or update from removing them.
     std::string list;
     for (const std::string& s : stuck) list += (list.empty() ? "" : ", ") + s;
+    std::ofstream(tmp / gow3::setup::kRollbackFailedMarker, std::ios::binary | std::ios::trunc) << list << "\n";
     if (error) {
       *error = std::move(msg) + " These files could not be put back: " + list +
-               ". The originals are in update.tmp\\backup; or unzip the release again.";
+               ". The originals are in update.tmp\\backup: move them back, then delete update.tmp (or unzip the release again).";
     }
     return UpdateResult::kFailed;
   };
@@ -430,6 +434,8 @@ UpdateResult ApplyUpdate(const fs::path& release_dir, const fs::path& zip, Build
   {
     const fs::path gow3 = release_dir / "gow3.exe", saved = backup / "gow3.exe";
     if (fs::exists(gow3, ec)) {
+      // backup\ exists only once a replaced file was moved there.
+      fs::create_directories(backup, ec);
       if (!CopyFileW(gow3.c_str(), saved.c_str(), FALSE)) {
         return rollback("Could not back up gow3.exe (" + WinError(GetLastError()) + ").");
       }
@@ -526,6 +532,8 @@ void StartUpdate(App& app, const fs::path& test_zip) {
         fs::remove_all(tmp, ec);
         return r;
       };
+      // A failed rollback's originals are in update.tmp\backup: refuse rather than delete them.
+      if (gow3::setup::UpdateBackupPending(dir)) return gow3::setup::Fail(error, kBackupPending);
       std::error_code ec;
       fs::remove_all(tmp, ec);
       fs::create_directories(tmp, ec);
@@ -573,11 +581,19 @@ bool StartNewLauncher(const App& app) {
   return true;
 }
 
-void SaveState(App& app) { gow3::setup::SaveState(app.dir / "launcher.ini", app.state); }
+// On failure "Check now"'s status line says so (Game files shows it).
+void SaveState(App& app) {
+  if (!gow3::setup::SaveState(app.dir / "launcher.ini", app.state)) {
+    u.status = "Could not write launcher.ini next to the launcher.";
+  }
+}
 
 }  // namespace
 
 void InitUpdate(App& app) {
+  // Left by an update that finished (files the old launcher still had loaded); a failed
+  // rollback's originals stay.
+  gow3::setup::RemoveStaleUpdateTmp(app.dir);
   u.version = ReadVersionFile(app.dir / "version.txt");
   g_user_agent = L"gow3-launcher/" + (u.version.empty() ? std::wstring(L"dev") : Wide(u.version));
   if (!app.update_zip.empty()) {
@@ -608,7 +624,6 @@ void PollUpdate(App& app) {
       if (u.manual) u.status = "Could not check for updates. " + check->error;
     } else {
       app.state.last_check = static_cast<int64_t>(std::time(nullptr));
-      SaveState(app);
       const ReleaseInfo& r = *check->release;
       const std::string zip = ZipName(r.tag);
       const auto has = [&](const std::string& n) {
@@ -624,6 +639,7 @@ void PollUpdate(App& app) {
         u.status = newer ? "Version " + VersionOf(r.tag) + " is out, but its download isn't ready yet."
                          : "You have the latest version (" + u.version + ").";
       }
+      SaveState(app);  // after the status, so a failure to save shows
     }
   }
 

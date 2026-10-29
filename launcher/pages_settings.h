@@ -12,3 +12,5 @@ void DrawSettingsPage(App& app, rex::glue::options::Page page);
 // While a key-binding slot waits for a key, WndProc hands it the key and mouse button messages
 // first. True when the message was taken (ImGui doesn't see it then).
 bool SettingsCaptureMessage(UINT msg, WPARAM wparam, LPARAM lparam);
+// The game folder was set or changed: notes its languages and updates the Game Language choices.
+void SettingsGameChanged(App& app);

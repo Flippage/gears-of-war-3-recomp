@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cwctype>
 #include <deque>
+#include <fstream>
 #include <initializer_list>
 #include <memory>
 #include <set>
@@ -18,6 +19,7 @@
 #include <vector>
 
 #include "app.h"
+#include "pages_settings.h"
 #include "setup/finder.h"
 #include "setup/install.h"
 #include "setup/launch_decision.h"
@@ -37,6 +39,7 @@ using gow3::setup::FoundIso;
 using gow3::setup::FoundPackage;
 using gow3::setup::Progress;
 using gow3::setup::SwapResult;
+using gow3::setup::Utf8;
 
 // ---------------------------------------------------------------------------------------------
 // Job
@@ -241,8 +244,6 @@ constexpr const char* kDot = " \xC2\xB7 ";  // " · "
 constexpr const char* kCloseFirst = "Close Gears of War 3 first, then try again.";
 constexpr const char* kNoteSaves = "Your saves carry over. The base game can't read saves made after this.";
 
-std::string U8(const fs::path& p) { return gow3::setup::Utf8(p); }
-
 std::string Gb(uint64_t bytes) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%.1f", bytes / (1024.0 * 1024.0 * 1024.0));
@@ -268,13 +269,20 @@ std::vector<std::string> InstalledDlc(const fs::path& game) {
   return names;
 }
 
-bool Tu6Present(const fs::path& game) {
-  std::error_code ec;
-  return !game.empty() && fs::is_regular_file(game / "TU6" / "default.xexp", ec);
+// gow3_tu6_folder from gow3.toml (empty when unset), read by RefreshPlayPage.
+fs::path g_tu6_configured;
+
+// Where gow3.exe will look for Title Update 6 (gow3::setup::TitleUpdateCandidates).
+std::vector<fs::path> Tu6Candidates(const App& app) {
+  return gow3::setup::TitleUpdateCandidates(app.game, app.dir, g_tu6_configured);
 }
 
-std::string RendererText(const fs::path& toml) {
-  const gow3::setup::SettingsFile f = gow3::setup::LoadSettings(toml);
+// The TU6 build would find its title update.
+bool Tu6Present(const App& app) {
+  return !app.game.empty() && gow3::setup::FindTitleUpdateFolderIn(app.game, app.dir, g_tu6_configured).has_value();
+}
+
+std::string RendererText(const gow3::setup::SettingsFile& f) {
   auto value = [&](const char* key, const char* def) {
     const auto it = f.values.find(key);
     return it == f.values.end() ? std::string(def) : it->second;
@@ -402,7 +410,7 @@ struct PlayInfo {
 };
 PlayInfo g_play;
 
-enum class View { kOverview, kSetup, kWorking, kOffer, kRepair };
+enum class View { kOverview, kSetup, kWorking, kOffer, kRepair, kRestoreBuild };
 enum class JobKind { kExtract, kInstall, kRepair, kSwitch };
 
 struct OfferItem {
@@ -464,6 +472,7 @@ bool SetGame(App& app, const fs::path& folder) {
   }
   app.game = folder;
   RefreshPlayPage(app);
+  SettingsGameChanged(app);  // the Game Language choices
   return true;
 }
 
@@ -499,7 +508,7 @@ bool BuildOffer(const App& app, bool ignore_declined) {
     if (common.empty()) common = dir;
     else if (common != dir) return any;
   }
-  g.offer_folder = U8(common);
+  g.offer_folder = Utf8(common);
   return any;
 }
 
@@ -545,7 +554,7 @@ void UpdateTarget() {
                                  (ts[is.size()] == L'\\' || ts[is.size()] == L'/'));
   g.free_bytes.reset();
   const fs::path existing = ExistingAncestor(g.target);
-  g.drive = U8(g.target.root_name());
+  g.drive = Utf8(g.target.root_name());
   ULARGE_INTEGER avail{};
   if (!existing.empty() && GetDiskFreeSpaceExW(existing.c_str(), &avail, nullptr, nullptr)) {
     g.free_bytes = avail.QuadPart;
@@ -578,14 +587,14 @@ void HandlePicked(App& app, const fs::path& picked) {
   UseIso(picked);
 }
 
-// Polls every 250 ms for up to 30 s. kFailed: still running.
-ExtractResult WaitForGameExit(const fs::path& exe, const Progress& progress) {
-  for (int i = 0; gow3::setup::IsGameRunning(exe); ++i) {
-    if (i >= 120) return ExtractResult::kFailed;
-    if (!progress(0, 0, "Waiting for Gears of War 3 to close")) return ExtractResult::kCancelled;
-    Sleep(250);
-  }
-  return ExtractResult::kOk;
+// gow3::setup::WaitForGameExit for up to 30 s, saying so on the progress line. kFailed: still running.
+ExtractResult WaitForGame(const fs::path& exe, const Progress& progress) {
+  using gow3::setup::WaitResult;
+  const WaitResult w = gow3::setup::WaitForGameExit(
+      exe, std::chrono::seconds(30), [&] { return !progress(0, 0, "Waiting for Gears of War 3 to close"); });
+  return w == WaitResult::kExited ? ExtractResult::kOk
+         : w == WaitResult::kCancelled ? ExtractResult::kCancelled
+                                       : ExtractResult::kFailed;
 }
 
 void StartJob(JobKind kind, Job::Work work) {
@@ -601,8 +610,19 @@ void StartExtract() {
   StartJob(JobKind::kExtract, [disc, target](const Progress& progress, std::string* error) {
     std::error_code ec;
     fs::create_directories(target, ec);
-    if (ec) return gow3::setup::Fail(error, "Could not create " + U8(target) + ".");
-    return disc.ExtractAll(target, progress, error);
+    if (ec) return gow3::setup::Fail(error, "Could not create " + Utf8(target) + ".");
+    // Until the extraction finishes, the folder is not a game folder (IsGameFolder), so an
+    // interrupted one (cancel, crash, power cut) is never used as one.
+    const fs::path marker = target / gow3::setup::kExtractingMarker;
+    {
+      std::ofstream out(marker, std::ios::binary | std::ios::trunc);
+      if (!out) return gow3::setup::Fail(error, "Could not write to " + Utf8(target) + ".");
+    }
+    const ExtractResult r = disc.ExtractAll(target, progress, error);
+    if (r == ExtractResult::kOk && !fs::remove(marker, ec)) {
+      return gow3::setup::Fail(error, "Could not remove " + Utf8(marker) + ".");
+    }
+    return r;
   });
 }
 
@@ -614,7 +634,7 @@ std::string SwapFailure(SwapResult r, Build to) {
 
 // Waits for gow3.exe to close, then swaps the build. kFailed (with the message) when it can't.
 ExtractResult WaitAndSwap(const fs::path& dir, Build to, const Progress& progress, std::string* error) {
-  const ExtractResult w = WaitForGameExit(dir / "gow3.exe", progress);
+  const ExtractResult w = WaitForGame(dir / "gow3.exe", progress);
   if (w == ExtractResult::kFailed) return gow3::setup::Fail(error, kCloseFirst);
   if (w != ExtractResult::kOk) return w;
   const SwapResult s = gow3::setup::SwapBuild(dir, to, std::chrono::seconds(0));
@@ -635,7 +655,7 @@ void StartInstall(const App& app, const std::vector<FoundPackage>& picked, JobKi
     for (const FoundPackage& p : picked) total += p.size;
     const bool has_tu = std::any_of(picked.begin(), picked.end(), [](auto& p) { return p.is_tu; });
     if (has_tu && swap) {
-      const ExtractResult w = WaitForGameExit(dir / "gow3.exe", progress);
+      const ExtractResult w = WaitForGame(dir / "gow3.exe", progress);
       if (w == ExtractResult::kFailed) return Fail(error, kCloseFirst);
       if (w != ExtractResult::kOk) return w;
     }
@@ -716,10 +736,10 @@ void DrawSetup(App& app) {
 
   ImGui::TextColored(kMuted, "Found your copy of Gears of War 3:");
   BeginBox("##iso");
-  ImGui::TextUnformatted(U8(g.iso->file.filename()).c_str());
+  ImGui::TextUnformatted(Utf8(g.iso->file.filename()).c_str());
   const std::string where = kDot + Gb(g.iso->size) + " GB";
   const float avail = ImGui::GetContentRegionAvail().x;
-  const std::string folder = FitLeft(U8(g.iso->file.parent_path()), avail - ImGui::CalcTextSize(where.c_str()).x);
+  const std::string folder = FitLeft(Utf8(g.iso->file.parent_path()), avail - ImGui::CalcTextSize(where.c_str()).x);
   ImGui::TextColored(kMuted, "%s%s", folder.c_str(), where.c_str());
   ImGui::TextColored(kMuted, "%s", Ids(g.iso->xex.title_id, g.iso->xex.media_id).c_str());
   EndBox();
@@ -728,7 +748,7 @@ void DrawSetup(App& app) {
   ImGui::TextColored(kMuted, "Extract it to");
   const float browse_w = ImGui::CalcTextSize("Browse").x + Dp(28.0f), gap = Dp(6.0f);
   BeginBox("##target", ImGui::GetContentRegionAvail().x - browse_w - gap);
-  ImGui::TextUnformatted(FitLeft(U8(g.target), ImGui::GetContentRegionAvail().x).c_str());
+  ImGui::TextUnformatted(FitLeft(Utf8(g.target), ImGui::GetContentRegionAvail().x).c_str());
   EndBox();
   const float box_h = ImGui::GetItemRectSize().y;
   ImGui::SameLine(0, gap);
@@ -858,7 +878,7 @@ void DrawOffer(App& app) {
       name = item.usable ? "Title Update 6" : "Title Update";
       extra = item.usable ? " (needed for the DLC)" : " (for another disc version)";
     } else {
-      name = item.pkg.header.display_name.empty() ? U8(item.pkg.file.filename()) : item.pkg.header.display_name;
+      name = item.pkg.header.display_name.empty() ? Utf8(item.pkg.file.filename()) : item.pkg.header.display_name;
     }
     const ImVec2 t(x, p.y + Dp(2.0f));
     dl->AddText(t, ImGui::GetColorU32(item.usable ? kText : kMuted), name.c_str());
@@ -869,7 +889,7 @@ void DrawOffer(App& app) {
     std::string ids = Ids(item.pkg.header.title_id, item.pkg.header.media_id);
     if (g.offer_folder.empty()) {
       ids += kDot;
-      ids += FitLeft(U8(item.pkg.file.parent_path()),
+      ids += FitLeft(Utf8(item.pkg.file.parent_path()),
                      p.x + w - x - ImGui::CalcTextSize((ids + "  ").c_str()).x);
     }
     dl->AddText(ImVec2(x, t.y + line + Dp(1.0f)), ImGui::GetColorU32(kMuted), ids.c_str());
@@ -907,15 +927,24 @@ void DrawOffer(App& app) {
 void DrawRepair(App& app) {
   using namespace theme;
   PageTitle("TITLE UPDATE 6 MISSING");
-  const std::string where = U8(app.game / "TU6");
+  // The folders gow3.exe checks (gow3_tu6_folder, else next to gow3.exe, then in the game folder).
+  std::string where;
+  for (const fs::path& folder : Tu6Candidates(app)) where += (where.empty() ? "" : " or ") + Utf8(folder);
   ImGui::PushTextWrapPos(0.0f);
-  ImGui::TextColored(kMuted, "Title Update 6 is missing from %s", where.c_str());
+  ImGui::TextColored(kMuted, "Title Update 6 (default.xexp) is missing from %s", where.c_str());
   ImGui::PopTextWrapPos();
   ImGui::Dummy(ImVec2(0, Dp(4.0f)));
   BeginBox("##repair");
   ImGui::TextWrapped("Install it again from your Title Update 6 package, or switch back to the base game.");
   ImGui::PushFont(nullptr, 14.0f);
-  ImGui::TextColored(kMuted, "The launcher looks next to the game and next to itself.");
+  ImGui::TextColored(kMuted, "The launcher looks for the package next to the game and next to itself.");
+  if (!g_tu6_configured.empty()) {
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(kMuted, "gow3_tu6_folder is set in gow3.toml: INSTALL IT AGAIN puts the update in %s, which "
+                               "the game uses only when gow3_tu6_folder is empty.",
+                       Utf8(app.game / "TU6").c_str());
+    ImGui::PopTextWrapPos();
+  }
   ImGui::PopFont();
   EndBox();
   if (!g.message.empty()) {
@@ -936,23 +965,70 @@ void DrawRepair(App& app) {
   }
 }
 
+// launcher.ini records a build whose builds\ copy is here, and gow3.exe is not that copy.
+bool BuildReplaced(const App& app) {
+  using gow3::setup::Build;
+  if (!app.state.existed) return false;
+  const fs::path exe = app.dir / "gow3.exe";
+  const fs::path recorded =
+      app.dir / "builds" / (app.state.build == Build::kTu6 ? "gow3-tu6.exe" : "gow3-base.exe");
+  std::error_code ec;
+  if (!fs::is_regular_file(exe, ec) || !fs::is_regular_file(recorded, ec)) return false;
+  // The two builds differ in size, so that is enough on a plain start; after gow3.exe handed over
+  // with --repair, compare the bytes too.
+  if (app.start != App::Start::kRepair) {
+    const uintmax_t a = fs::file_size(exe, ec), b = ec ? 0 : fs::file_size(recorded, ec);
+    return !ec && a != b;
+  }
+  return !gow3::setup::SameFileContents(exe, recorded);
+}
+
+void DrawRestoreBuild(App& app) {
+  using namespace theme;
+  const bool tu6 = app.state.build == Build::kTu6;
+  PageTitle("BUILD REPLACED");
+  ImGui::Dummy(ImVec2(0, Dp(4.0f)));
+  BeginBox("##restore");
+  ImGui::TextWrapped(tu6 ? "Your Title Update 6 build was replaced (for example by extracting a new release over "
+                           "this folder). Restore it?"
+                         : "Your base-game build was replaced (for example by copying another gow3.exe into this "
+                           "folder). Restore it?");
+  ImGui::PushFont(nullptr, 14.0f);
+  ImGui::PushTextWrapPos(0.0f);
+  ImGui::TextColored(kMuted, "%s",
+                     tu6 ? "The base game can't read saves made with Title Update 6. Restore keeps them working."
+                         : "Restore copies builds\\gow3-base.exe to gow3.exe.");
+  ImGui::PopTextWrapPos();
+  ImGui::PopFont();
+  EndBox();
+  if (!g.message.empty()) {
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(kAccent, "%s", g.message.c_str());
+    ImGui::PopTextWrapPos();
+  }
+  const std::string_view b =
+      tu6 ? BottomButtons({{"Use base game"}, {"RESTORE", true}}) : BottomButtons({{"RESTORE", true}});
+  if (b == "RESTORE") StartSwitch(app, app.state.build);
+  if (b == "Use base game") StartSwitch(app, Build::kBase);
+}
+
 void DrawOverview(App& app) {
   using namespace theme;
   PageTitle("GAME FILES");
   ImGui::Dummy(ImVec2(0, Dp(4.0f)));
-  if (Row("Game folder", app.game.empty() ? std::string("Not set") : U8(app.game), false, "Change\xE2\x80\xA6")) {
+  if (Row("Game folder", app.game.empty() ? std::string("Not set") : Utf8(app.game), false, "Change\xE2\x80\xA6")) {
     g.message.clear();
     HandlePicked(app, PickIsoOrFolder(app.hwnd));
     if (g.view != View::kOverview) return;
   }
   const bool tu6 = app.state.build == Build::kTu6;
-  const bool can_switch = !app.game.empty() && (tu6 || Tu6Present(app.game));
+  const bool can_switch = !app.game.empty() && (tu6 || Tu6Present(app));
   if (Row("Build", tu6 ? "Title Update 6" : "Base", false, "Switch", can_switch)) {
     StartSwitch(app, tu6 ? Build::kBase : Build::kTu6);
     return;
   }
   std::string content;
-  if (Tu6Present(app.game)) content = "Title Update 6";
+  if (Tu6Present(app)) content = "Title Update 6";
   if (!app.game.empty()) {
     for (const std::string& dlc : InstalledDlc(app.game)) content += (content.empty() ? "" : kDot) + dlc;
   }
@@ -1007,7 +1083,10 @@ void RefreshPlayPage(const App& app) {
   } else {
     g_play.content = "Base game";
   }
-  g_play.renderer = RendererText(app.dir / "gow3.toml");
+  const gow3::setup::SettingsFile toml = gow3::setup::LoadSettings(app.dir / "gow3.toml");
+  g_play.renderer = RendererText(toml);
+  const auto tu6 = toml.values.find("gow3_tu6_folder");
+  g_tu6_configured = tu6 == toml.values.end() ? fs::path() : gow3::setup::FromUtf8(tu6->second);
 }
 
 void DrawPlayPage(App& app) {
@@ -1018,11 +1097,12 @@ void DrawPlayPage(App& app) {
   std::string line = g_play.content;
   if (busy) line = "Wait for the Game files page to finish.";
   else if (app.game.empty()) line = "Choose your game folder on the Game files page.";
+  else if (app.build_replaced) line = "gow3.exe was replaced: restore your build on the Game files page.";
   else if (!ready) line = "gow3.exe is missing from the launcher's folder.";
   ImGui::TextColored(kMuted, "%s", line.c_str());
   ImGui::Dummy(ImVec2(0, Dp(10.0f)));
 
-  Row("Game folder", app.game.empty() ? std::string("Not set") : U8(app.game));
+  Row("Game folder", app.game.empty() ? std::string("Not set") : Utf8(app.game));
   Row("Build", app.state.build == Build::kTu6 ? "TU6" : "BASE", true);
   Row("Renderer", g_play.renderer);
 
@@ -1054,7 +1134,11 @@ void InitGameFiles(App& app) {
     }
     return;
   }
-  if (app.start == App::Start::kRepair) {
+  app.build_replaced = BuildReplaced(app);
+  if (app.build_replaced) {
+    Show(View::kRestoreBuild);
+    app.page = App::Page::kGameFiles;
+  } else if (app.start == App::Start::kRepair) {
     Show(View::kRepair);
   } else if (app.start == App::Start::kOffer && BuildOffer(app, false)) {
     Show(View::kOffer);
@@ -1093,12 +1177,16 @@ void PollGameFiles(App& app) {
   }
   if (g.kind == JobKind::kSwitch) {
     if (*r == ExtractResult::kOk) {
+      app.build_replaced = false;  // gow3.exe is now the builds\ copy of the recorded build
       app.state.build = g.switch_to;
       SaveState(app);
       RefreshPlayPage(app);
-      FlowDone(app, g.message);
+      // A restored TU6 build without its title update: the repair page, not a game that stops.
+      if (g.switch_to == Build::kTu6 && !Tu6Present(app)) Show(View::kRepair, g.message);
+      else FlowDone(app, g.message);
     } else {
-      const View back = app.start == App::Start::kRepair && app.state.build == Build::kTu6 && !Tu6Present(app.game)
+      const View back = app.build_replaced ? View::kRestoreBuild
+                        : app.start == App::Start::kRepair && app.state.build == Build::kTu6 && !Tu6Present(app)
                             ? View::kRepair
                             : View::kOverview;
       Show(back, *r == ExtractResult::kCancelled ? std::string() : error);
@@ -1135,6 +1223,7 @@ void DrawGameFilesPage(App& app) {
     case View::kWorking: DrawWorking(); break;
     case View::kOffer: DrawOffer(app); break;
     case View::kRepair: DrawRepair(app); break;
+    case View::kRestoreBuild: DrawRestoreBuild(app); break;
     case View::kOverview: DrawOverview(app); break;
   }
 }

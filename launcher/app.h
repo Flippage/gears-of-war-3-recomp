@@ -21,14 +21,17 @@ struct App {
   std::filesystem::path update_zip;  // --update_zip=<zip>: test only, installs it at start (no HTTP)
   HWND hwnd = nullptr;
   std::string error;  // last failure, shown on the Play page
+  // gow3.exe is not the builds\ copy of the build launcher.ini records (a new release extracted
+  // over the folder): PLAY waits until Game files restores it.
+  bool build_replaced = false;
   // The settings pages' gow3.toml, read when one is first shown, and the Model over it. The Model's
   // reader points at settings_file, so the two are kept (and would be reloaded) together.
   gow3::setup::SettingsFile settings_file;
   std::optional<rex::glue::options::Model> settings;
 
-  // A valid game folder and a gow3.exe next to the launcher.
+  // A valid game folder, a gow3.exe next to the launcher, and not build_replaced.
   bool CanPlay() const;
   // CreateProcessW(dir/gow3.exe, pass_args), then PostQuitMessage. After a hand-over from gow3.exe
-  // it adds --gow3_launcher_check=false, so the game never hands back in a loop.
+  // it puts --gow3_launcher_check=false first, so the game never hands back in a loop.
   void StartGameAndQuit();
 };

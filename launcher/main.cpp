@@ -26,6 +26,7 @@
 #include "pages_game.h"
 #include "pages_settings.h"
 #include "setup/finder.h"
+#include "setup/path_util.h"
 #include "setup/state.h"
 #include "theme.h"
 #include "update.h"
@@ -42,15 +43,6 @@ IDXGISwapChain* g_swap = nullptr;
 ID3D11RenderTargetView* g_rtv = nullptr;
 UINT g_resize_w = 0, g_resize_h = 0;  // set by WM_SIZE, applied before the next frame
 UINT g_new_dpi = 0;                   // set by WM_DPICHANGED
-
-std::filesystem::path ExeFolder() {
-  std::wstring buf(MAX_PATH, L'\0');
-  for (;;) {
-    const DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
-    if (n < buf.size()) return std::filesystem::path(buf.substr(0, n)).parent_path();
-    buf.resize(buf.size() * 2);
-  }
-}
 
 // Reads the flags, and keeps everything after "--" as typed (quotes and all).
 void ParseArguments(const wchar_t* p, App& app) {
@@ -265,14 +257,15 @@ void DrawFrame(App& app) {
 
 bool App::CanPlay() const {
   std::error_code ec;
-  return !game.empty() && std::filesystem::is_regular_file(dir / "gow3.exe", ec);
+  return !game.empty() && !build_replaced && std::filesystem::is_regular_file(dir / "gow3.exe", ec);
 }
 
 void App::StartGameAndQuit() {
   const std::filesystem::path exe = dir / "gow3.exe";
   std::wstring command = L"\"" + exe.wstring() + L"\"";
-  if (!pass_args.empty()) command += L" " + pass_args;
+  // Before the passed-through arguments, so an unbalanced quote in them can't swallow it.
   if (start != Start::kNormal) command += L" --gow3_launcher_check=false";
+  if (!pass_args.empty()) command += L" " + pass_args;
   STARTUPINFOW si{};
   si.cb = sizeof(si);
   PROCESS_INFORMATION pi{};
@@ -288,7 +281,7 @@ void App::StartGameAndQuit() {
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   using namespace gow3::setup;
   App app;
-  app.dir = ExeFolder();
+  app.dir = gow3::setup::ExeFolder();
   // Left behind by a release update. The old launcher may still be closing: give it 3 s.
   const std::filesystem::path old_launcher = app.dir / "launcher.old.exe";
   std::error_code ec;
@@ -301,8 +294,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   // A v0.2.2 install has no launcher.ini: LoadState's defaults (build = base) apply and the path
   // file is kept as it is.
   app.state = LoadState(app.dir / "launcher.ini");
-  if (const std::filesystem::path game = ReadGamePathFile(app.dir / "gow3_game_path.txt");
-      !game.empty() && IsGameFolder(game)) {
+  // The folder gow3.exe will use: its --game_data_root (handed back after "--"), the path file, or
+  // the search around the exe.
+  if (const std::filesystem::path game = ResolveGameFolder(GameDataRootArg(app.pass_args), app.dir);
+      IsGameFolder(game)) {
     app.game = game;
   }
 

@@ -16,6 +16,7 @@
 #include "gow3_language.h"
 #include "gow3_options_actions.h"
 #include "pages_game.h"
+#include "setup/path_util.h"
 #include "setup/settings_store.h"
 #include "theme.h"
 
@@ -23,6 +24,7 @@ namespace {
 
 namespace opt = rex::glue::options;
 namespace actions = rex::glue::options_actions;
+using gow3::setup::FromUtf8;
 using opt::Control;
 using opt::Page;
 
@@ -49,8 +51,6 @@ std::string Upper(std::string_view s) {
   }
   return out;
 }
-
-std::filesystem::path FromUtf8(const std::string& s) { return std::filesystem::path(std::u8string(s.begin(), s.end())); }
 
 // Group headers (the catalog has none): the row a group starts at.
 const char* GroupAt(std::string_view cvar) {
@@ -83,6 +83,21 @@ void RefreshDynamicChoices(opt::Model& m) {
   std::vector<opt::DynamicChoice> folders;
   for (const auto& f : actions::ListSaveFolders(current)) folders.push_back({f.value, f.label});
   if (!folders.empty()) m.SetDynamicChoices("user_data_root", std::move(folders));
+
+  // Game Language: the languages noted for the game folder (the catalog's row was filtered once,
+  // possibly before a game folder was set).
+  std::vector<opt::DynamicChoice> languages;
+  for (const opt::Choice& c : opt::AllLanguageChoices()) {
+    if (std::string_view(c.value) == "auto" || rex::glue::GameHasLanguage(c.value)) {
+      languages.push_back({c.value, c.label.For()});
+    }
+  }
+  m.SetDynamicChoices("gow3_language", std::move(languages));
+}
+
+void NoteGameLanguages(const App& app) {
+  if (app.game.empty()) return;
+  for (const std::string& code : rex::glue::ScanGameLanguages(app.game)) rex::glue::NoteGameLanguage(code);
 }
 
 void SyncTextBuffers(const opt::Model& m) {
@@ -98,10 +113,7 @@ void SyncTextBuffers(const opt::Model& m) {
 
 void Load(App& app) {
   if (app.settings) return;
-  // Before the catalog is first built: Game Language offers the languages this copy has.
-  if (!app.game.empty()) {
-    for (const std::string& code : rex::glue::ScanGameLanguages(app.game)) rex::glue::NoteGameLanguage(code);
-  }
+  NoteGameLanguages(app);
   app.settings_file = gow3::setup::LoadSettings(app.dir / "gow3.toml");
   app.settings.emplace(gow3::setup::MakeSettingsModel(app.settings_file));
   RefreshDynamicChoices(*app.settings);
@@ -110,7 +122,17 @@ void Load(App& app) {
 
 void Save(App& app) {
   if (!app.settings_file.readable) return;  // read-only: the file is never written
-  g_save = gow3::setup::SaveSettings(app.dir / "gow3.toml", *app.settings) ? SaveStatus::kSaved : SaveStatus::kFailed;
+  const std::filesystem::path toml = app.dir / "gow3.toml";
+  // A missing gow3.toml starts from the release's default (config\gow3.default.toml), then gets the
+  // changed lines; without that copy only the changed lines are written.
+  std::error_code ec;
+  const bool fresh = !std::filesystem::exists(toml, ec) && !ec &&
+                     gow3::setup::CopyDefaultSettings(app.dir / "config" / "gow3.default.toml", toml);
+  g_save = gow3::setup::SaveSettings(toml, *app.settings) ? SaveStatus::kSaved : SaveStatus::kFailed;
+  if (fresh) {  // the Model reads the file's values (the default's, and the ones just saved)
+    app.settings_file = gow3::setup::LoadSettings(toml);
+    app.settings->RefreshFromReader();
+  }
   RefreshPlayPage(app);  // the renderer line
 }
 
@@ -123,11 +145,16 @@ std::array<std::string, 2> Slots(const opt::Model& m, const char* cvar) {
   return s;
 }
 
-// Empty slots drop out; a pad row with nothing left is "none", a key row "".
+// Empty slots drop out; a pad row with nothing left is "none", a key row "". Keys after the second
+// (written by hand in gow3.toml) are kept, as the in-game menu keeps them.
 void SetSlots(opt::Model& m, const opt::RowSpec& row, const std::array<std::string, 2>& s) {
   std::vector<std::string> keys;
   for (const std::string& k : s) {
     if (!k.empty()) keys.push_back(k);
+  }
+  const std::vector<std::string> old = opt::SplitKeys(m.Get(row.cvar));
+  for (size_t i = 2; i < old.size(); ++i) {
+    if (old[i] != "none") keys.push_back(old[i]);
   }
   const std::string joined = opt::JoinKeys(keys);
   m.Set(row.cvar, joined.empty() && row.page == Page::kPadButtons ? "none" : joined);
@@ -539,4 +566,9 @@ bool SettingsCaptureMessage(UINT msg, WPARAM wparam, LPARAM lparam) {
   std::string name = rex::ui::VirtualKeyToString(static_cast<rex::ui::VirtualKey>(vk));
   if (name.empty()) return true;
   return done(R::kKey, std::move(name));
+}
+
+void SettingsGameChanged(App& app) {
+  NoteGameLanguages(app);
+  if (app.settings) RefreshDynamicChoices(*app.settings);
 }
