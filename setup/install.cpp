@@ -88,10 +88,12 @@ ExtractResult InstallTitleUpdate(const FoundPackage& tu, const fs::path& game, c
   }
   fs::rename(part, live, ec);
   if (ec) {
-    std::error_code ec2;
+    std::error_code ec2, ec3;
     if (had_old) fs::rename(old, live, ec2);
-    fs::remove_all(part, ec2);
-    return Fail(error, "Could not move the title update into place");
+    fs::remove_all(part, ec3);
+    return Fail(error, ec2 ? "Could not move the title update into place, and the previous TU6 could not be "
+                             "restored (it may be in TU6.old)"
+                           : "Could not move the title update into place");
   }
   if (had_old) fs::remove_all(old, ec);
   return ExtractResult::kOk;

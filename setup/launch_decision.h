@@ -20,7 +20,8 @@ struct LaunchInputs {
 LaunchAction DecideLaunch(const LaunchInputs& in);
 
 // Not installed, not declined, and (for a TU) matches_disc. For Build::kTu6 a TU is never "new".
+// Callers pass the build actually installed (the same one given to DecideLaunch).
 std::vector<const FoundPackage*> NewPackages(const std::vector<FoundPackage>& found,
-                                             const LauncherState& s);
+                                             const LauncherState& s, Build build);
 
 }  // namespace gow3::setup

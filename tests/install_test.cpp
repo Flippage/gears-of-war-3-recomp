@@ -1,3 +1,6 @@
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 #include "setup/install.h"
 #include "tests/test_util.h"
 
@@ -85,4 +88,33 @@ TEST(install_tu_extracts_replaces_and_keeps_on_failure) {
   auto cancel = [](uint64_t, uint64_t, const std::string&) { return false; };
   CHECK(gow3::setup::InstallTitleUpdate(tu1, game, cancel, &err) == gow3::setup::ExtractResult::kCancelled);
   CHECK(FileText(game / "TU6" / "default.xexp") == "SECOND" && !fs::exists(game / "TU6.part-dir"));
+}
+
+// A directory handle held open inside TU6.part-dir (no FILE_SHARE_DELETE) blocks the final rename.
+// The old TU6 is then restored, so it must come back intact. Held via a progress callback on the
+// first file, which runs after the part dir exists.
+TEST(install_tu_final_rename_failure_restores_old) {
+  auto d = TempDir("tu_rename");
+  auto game = d / "game";
+  std::string err;
+  auto tu1 = TuFile(d / "tu1", "FIRST");
+  auto progress = [](uint64_t, uint64_t, const std::string&) { return true; };
+  CHECK(gow3::setup::InstallTitleUpdate(tu1, game, progress, &err) == gow3::setup::ExtractResult::kOk);
+  auto tu2 = TuFile(d / "tu2", "SECOND");
+  HANDLE h = INVALID_HANDLE_VALUE;
+  auto hold = [&](uint64_t, uint64_t, const std::string&) {
+    if (h == INVALID_HANDLE_VALUE)
+      h = CreateFileW((game / "TU6.part-dir").c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    return true;
+  };
+  auto r = gow3::setup::InstallTitleUpdate(tu2, game, hold, &err);
+  bool held = h != INVALID_HANDLE_VALUE;
+  if (held) CloseHandle(h);
+  if (!held || r == gow3::setup::ExtractResult::kOk) {
+    std::printf("skip: could not block the final rename on this system\n");
+    return;
+  }
+  CHECK(r == gow3::setup::ExtractResult::kFailed && !err.empty());
+  CHECK(FileText(game / "TU6" / "default.xexp") == "FIRST" && !fs::exists(game / "TU6.old"));
 }
