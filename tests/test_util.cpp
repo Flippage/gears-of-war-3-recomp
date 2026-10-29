@@ -196,15 +196,26 @@ struct XNode {
   std::map<std::string, uint32_t> file_sectors;
 };
 size_t EntryLen(const std::string& name) { return (14 + name.size() + 3) & ~size_t{3}; }
-void XLayout(XNode& n, uint32_t& next, std::vector<XNode*>& order) {
-  size_t bytes = 0;
-  for (auto& [k, v] : n.dirs) bytes += EntryLen(k);
-  for (auto& [k, v] : n.files) bytes += EntryLen(k);
-  n.size = static_cast<uint32_t>(std::max<size_t>(2048, (bytes + 2047) & ~size_t{2047}));
+// Entries never straddle a sector: the rest of the sector stays 0xFF and the next entry starts
+// on the next sector, as on real discs.
+size_t XPlace(size_t off, size_t len) { return (off % 2048 + len > 2048) ? (off + 2047) & ~size_t{2047} : off; }
+std::vector<std::string> SortedNames(const XNode& n) {
+  std::vector<std::string> names;
+  for (auto& [k, v] : n.dirs) names.push_back(k);
+  for (auto& [k, v] : n.files) names.push_back(k);
+  std::sort(names.begin(), names.end());
+  return names;
+}
+bool XEmpty(const XNode& n) { return n.dirs.empty() && n.files.empty(); }
+void XLayout(XNode& n, uint32_t& next, std::vector<XNode*>& order, bool is_root) {
+  if (XEmpty(n) && !is_root) return;  // empty directories are sector 0, size 0
+  size_t off = 0;
+  for (const std::string& name : SortedNames(n)) off = XPlace(off, EntryLen(name)) + EntryLen(name);
+  n.size = static_cast<uint32_t>(std::max<size_t>(2048, (off + 2047) & ~size_t{2047}));
   n.sector = next;
   next += n.size / 2048;
   order.push_back(&n);
-  for (auto& [k, v] : n.dirs) XLayout(v, next, order);
+  for (auto& [k, v] : n.dirs) XLayout(v, next, order, false);
 }
 }  // namespace
 
@@ -218,11 +229,11 @@ std::vector<uint8_t> MakeXiso(uint64_t partition_offset,
       n = &n->dirs[path.substr(0, pos)];
       path.erase(0, pos + 1);
     }
-    n->files[path] = std::move(data);
+    if (!path.empty()) n->files[path] = std::move(data);  // a trailing '\' only makes the directory
   }
   uint32_t next = 33;  // sector 32 holds the volume descriptor
   std::vector<XNode*> order;
-  XLayout(root, next, order);
+  XLayout(root, next, order, true);
   for (XNode* n : order) {
     for (auto& [k, v] : n->files) {
       n->file_sectors[k] = next;
@@ -251,10 +262,13 @@ std::vector<uint8_t> MakeXiso(uint64_t partition_offset,
       items.push_back({&k, n->file_sectors[k], static_cast<uint32_t>(v.size()), 0x20});
     std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return *a.name < *b.name; });
     size_t base = partition_offset + uint64_t{n->sector} * 2048, off = 0;
+    std::fill_n(img.begin() + static_cast<std::ptrdiff_t>(base), n->size, uint8_t{0xFF});
     for (size_t i = 0; i < items.size(); ++i) {
       size_t len = EntryLen(*items[i].name);
+      off = XPlace(off, len);
+      size_t next_off = i + 1 < items.size() ? XPlace(off + len, EntryLen(*items[i + 1].name)) : 0;
       put16(base + off, 0);
-      put16(base + off + 2, i + 1 < items.size() ? static_cast<uint32_t>((off + len) / 4) : 0);
+      put16(base + off + 2, static_cast<uint32_t>(next_off / 4));
       put32(base + off + 4, items[i].sector);
       put32(base + off + 8, items[i].size);
       img[base + off + 12] = items[i].attrib;

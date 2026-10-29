@@ -2,7 +2,15 @@
 #include <filesystem>
 #include <string>
 
+#include "setup/stfs.h"
+
 namespace gow3::setup {
+
+// Records the message (when wanted) and returns kFailed.
+inline ExtractResult Fail(std::string* error, const std::string& msg) {
+  if (error) *error = msg;
+  return ExtractResult::kFailed;
+}
 
 inline std::string Utf8(const std::filesystem::path& p) {
   auto u = p.u8string();

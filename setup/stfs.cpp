@@ -149,10 +149,6 @@ class Stfs {
   uint64_t cached_off_ = ~uint64_t{0};
 };
 
-ExtractResult Fail(std::string* error, const std::string& msg) {
-  if (error) *error = msg;
-  return ExtractResult::kFailed;
-}
 }  // namespace
 
 std::optional<StfsHeader> ReadStfsHeader(const fs::path& file) {

@@ -105,3 +105,88 @@ TEST(xdvdfs_real_iso) {
     CHECK(img && img->ReadFile("default.xex", 0x10000));
   }
 }
+
+namespace {
+constexpr size_t kRoot = 33 * 2048;  // MakeXiso(0, ...) puts the root directory at sector 33
+void Put16(std::vector<uint8_t>& b, size_t off, uint16_t v) {
+  b[off] = static_cast<uint8_t>(v);
+  b[off + 1] = static_cast<uint8_t>(v >> 8);
+}
+void Put32(std::vector<uint8_t>& b, size_t off, uint32_t v) {
+  Put16(b, off, static_cast<uint16_t>(v));
+  Put16(b, off + 2, static_cast<uint16_t>(v >> 16));
+}
+}  // namespace
+
+TEST(xdvdfs_empty_directories) {
+  auto dir = TempDir("xdvdfs_empty");
+  WriteFile(dir / "g.iso", MakeXiso(0, {{"e1\\", {}}, {"e2\\", {}}, {"a.bin", Bytes(10)}}));
+  std::string err;
+  auto img = DiscImage::Open(dir / "g.iso", &err);
+  CHECK(img.has_value());
+  if (!img) return;
+  CHECK(img->Entries().size() == 3);
+  CHECK(img->ExtractAll(dir / "out", {}, nullptr) == ExtractResult::kOk);
+  CHECK(std::filesystem::is_directory(dir / "out" / "e1"));
+  CHECK(std::filesystem::is_directory(dir / "out" / "e2"));
+}
+
+TEST(xdvdfs_entry_cycle_terminates) {
+  auto dir = TempDir("xdvdfs_cycle");
+  auto iso = MakeXiso(0, {{"a.bin", Bytes(10)}, {"b.bin", Bytes(10)}});
+  Put16(iso, kRoot + 20, 5);  // b.bin's left link points at itself
+  WriteFile(dir / "g.iso", iso);
+  auto img = DiscImage::Open(dir / "g.iso", nullptr);
+  CHECK(img && img->Entries().size() == 2);
+}
+
+TEST(xdvdfs_entry_offset_past_directory) {
+  auto dir = TempDir("xdvdfs_past");
+  auto iso = MakeXiso(0, {{"a.bin", Bytes(10)}, {"b.bin", Bytes(10)}});
+  Put16(iso, kRoot + 2, 0x7000);  // a.bin's right link leaves the directory
+  WriteFile(dir / "g.iso", iso);
+  auto img = DiscImage::Open(dir / "g.iso", nullptr);
+  CHECK(img && img->Entries().size() == 1);
+}
+
+TEST(xdvdfs_directory_loop) {
+  auto dir = TempDir("xdvdfs_dirloop");
+  auto iso = MakeXiso(0, {{"d\\x.bin", Bytes(10)}});
+  Put32(iso, kRoot + 4, 33);  // d points back at the root directory
+  WriteFile(dir / "g.iso", iso);
+  std::string err;
+  CHECK(!DiscImage::Open(dir / "g.iso", &err));
+  CHECK(err.find("loop") != std::string::npos);
+}
+
+TEST(xdvdfs_multi_sector_directory_with_padding) {
+  auto dir = TempDir("xdvdfs_multisector");
+  std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
+  for (int i = 0; i < 100; ++i) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "file_%03d.bin", i);
+    files.push_back({name, Bytes(1)});
+  }
+  WriteFile(dir / "g.iso", MakeXiso(0, files));
+  auto img = DiscImage::Open(dir / "g.iso", nullptr);
+  CHECK(img && img->Entries().size() == 100 && img->TotalBytes() == 100);
+  if (img) CHECK(img->ReadFile("file_099.bin", 8).has_value());
+}
+
+TEST(xdvdfs_truncated_image) {
+  auto dir = TempDir("xdvdfs_trunc");
+  auto iso = MakeXiso(0, {{"a.bin", Bytes(5000)}});
+  iso.resize(iso.size() - 2500);
+  WriteFile(dir / "g.iso", iso);
+  std::string err;
+  CHECK(!DiscImage::Open(dir / "g.iso", &err));
+  CHECK(err.find("truncated") != std::string::npos);
+}
+
+TEST(xdvdfs_xgd2_partition) {
+  auto dir = TempDir("xdvdfs_xgd2");
+  WriteFile(dir / "g.iso", MakeXiso(0xFD90000, {{"default.xex", Bytes(300)}}));
+  auto img = DiscImage::Open(dir / "g.iso", nullptr);
+  CHECK(img && img->TotalBytes() == 300);
+  if (img) CHECK(*img->ReadFile("default.xex", 300) == Bytes(300));
+}

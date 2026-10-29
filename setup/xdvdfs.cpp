@@ -52,11 +52,6 @@ std::optional<DiscImage> Bad(std::string* error, const std::string& msg) {
   return std::nullopt;
 }
 
-ExtractResult Fail(std::string* error, const std::string& msg) {
-  if (error) *error = msg;
-  return ExtractResult::kFailed;
-}
-
 bool EqualNoCase(std::string_view a, std::string_view b) {
   if (a.size() != b.size()) return false;
   for (size_t i = 0; i < a.size(); ++i) {
@@ -104,8 +99,10 @@ std::optional<DiscImage> DiscImage::Open(const fs::path& iso, std::string* error
     jobs.pop_back();
     if (job.size == 0) continue;  // empty directory
     if (job.size > kMaxDirBytes) return Bad(error, "corrupt disc: directory too large");
+    const uint64_t dir_abs = partition + uint64_t{job.sector} * kSector;
+    if (dir_abs + job.size > image_size) return Bad(error, "corrupt disc: directory beyond end of image");
     std::vector<uint8_t> dir(job.size);
-    if (!ReadAt(in, partition + uint64_t{job.sector} * kSector, dir.data(), dir.size()))
+    if (!ReadAt(in, dir_abs, dir.data(), dir.size()))
       return Bad(error, "corrupt disc: directory beyond end of image");
 
     std::set<uint32_t> seen;  // entry offsets already visited in this directory
@@ -133,8 +130,11 @@ std::optional<DiscImage> DiscImage::Open(const fs::path& iso, std::string* error
       bool is_dir = (attrib & 0x10) != 0;
       uint64_t abs = partition + uint64_t{sector} * kSector;
       if (is_dir) {
-        if (!seen_dirs.insert(sector).second) return Bad(error, "corrupt disc: directory loop at " + path);
-        jobs.push_back({sector, size, path + "\\"});
+        // Empty directories are usually sector 0, size 0; they are not walked, so not loop-checked.
+        if (size > 0) {
+          if (!seen_dirs.insert(sector).second) return Bad(error, "corrupt disc: directory loop at " + path);
+          jobs.push_back({sector, size, path + "\\"});
+        }
         img.entries_.push_back({path, abs, 0, true});
       } else {
         if (size > 0 && abs + size > image_size) return Bad(error, "image is truncated at " + path);
