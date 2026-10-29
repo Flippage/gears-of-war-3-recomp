@@ -65,3 +65,25 @@ TEST(finder_real_game_from_parent) {
   auto r = gow3::setup::FindGame({game->parent_path()});
   CHECK(r.game == *game);
 }
+
+TEST(finder_game_found_skips_isos) {
+  auto root = TempDir("find5");
+  MakeFakeGame(root / "Game");
+  WriteFile(root / "Gears.iso", MakeXiso(0, {{"default.xex", MakeXex(0x58122AD6, 0x4D5308AB)}}));
+  auto r = gow3::setup::FindGame({root});
+  CHECK(r.game == root / "Game");
+  CHECK(r.isos.empty());
+}
+
+TEST(finder_package_skip_list_and_size_floor) {
+  auto root = TempDir("find6");
+  auto hdr = MakeStfsHeader("LIVE", 0x00000002, 0x4D5308AB, 0, u"X");
+  WriteFile(root / "x.zip", hdr);
+  WriteFile(root / "y.ZIP", hdr);
+  auto short_file = hdr;
+  short_file.resize(0xFFF);
+  WriteFile(root / "short", short_file);
+  WriteFile(root / "exact", hdr);
+  auto p = gow3::setup::FindPackages({root}, 0);
+  CHECK(p.size() == 1 && p[0].file.filename() == "exact");
+}

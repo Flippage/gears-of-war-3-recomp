@@ -1,7 +1,7 @@
 #include "setup/finder.h"
 
 #include <algorithm>
-#include <cctype>
+#include <cwctype>
 #include <set>
 
 #include "setup/state.h"
@@ -12,9 +12,9 @@ namespace fs = std::filesystem;
 
 namespace {
 
-std::string LowerExt(const fs::path& p) {
-  std::string e = p.extension().string();
-  std::transform(e.begin(), e.end(), e.begin(), [](unsigned char c) { return std::tolower(c); });
+std::wstring LowerExt(const fs::path& p) {
+  std::wstring e = p.extension().native();
+  std::transform(e.begin(), e.end(), e.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
   return e;
 }
 
@@ -81,11 +81,11 @@ FindResult FindGame(const std::vector<fs::path>& roots) {
   for (const auto& d : dirs) {
     if (IsGameFolder(d)) {
       result.game = d;
-      break;
+      return result;
     }
   }
   ForEachFile(dirs, [&](const fs::path& file, uint64_t size) {
-    if (LowerExt(file) != ".iso") return;
+    if (LowerExt(file) != L".iso") return;
     auto disc = DiscImage::Open(file, nullptr);
     if (!disc) return;
     auto bytes = disc->ReadFile("default.xex", 0x10000);
@@ -97,8 +97,8 @@ FindResult FindGame(const std::vector<fs::path>& roots) {
 }
 
 std::vector<FoundPackage> FindPackages(const std::vector<fs::path>& roots, uint32_t disc_media_id) {
-  static const std::set<std::string> kSkip = {".iso", ".zip", ".7z", ".rar", ".exe",
-                                              ".dll", ".txt", ".xex", ".xexp"};
+  static const std::set<std::wstring> kSkip = {L".iso", L".zip", L".7z", L".rar", L".exe",
+                                               L".dll", L".txt", L".xex", L".xexp"};
   std::vector<FoundPackage> found;
   std::set<fs::path> seen;
   ForEachFile(WithSubfolders(roots), [&](const fs::path& file, uint64_t size) {

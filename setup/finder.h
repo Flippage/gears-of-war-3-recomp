@@ -35,7 +35,8 @@ struct FindResult {
   std::vector<FoundIso> isos;
 };
 
-// Each root and its direct subfolders: the first game folder found, and every Gears 3 ISO.
+// Each root and its direct subfolders: the first game folder found. Only when there is none, every Gears 3 ISO
+// (a found game folder returns at once with `isos` empty, so no image is opened).
 FindResult FindGame(const std::vector<std::filesystem::path>& roots);
 // Direct files of each root and of its direct subfolders: Gears 3 TU and DLC packages.
 std::vector<FoundPackage> FindPackages(const std::vector<std::filesystem::path>& roots,
