@@ -48,3 +48,12 @@ bool WriteFile(const std::filesystem::path& path, const std::vector<uint8_t>& da
 // Whole file as text / bytes; empty when unreadable.
 std::string FileText(const std::filesystem::path& path);
 std::vector<uint8_t> FileBytes(const std::filesystem::path& path);
+
+// 0x1000-byte STFS header with the fields the launcher reads (magic, content type, media id,
+// title id, UTF-16BE display name).
+std::vector<uint8_t> MakeStfsHeader(std::string_view magic, uint32_t content_type, uint32_t title_id,
+                                    uint32_t media_id, std::u16string_view display_name);
+// True when both folders hold the same relative file paths with the same bytes.
+bool SameTree(const std::filesystem::path& a, const std::filesystem::path& b);
+// True when any file under dir has a name ending in suffix.
+bool AnyFileEndsWith(const std::filesystem::path& dir, const std::string& suffix);

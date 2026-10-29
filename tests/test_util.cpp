@@ -5,6 +5,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <map>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -85,4 +86,55 @@ std::string FileText(const fs::path& path) {
 std::vector<uint8_t> FileBytes(const fs::path& path) {
   const std::string s = FileText(path);
   return std::vector<uint8_t>(s.begin(), s.end());
+}
+
+std::vector<uint8_t> MakeStfsHeader(std::string_view magic, uint32_t content_type, uint32_t title_id,
+                                    uint32_t media_id, std::u16string_view display_name) {
+  std::vector<uint8_t> b(0x1000, 0);
+  for (size_t i = 0; i < 4 && i < magic.size(); ++i) b[i] = static_cast<uint8_t>(magic[i]);
+  PutBe32(b, 0x344, content_type);
+  PutBe32(b, 0x354, media_id);
+  PutBe32(b, 0x360, title_id);
+  for (size_t i = 0; i < display_name.size() && i < 0x40; ++i) {
+    b[0x411 + i * 2] = static_cast<uint8_t>(display_name[i] >> 8);
+    b[0x411 + i * 2 + 1] = static_cast<uint8_t>(display_name[i] & 0xFF);
+  }
+  return b;
+}
+
+static std::map<std::string, fs::path> ListFiles(const fs::path& root) {
+  std::map<std::string, fs::path> out;
+  std::error_code ec;
+  for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    if (it->is_regular_file(ec)) out[fs::relative(it->path(), root, ec).generic_string()] = it->path();
+  }
+  return out;
+}
+
+bool SameTree(const fs::path& a, const fs::path& b) {
+  auto fa = ListFiles(a), fb = ListFiles(b);
+  if (fa.size() != fb.size()) return false;
+  for (auto& [rel, pa] : fa) {
+    auto it = fb.find(rel);
+    if (it == fb.end()) return false;
+    std::error_code ec;
+    if (fs::file_size(pa, ec) != fs::file_size(it->second, ec)) return false;
+    std::ifstream x(pa, std::ios::binary), y(it->second, std::ios::binary);
+    std::vector<char> bx(1 << 16), by(1 << 16);
+    while (x && y) {
+      x.read(bx.data(), bx.size());
+      y.read(by.data(), by.size());
+      if (x.gcount() != y.gcount() || std::memcmp(bx.data(), by.data(), static_cast<size_t>(x.gcount())) != 0)
+        return false;
+    }
+  }
+  return true;
+}
+
+bool AnyFileEndsWith(const fs::path& dir, const std::string& suffix) {
+  for (auto& [rel, p] : ListFiles(dir)) {
+    if (rel.size() >= suffix.size() && rel.compare(rel.size() - suffix.size(), suffix.size(), suffix) == 0)
+      return true;
+  }
+  return false;
 }
