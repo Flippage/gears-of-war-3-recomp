@@ -41,7 +41,10 @@ using gow3::setup::SwapResult;
 // Job
 
 void Job::Start(Work work) {
-  if (thread_.joinable()) thread_.join();
+  if (thread_.joinable()) {  // callers check !Running(); never block on a live worker
+    thread_.request_stop();
+    thread_.join();
+  }
   done_ = 0;
   total_ = 0;
   finished_ = false;
@@ -302,7 +305,7 @@ bool Row(const char* label, const std::string& value, bool pill = false, const c
   const ImVec2 p = ImGui::GetCursorScreenPos();
   const float w = ImGui::GetContentRegionAvail().x, h = Dp(42.0f), fs = ImGui::GetFontSize();
   ImDrawList* dl = ImGui::GetWindowDrawList();
-  dl->AddText(ImVec2(p.x + 0, p.y + (h - fs) * 0.5f), ImGui::GetColorU32(kText), label);
+  dl->AddText(ImVec2(p.x, p.y + (h - fs) * 0.5f), ImGui::GetColorU32(kText), label);
   float right = p.x + w;
   bool pressed = false;
   if (button) {
@@ -463,15 +466,11 @@ bool SetGame(App& app, const fs::path& folder) {
   return true;
 }
 
-// The game folder, its parent and the launcher's folder with two parents (each with its direct
-// subfolders), as gow3.exe searches them.
+// The same folders gow3.exe searches (PackageRoots).
 std::vector<FoundPackage> ScanPackages(const App& app) {
   using namespace gow3::setup;
-  std::vector<fs::path> roots = SearchRoots(app.dir, 2);
-  roots.push_back(app.game);
-  if (app.game.has_parent_path()) roots.push_back(app.game.parent_path());
   const auto xex = ReadXexInfoFile(app.game / "default.xex");
-  return FindPackages(roots, xex ? xex->media_id : 0);
+  return FindPackages(PackageRoots(app.dir, app.game), xex ? xex->media_id : 0);
 }
 
 // Fills the offer list (TU first). Returns true when there is something new to offer.
@@ -606,77 +605,79 @@ void StartExtract() {
   });
 }
 
+std::string SwapFailure(SwapResult r, Build to) {
+  if (r == SwapResult::kGameRunning) return kCloseFirst;
+  return std::string("Could not switch gow3.exe to the ") + (to == Build::kTu6 ? "Title Update 6" : "base") +
+         " build (is builds\\gow3-" + (to == Build::kTu6 ? "tu6" : "base") + ".exe there?).";
+}
+
+// Waits for gow3.exe to close, then swaps the build. kFailed (with the message) when it can't.
+ExtractResult WaitAndSwap(const fs::path& dir, Build to, const Progress& progress, std::string* error) {
+  const ExtractResult w = WaitForGameExit(dir / "gow3.exe", progress);
+  if (w == ExtractResult::kFailed) return gow3::setup::Fail(error, kCloseFirst);
+  if (w != ExtractResult::kOk) return w;
+  const SwapResult s = gow3::setup::SwapBuild(dir, to, std::chrono::seconds(0));
+  return s == SwapResult::kOk ? ExtractResult::kOk : gow3::setup::Fail(error, SwapFailure(s, to));
+}
+
 // TU (through InstallTitleUpdate), then the DLC copies, then (offer page, base build) the TU6 build
-// if the TU went in. kRepair reinstalls the TU only.
+// if the TU went in. kRepair reinstalls the TU only. Any failure, the swap included, fails the job
+// and nothing is recorded (installing again just overwrites <game>\TU6 and the DLC copies).
 void StartInstall(const App& app, const std::vector<FoundPackage>& picked, JobKind kind) {
   auto outcome = std::make_shared<Outcome>();
   g.outcome = outcome;
   const fs::path dir = app.dir, game = app.game;
   const bool swap = kind == JobKind::kInstall && app.state.build == Build::kBase;
   StartJob(kind, [outcome, picked, swap, dir, game](const Progress& progress, std::string* error) {
-             using namespace gow3::setup;
-             uint64_t total = 0, base = 0;
-             for (const FoundPackage& p : picked) total += p.size;
-             const bool has_tu = std::any_of(picked.begin(), picked.end(), [](auto& p) { return p.is_tu; });
-             if (has_tu && swap) {
-               const ExtractResult w = WaitForGameExit(dir / "gow3.exe", progress);
-               if (w == ExtractResult::kFailed) {
-                 outcome->swap = SwapResult::kGameRunning;
-                 return Fail(error, kCloseFirst);
-               }
-               if (w != ExtractResult::kOk) return w;
-             }
-             for (const FoundPackage& p : picked) {
-               if (!p.is_tu) continue;
-               const Progress scaled = [&](uint64_t done, uint64_t of, const std::string& current) {
-                 return progress(base + (of ? static_cast<uint64_t>(double(done) / of * p.size) : 0), total,
-                                 "TU6\\" + current);
-               };
-               const ExtractResult r = InstallTitleUpdate(p, game, scaled, error);
-               if (r != ExtractResult::kOk) return r;
-               base += p.size;
-               outcome->installed.push_back(p.id);
-               outcome->tu_installed = true;
-             }
-             for (const FoundPackage& p : picked) {
-               if (p.is_tu) continue;
-               if (!progress(base, total, "DLC\\" + Utf8(p.file.filename()))) return ExtractResult::kCancelled;
-               std::error_code ec;
-               if (!fs::equivalent(p.file, game / "DLC" / p.file.filename(), ec) && !InstallDlc(p, game, error)) {
-                 return ExtractResult::kFailed;
-               }
-               base += p.size;
-               outcome->installed.push_back(p.id);
-             }
-             progress(total, total, "");
-             if (swap && outcome->tu_installed) {
-               outcome->swap = SwapBuild(dir, Build::kTu6, std::chrono::seconds(0));
-             }
-             return ExtractResult::kOk;
-           });
-}
-
-void StartSwitch(const App& app, Build to) {
-  auto outcome = std::make_shared<Outcome>();
-  g.outcome = outcome;
-  g.switch_to = to;
-  const fs::path dir = app.dir;
-  StartJob(JobKind::kSwitch, [outcome, dir, to](const Progress& progress, std::string* error) {
-    const ExtractResult w = WaitForGameExit(dir / "gow3.exe", progress);
-    if (w == ExtractResult::kFailed) {
-      outcome->swap = SwapResult::kGameRunning;
-      return gow3::setup::Fail(error, kCloseFirst);
+    using namespace gow3::setup;
+    uint64_t total = 0, base = 0;
+    for (const FoundPackage& p : picked) total += p.size;
+    const bool has_tu = std::any_of(picked.begin(), picked.end(), [](auto& p) { return p.is_tu; });
+    if (has_tu && swap) {
+      const ExtractResult w = WaitForGameExit(dir / "gow3.exe", progress);
+      if (w == ExtractResult::kFailed) return Fail(error, kCloseFirst);
+      if (w != ExtractResult::kOk) return w;
     }
-    if (w != ExtractResult::kOk) return w;
-    outcome->swap = gow3::setup::SwapBuild(dir, to, std::chrono::seconds(0));
+    for (const FoundPackage& p : picked) {
+      if (!p.is_tu) continue;
+      const Progress scaled = [&](uint64_t done, uint64_t of, const std::string& current) {
+        return progress(base + (of ? static_cast<uint64_t>(double(done) / of * p.size) : 0), total,
+                        "TU6\\" + current);
+      };
+      const ExtractResult r = InstallTitleUpdate(p, game, scaled, error);
+      if (r != ExtractResult::kOk) return r;
+      base += p.size;
+      outcome->installed.push_back(p.id);
+      outcome->tu_installed = true;
+    }
+    for (const FoundPackage& p : picked) {
+      if (p.is_tu) continue;
+      if (!progress(base, total, "DLC\\" + Utf8(p.file.filename()))) return ExtractResult::kCancelled;
+      std::error_code ec;
+      if (!fs::equivalent(p.file, game / "DLC" / p.file.filename(), ec) && !InstallDlc(p, game, error)) {
+        return ExtractResult::kFailed;
+      }
+      base += p.size;
+      outcome->installed.push_back(p.id);
+    }
+    progress(total, total, "");
+    if (swap && outcome->tu_installed) {
+      // The game may have been started during the install: wait for it again right before the swap.
+      const ExtractResult s = WaitAndSwap(dir, Build::kTu6, progress, error);
+      if (s != ExtractResult::kOk) return s;
+      outcome->swap = SwapResult::kOk;
+    }
     return ExtractResult::kOk;
   });
 }
 
-std::string SwapFailure(SwapResult r, Build to) {
-  if (r == SwapResult::kGameRunning) return kCloseFirst;
-  return std::string("Could not switch gow3.exe to the ") + (to == Build::kTu6 ? "Title Update 6" : "base") +
-         " build (is builds\\gow3-" + (to == Build::kTu6 ? "tu6" : "base") + ".exe there?).";
+void StartSwitch(const App& app, Build to) {
+  g.outcome = std::make_shared<Outcome>();
+  g.switch_to = to;
+  const fs::path dir = app.dir;
+  StartJob(JobKind::kSwitch, [dir, to](const Progress& progress, std::string* error) {
+    return WaitAndSwap(dir, to, progress, error);
+  });
 }
 
 // After a flow that gow3.exe handed over: start the game (Ruling 13); otherwise stay here.
@@ -733,8 +734,11 @@ void DrawSetup(App& app) {
   if (GhostButton("Browse", ImVec2(browse_w, box_h))) {
     if (fs::path picked = PickFolder(app.hwnd, g.target); !picked.empty()) {
       std::error_code ec;
-      // An empty folder is used as it is; any other gets a "Gears of War 3" folder inside.
-      g.target = fs::is_empty(picked, ec) ? picked : picked / L"Gears of War 3";
+      // An empty folder, one named "Gears of War 3" or a game folder is used as it is; any other gets
+      // a "Gears of War 3" folder inside.
+      const bool as_is = fs::is_empty(picked, ec) || Lower(picked.filename().wstring()) == L"gears of war 3" ||
+                         gow3::setup::IsGameFolder(picked);
+      g.target = as_is ? picked : picked / L"Gears of War 3";
       UpdateTarget();
     }
   }
@@ -780,15 +784,14 @@ void DrawWorking() {
   }
   ImGui::Dummy(ImVec2(w, h));
 
-  // Rate over the last 10 s.
-  const double now = Now();
-  if (g.samples.empty() || now - g.samples.back().first >= 0.25) g.samples.emplace_back(now, done);
-  while (g.samples.size() > 2 && now - g.samples.front().first > 10.0) g.samples.pop_front();
   if (total) {
     ImGui::TextColored(kMuted, "%s of %s GB", Gb(done).c_str(), Gb(total).c_str());
-    const auto& [t0, d0] = g.samples.front();
-    if (now - t0 >= 2.0 && done > d0 && done < total) {
-      const double left = (total - done) / ((done - d0) / (now - t0));
+    // Rate over the last 10 s (PollGameFiles takes the samples).
+    if (g.samples.size() >= 2 && g.samples.back().first - g.samples.front().first >= 2.0 &&
+        g.samples.back().second > g.samples.front().second && done < total) {
+      const auto& [t0, d0] = g.samples.front();
+      const auto& [t1, d1] = g.samples.back();
+      const double left = (total - done) / ((d1 - d0) / (t1 - t0));
       const std::string eta = "about " + std::to_string(std::max(1, static_cast<int>(std::ceil(left / 60.0)))) +
                               " min left";
       ImGui::SameLine(ImGui::GetCursorStartPos().x + w - ImGui::CalcTextSize(eta.c_str()).x);
@@ -1034,30 +1037,41 @@ void InitGameFiles(App& app) {
     Show(View::kRepair);
   } else if (app.start == App::Start::kOffer && BuildOffer(app, false)) {
     Show(View::kOffer);
+  } else if (app.start == App::Start::kOffer) {
+    // Handed over with nothing new for us (Ruling 19): don't strand the player here.
+    FlowDone(app);
   } else {
     Show(View::kOverview);
   }
 }
 
 void PollGameFiles(App& app) {
+  if (g_job.Running()) {  // ETA samples: (seconds, bytes done) over the last 10 s
+    const double now = Now();
+    if (g.samples.empty() || now - g.samples.back().first >= 0.25) g.samples.emplace_back(now, g_job.Done());
+    while (g.samples.size() > 2 && now - g.samples.front().first > 10.0) g.samples.pop_front();
+  }
   std::string error;
   const std::optional<ExtractResult> r = g_job.Finished(&error);
   if (!r) return;
   const std::shared_ptr<Outcome> outcome = std::move(g.outcome);
   if (g.kind == JobKind::kExtract) {
+    if (*r == ExtractResult::kOk && gow3::setup::IsGameFolder(g.target)) {
+      if (SetGame(app, g.target)) AfterGameSet(app);
+      return;
+    }
+    UpdateTarget();  // free space changed
     if (*r == ExtractResult::kCancelled) {
       Show(View::kSetup, "Extraction cancelled. The files written so far stay; extract again to finish.");
     } else if (*r == ExtractResult::kFailed) {
       Show(View::kSetup, "Extraction failed: " + error);
-    } else if (!gow3::setup::IsGameFolder(g.target)) {
+    } else {
       Show(View::kSetup, "The extracted files aren't a Gears of War 3 game folder.");
-    } else if (SetGame(app, g.target)) {
-      AfterGameSet(app);
     }
     return;
   }
   if (g.kind == JobKind::kSwitch) {
-    if (*r == ExtractResult::kOk && outcome->swap == SwapResult::kOk) {
+    if (*r == ExtractResult::kOk) {
       app.state.build = g.switch_to;
       SaveState(app);
       RefreshPlayPage(app);
@@ -1066,17 +1080,15 @@ void PollGameFiles(App& app) {
       const View back = app.start == App::Start::kRepair && app.state.build == Build::kTu6 && !Tu6Present(app.game)
                             ? View::kRepair
                             : View::kOverview;
-      Show(back, *r == ExtractResult::kCancelled ? std::string()
-                 : outcome->swap ? SwapFailure(*outcome->swap, g.switch_to)
-                                 : error);
+      Show(back, *r == ExtractResult::kCancelled ? std::string() : error);
     }
     return;
   }
-  // Install (offer page) or repair (TU only, no swap).
-  const View back = g.kind == JobKind::kInstall ? View::kOffer : View::kRepair;
+  // Install (offer page) or repair (TU only, no swap). A failure, the swap included, records nothing:
+  // the offer stays as it was.
   if (*r != ExtractResult::kOk) {
-    // Nothing is recorded: the offer stays as it was (a DLC copied so far is simply copied again).
-    Show(back, *r == ExtractResult::kCancelled ? std::string() : error);
+    Show(g.kind == JobKind::kInstall ? View::kOffer : View::kRepair,
+         *r == ExtractResult::kCancelled ? std::string() : error);
     return;
   }
   for (const std::string& id : outcome->installed) {
@@ -1088,21 +1100,12 @@ void PollGameFiles(App& app) {
       if (!app.state.installed.count(id)) app.state.declined.insert(id);
     }
   }
-  const bool swap_failed = outcome->swap && *outcome->swap != SwapResult::kOk;
   if (outcome->swap == SwapResult::kOk) app.state.build = Build::kTu6;
   SaveState(app);
   RefreshPlayPage(app);
-  if (swap_failed) {
-    Show(View::kOverview, SwapFailure(*outcome->swap, Build::kTu6));
-    return;
-  }
-  if (g.kind == JobKind::kInstall) {
-    Show(View::kOverview, g.message);
-    app.StartGameAndQuit();
-    if (!app.error.empty()) app.page = App::Page::kPlay;
-  } else {
-    FlowDone(app, g.message);
-  }
+  FlowDone(app, g.message);
+  // From a manual "Look for TU6 / DLC" (Ruling 18): back to Play with the new state.
+  if (g.kind == JobKind::kInstall && app.start == App::Start::kNormal) app.page = App::Page::kPlay;
 }
 
 void DrawGameFilesPage(App& app) {

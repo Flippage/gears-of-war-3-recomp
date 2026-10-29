@@ -16,6 +16,10 @@ inline constexpr uint32_t kGow3TitleId = 0x4D5308AB, kTuType = 0x000B0000, kDlcT
 bool IsGameFolder(const std::filesystem::path& dir);
 // start, then up to `parents` parent folders.
 std::vector<std::filesystem::path> SearchRoots(const std::filesystem::path& start, int parents);
+// Where gow3.exe and the launcher look for packages: SearchRoots(exe_dir, 2), then the game folder
+// and its parent (left out when `game` is empty).
+std::vector<std::filesystem::path> PackageRoots(const std::filesystem::path& exe_dir,
+                                                const std::filesystem::path& game);
 
 struct FoundIso {
   std::filesystem::path file;

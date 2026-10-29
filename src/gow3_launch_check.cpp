@@ -61,11 +61,8 @@ void RunLaunchCheck(const std::filesystem::path& game_data_root) {
   const bool game_valid = IsGameFolder(game_data_root);
   std::vector<FoundPackage> packages;
   if (game_valid) {
-    std::vector<std::filesystem::path> roots = SearchRoots(exe_dir, 2);
-    roots.push_back(game_data_root);
-    if (game_data_root.has_parent_path()) roots.push_back(game_data_root.parent_path());
     const auto xex = ReadXexInfoFile(game_data_root / "default.xex");
-    packages = FindPackages(roots, xex ? xex->media_id : 0);
+    packages = FindPackages(PackageRoots(exe_dir, game_data_root), xex ? xex->media_id : 0);
   }
   const LaunchInputs in{build, game_valid, FindTitleUpdateFolder(game_data_root).has_value(), &packages,
                         &state};

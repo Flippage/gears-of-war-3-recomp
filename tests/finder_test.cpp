@@ -27,6 +27,15 @@ TEST(finder_search_roots) {
   CHECK(gow3::setup::SearchRoots(fs::path("C:\\"), 2).size() == 1);
 }
 
+TEST(finder_package_roots) {
+  const auto roots = gow3::setup::PackageRoots(fs::path("C:\\r\\a\\b\\app"), fs::path("D:\\Games\\Gears of War 3"));
+  CHECK(roots.size() == 5);
+  CHECK(roots.size() == 5 && roots[0] == fs::path("C:\\r\\a\\b\\app") && roots[1] == fs::path("C:\\r\\a\\b") &&
+        roots[2] == fs::path("C:\\r\\a") && roots[3] == fs::path("D:\\Games\\Gears of War 3") &&
+        roots[4] == fs::path("D:\\Games"));
+  CHECK(gow3::setup::PackageRoots(fs::path("C:\\app"), fs::path()).size() == 2);  // no game: launcher side only
+}
+
 TEST(finder_iso_title_check) {
   auto root = TempDir("find2");
   WriteFile(root / "Gears.ISO", MakeXiso(0, {{"default.xex", MakeXex(0x58122AD6, 0x4D5308AB)}}));

@@ -75,6 +75,15 @@ std::vector<fs::path> SearchRoots(const fs::path& start, int parents) {
   return roots;
 }
 
+std::vector<fs::path> PackageRoots(const fs::path& exe_dir, const fs::path& game) {
+  std::vector<fs::path> roots = SearchRoots(exe_dir, 2);
+  if (!game.empty()) {
+    roots.push_back(game);
+    if (game.has_parent_path()) roots.push_back(game.parent_path());
+  }
+  return roots;
+}
+
 FindResult FindGame(const std::vector<fs::path>& roots) {
   FindResult result;
   const auto dirs = WithSubfolders(roots);
