@@ -51,3 +51,6 @@ __pycache__/
 
 # Throwaway test profiles (saves, installed DLC copies).
 test-user/
+
+# Brainstorming mockups (local).
+.superpowers/
