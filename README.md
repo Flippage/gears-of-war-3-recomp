@@ -90,6 +90,10 @@ follow `QUICKSTART.txt` inside. It includes everything except the game itself, a
   in `builds\` (`gow3-base.exe`, `gow3-tu6.exe`); `gow3.exe` starts the one you chose.
 - **No DLSS in the download** (NVIDIA's DLSS SDK license; FSR 3.1 / FSR 4 are included). For DLSS,
   build it yourself: see [DLSS](#dlss-build-from-source).
+- **Updating:** use the launcher's Update (it keeps `gow3.toml`, `gow3_game_path.txt` and
+  `launcher.ini`, and your build). To update by hand instead, extract the new zip over the old
+  folder but don't let Windows replace your `gow3.toml`, then run `launcher.exe` once: it notices
+  that `gow3.exe` is the base-game build again and restores your Title Update 6 build.
 
 ## Bring your own game
 
@@ -170,7 +174,8 @@ of this section is for a build from source and for advanced use: run `out\build\
 It finds your game folder through, in order:
 `--game_data_root=<folder>`, a `gow3_game_path.txt` next to the exe (first line = the folder), or
 the exe's folder and up to four parent folders (and their subfolders) holding `default.xex` and
-`GearGame`.
+`GearGame`. `launcher.exe` resolves the folder the same way (with the `--game_data_root` that
+`gow3.exe` hands over to it), so both act on the same game.
 
 Saves, the profile and the shader cache are written to `%LOCALAPPDATA%\GearsOfWar3PC`. The game
 folder is never modified.

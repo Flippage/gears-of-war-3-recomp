@@ -90,10 +90,18 @@ function Find-Llvm([string]$Tool) {
     return $path
 }
 
+# llvm-readobj's output lines; a failed run stops packaging (the export check must not pass by
+# reading nothing).
+function Invoke-ReadObj([string]$Option, [string]$Binary) {
+    $lines = @(& (Find-Llvm 'llvm-readobj.exe') $Option $Binary)
+    if ($LASTEXITCODE -ne 0) { Fail "llvm-readobj $Option $Binary failed (exit code $LASTEXITCODE)." }
+    return ,$lines
+}
+
 # Symbols a binary imports from one DLL (llvm-readobj --coff-imports).
 function Get-ImportedSymbols([string]$Binary, [string]$DllName) {
     $in = $false
-    foreach ($line in (& (Find-Llvm 'llvm-readobj.exe') --coff-imports $Binary)) {
+    foreach ($line in (Invoke-ReadObj '--coff-imports' $Binary)) {
         if ($line -match '^Import \{') { $in = $false; continue }
         if ($line -match '^  Name: (.+)$') { $in = ($Matches[1].Trim() -ieq $DllName); continue }
         if ($in -and $line -match '^  Symbol: (.+) \(\d+\)$') { $Matches[1] }
@@ -102,7 +110,7 @@ function Get-ImportedSymbols([string]$Binary, [string]$DllName) {
 
 function Get-ExportedSymbols([string]$Dll) {
     $set = New-Object 'System.Collections.Generic.HashSet[string]'
-    foreach ($line in (& (Find-Llvm 'llvm-readobj.exe') --coff-exports $Dll)) {
+    foreach ($line in (Invoke-ReadObj '--coff-exports' $Dll)) {
         if ($line -match '^  Name: (.+)$') { [void]$set.Add($Matches[1]) }
     }
     return ,$set
@@ -115,8 +123,14 @@ function Assert-RuntimeExports([string[]]$Exes, [string]$FromSdk) {
         $dll = Join-Path $FromSdk $dllName
         if (-not (Test-Path $dll)) { continue }
         $exports = Get-ExportedSymbols $dll
+        if (-not $exports.Count) { Fail "llvm-readobj found no exports in $dll." }
         foreach ($exe in $Exes) {
-            $missing = @(Get-ImportedSymbols $exe $dllName | Where-Object { -not $exports.Contains($_) })
+            $imports = @(Get-ImportedSymbols $exe $dllName)
+            # Every exe links rexruntime.dll (the launcher for ImGui): none read means a broken check.
+            if ($dllName -ieq 'rexruntime.dll' -and -not $imports.Count) {
+                Fail "llvm-readobj found no imports from rexruntime.dll in $exe."
+            }
+            $missing = @($imports | Where-Object { -not $exports.Contains($_) })
             if ($missing.Count) {
                 foreach ($m in $missing) { Write-Host "Missing in ${dllName}: $m" -ForegroundColor Red }
                 Fail "$exe imports $($missing.Count) symbol(s) that the shipped $dllName does not export."
@@ -200,6 +214,11 @@ function Copy-Content([string]$Root, [string]$StageDir) {
         Copy-Item -Force (Join-Path $Root $name) $StageDir
     }
     Copy-Item -Force (Join-Path $Root 'config\gow3.toml') (Join-Path $StageDir 'gow3.toml')
+    # The launcher starts a deleted gow3.toml from this pristine copy (updates replace it; the
+    # player's gow3.toml is kept).
+    $config = Join-Path $StageDir 'config'
+    New-Item -ItemType Directory -Force -Path $config | Out-Null
+    Copy-Item -Force (Join-Path $Root 'config\gow3.toml') (Join-Path $config 'gow3.default.toml')
     $glyphs = Join-Path $StageDir 'assets\glyphs'
     New-Item -ItemType Directory -Force -Path $glyphs | Out-Null
     Copy-Item -Recurse -Force (Join-Path $Root 'assets\glyphs\*') $glyphs
@@ -264,7 +283,14 @@ function Write-Quickstart([string]$StageDir, [string]$Version) {
         'The first launch of the game compiles shaders and can show "Not responding" for a few minutes.',
         'Let it finish.',
         'Advanced: you can still write the game folder path on the first line of gow3_game_path.txt',
-        'next to gow3.exe, or run gow3.exe --game_data_root="C:\path\to\game".',
+        'next to gow3.exe, or run gow3.exe --game_data_root="C:\path\to\game" (the launcher uses',
+        'the same folder when gow3.exe hands over to it).',
+        '',
+        'UPDATING',
+        'Prefer the launcher''s Update: it keeps your settings, game folder and build. To update by',
+        'hand, extract the new zip over this folder but do not let Windows replace your gow3.toml,',
+        'then run launcher.exe once: it restores your Title Update 6 build (the zip''s gow3.exe is',
+        'the base-game build).',
         '',
         'CONTROLS',
         'A controller works out of the box. For keyboard and mouse, press F10 (PC Options), Controls,',
