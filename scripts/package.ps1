@@ -3,14 +3,18 @@
   Packages an already-built gow3 tree into a Windows release zip (no game files, no DLSS).
 
 .DESCRIPTION
-  Copies gow3.exe, the release runtime DLLs (scripts\build-sdk.ps1 -NoDlss), AMD FidelityFX,
+  Copies the base-game build (builds\gow3-base.exe, and gow3.exe as a copy of it), the Title
+  Update 6 build (builds\gow3-tu6.exe), launcher.exe, version.txt, the release runtime DLLs
+  (scripts\build-sdk.ps1 -NoDlss), AMD FidelityFX,
   the Visual C++ runtime, the button prompt glyphs, gow3.toml, the docs and a generated
   QUICKSTART.txt into a staging folder, and compresses it to
   <OutDir>\gow3-recomp-<Version>-win64.zip with a .sha256 file next to it.
 
-  The zip never contains game data: packaging stops if default.xex or any *.xxx / *.tfc / *.bik
-  / Coalesced*.bin / *.dds file would be staged. It never contains NVIDIA DLSS either: packaging
-  stops if a staged .dll or .exe holds an NGX name (scripts\ngx-scan.ps1). DLSS stays a
+  The zip never contains game data: packaging stops if default.xex, any *.xex / *.xexp / *.xxx /
+  *.tfc / *.bik / *.dds file, Coalesced*.bin, a path with GearGame, or a file starting with an
+  STFS magic (CON, LIVE, PIRS) would be staged. It never contains NVIDIA DLSS either: packaging
+  stops if a nvngx_dlss*.dll is staged or a staged .dll or .exe holds an NGX name
+  (scripts\ngx-scan.ps1). DLSS stays a
   build-from-source feature (README, "DLSS").
 
   Adapted from the Gears of War 2 port's scripts\package.ps1 (BSD-3-Clause, Santiago Quiroz
@@ -20,7 +24,11 @@
   Release version, e.g. "0.1.0". Used in the zip and top folder name.
 
 .PARAMETER BuildDir
-  Folder with the built gow3.exe. Default: out\build\release.
+  Folder with the built base-game gow3.exe and launcher.exe. Default: out\build\release.
+  (-FromBuild is an alias.)
+
+.PARAMETER FromBuildTu6
+  Folder with the Title Update 6 build of gow3.exe. Default: out\build\tu6.
 
 .PARAMETER SdkDir
   Folder with the release rexruntime.dll / rexgpu-xenos.dll and AMD FidelityFX DLLs from
@@ -37,7 +45,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
 
+    [Alias('FromBuild')]
     [string]$BuildDir = 'out\build\release',
+
+    [string]$FromBuildTu6 = 'out\build\tu6',
 
     [string]$SdkDir = 'out\sdk-nodlss',
 
@@ -63,10 +74,40 @@ function Resolve-RootedPath([string]$Root, [string]$Path) {
     return (Join-Path $Root $Path)
 }
 
-function Copy-Binaries([string]$FromBuild, [string]$FromSdk, [string]$StageDir) {
+function Assert-Unlocked([string]$Path) {
+    try {
+        $fs = [System.IO.File]::Open($Path, 'Open', 'Write', 'ReadWrite')
+        $fs.Dispose()
+    } catch {
+        Fail "$Path is locked (the game or launcher is running?). Close it and retry."
+    }
+}
+
+function Get-RuntimeHash([string]$Dir) {
+    $dll = Join-Path $Dir 'rexruntime.dll'
+    if (-not (Test-Path $dll)) { Fail "rexruntime.dll not found in $Dir." }
+    return (Get-FileHash -Path $dll -Algorithm SHA256).Hash
+}
+
+function Copy-Binaries([string]$FromBuild, [string]$FromBuildTu6, [string]$FromSdk, [string]$StageDir, [string]$Version) {
     $exe = Join-Path $FromBuild 'gow3.exe'
+    $exeTu6 = Join-Path $FromBuildTu6 'gow3.exe'
+    $launcher = Join-Path $FromBuild 'launcher.exe'
     if (-not (Test-Path $exe)) { Fail "gow3.exe not found in $FromBuild. Run scripts\build.ps1 first." }
-    Copy-Item -Force $exe $StageDir
+    if (-not (Test-Path $exeTu6)) { Fail "gow3.exe not found in $FromBuildTu6. Run scripts\build.ps1 -Game tu6 first." }
+    if (-not (Test-Path $launcher)) { Fail "launcher.exe not found in $FromBuild. Build the launcher target." }
+    foreach ($f in @($exe, $exeTu6, $launcher)) { Assert-Unlocked $f }
+    # Both builds load the one rexruntime.dll in the zip, so they must come from the same SDK.
+    if ((Get-RuntimeHash $FromBuild) -ne (Get-RuntimeHash $FromBuildTu6)) {
+        Fail 'rexruntime.dll differs between the base and Title Update 6 build folders (different SDK builds).'
+    }
+    $builds = Join-Path $StageDir 'builds'
+    New-Item -ItemType Directory -Force -Path $builds | Out-Null
+    Copy-Item -Force $exe (Join-Path $builds 'gow3-base.exe')
+    Copy-Item -Force $exeTu6 (Join-Path $builds 'gow3-tu6.exe')
+    Copy-Item -Force $exe (Join-Path $StageDir 'gow3.exe')
+    Copy-Item -Force $launcher $StageDir
+    Set-Content -Path (Join-Path $StageDir 'version.txt') -Encoding ASCII -Value $Version
     foreach ($name in @('rexruntime.dll', 'rexgpu-xenos.dll')) {
         $src = Join-Path $FromSdk $name
         if (-not (Test-Path $src)) { Fail "$name not found in $FromSdk. Run scripts\build-sdk.ps1 -NoDlss first." }
@@ -123,6 +164,7 @@ function Copy-Content([string]$Root, [string]$StageDir) {
     Copy-Item -Recurse -Force (Join-Path $Root 'assets\fonts\*') $fonts
     $licenses = Join-Path $StageDir 'licenses'
     New-Item -ItemType Directory -Force -Path $licenses | Out-Null
+    Copy-Item -Force (Join-Path $Root 'thirdparty\imgui-backends\LICENSE.txt') (Join-Path $licenses 'Dear-ImGui-MIT.txt')
     Set-Content -Path (Join-Path $licenses 'AMD-FidelityFX-MIT.txt') -Encoding ASCII -Value @(
         'AMD FidelityFX SDK (amd_fidelityfx_*.dll) - MIT License',
         'https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK',
@@ -158,16 +200,27 @@ function Write-Quickstart([string]$StageDir, [string]$Version) {
         'No game data is included: you need your own copy of the game.',
         '',
         'YOU NEED YOUR OWN COPY',
-        'Dump your own Gears of War 3 disc (base version, no title update) and extract it to a folder',
-        'that contains default.xex and the GearGame folder, for example with xdvdfs:',
-        '  https://github.com/antangelo/xdvdfs',
+        'Bring your own copy of Gears of War 3: the ISO of your own disc, or the game extracted to a',
+        'folder that contains default.xex and the GearGame folder (for example with xdvdfs:',
+        '  https://github.com/antangelo/xdvdfs ).',
         '',
-        'RUNNING',
-        'Tell gow3.exe where the game is, any one of these:',
-        '  - put this folder inside or next to the game folder, or',
-        '  - write the game folder path on the first line of gow3_game_path.txt next to gow3.exe, or',
-        '  - run gow3.exe --game_data_root="C:\path\to\game"',
-        'The first launch compiles shaders and can show "Not responding" for a few minutes. Let it finish.',
+        'FIRST RUN',
+        'Run gow3.exe. It looks for your ISO or game folder (in this folder and the folders around it)',
+        'and walks you through setup. If it finds an ISO it extracts the game to a folder you choose;',
+        'if it finds nothing it asks you to pick your ISO or game folder.',
+        'For Title Update 6 and DLC, put your own packages next to the game (or this folder); setup',
+        'offers them to you, and you choose whether to install them.',
+        'Your ISO and your packages are never changed. Setup writes only to the game folder it',
+        'extracts, its TU6 and DLC subfolders, and its own files next to gow3.exe.',
+        '',
+        'LAUNCHER',
+        'launcher.exe opens the settings, lets you upgrade to or switch between the base-game build',
+        'and the Title Update 6 build, repairs the setup, and checks for new releases (you choose',
+        'Update, Skip or Later). Settings can still be changed in the game with F10.',
+        'The first launch of the game compiles shaders and can show "Not responding" for a few minutes.',
+        'Let it finish.',
+        'Advanced: you can still write the game folder path on the first line of gow3_game_path.txt',
+        'next to gow3.exe, or run gow3.exe --game_data_root="C:\path\to\game".',
         '',
         'CONTROLS',
         'A controller works out of the box. For keyboard and mouse, press F10 (PC Options), Controls,',
@@ -178,6 +231,10 @@ function Write-Quickstart([string]$StageDir, [string]$Version) {
         'SETTINGS AND SAVES',
         'F10 opens the PC Options menu. Settings live in gow3.toml next to the exe.',
         'Saves and the shader cache are in %LOCALAPPDATA%\GearsOfWar3PC.',
+        'WARNING: the Title Update 6 build reads base-game saves, but the base-game build cannot read',
+        'saves the Title Update 6 build wrote. Once you have played with Title Update 6, keep using',
+        'that build. If the base-game build reports "Error Loading Checkpoints", choose Cancel, not',
+        'Overwrite, or the updated saves are deleted.',
         '',
         'UPSCALING',
         'FSR 3.1 / FSR 4 are included. DLSS is not part of this download (NVIDIA licensing):',
@@ -189,10 +246,21 @@ function Write-Quickstart([string]$StageDir, [string]$Version) {
     )
 }
 
+function Test-StfsMagic([string]$Path, [string[]]$Magics) {
+    $buf = New-Object byte[] 4
+    $fs = [System.IO.File]::OpenRead($Path)
+    try { $n = $fs.Read($buf, 0, 4) } finally { $fs.Dispose() }
+    if ($n -lt 4) { return $false }
+    return ($Magics -ccontains [System.Text.Encoding]::ASCII.GetString($buf))
+}
+
 function Assert-NoGameFiles([string]$StageDir) {
+    $stfs = @('CON ', 'LIVE', 'PIRS')
     $bad = Get-ChildItem -Path $StageDir -Recurse -File | Where-Object {
         ($_.Name -ieq 'default.xex') -or ($_.Name -ilike 'Coalesced*.bin') -or
-        ($_.Extension -in @('.xxx', '.tfc', '.bik', '.dds', '.upk', '.iso', '.xex'))
+        ($_.FullName.Substring($StageDir.Length) -ilike '*GearGame*') -or
+        ($_.Extension -in @('.xxx', '.tfc', '.bik', '.dds', '.upk', '.iso', '.xex', '.xexp')) -or
+        (Test-StfsMagic $_.FullName $stfs)
     }
     if ($bad) {
         foreach ($b in $bad) { Write-Host "Game file in staging: $($b.FullName)" -ForegroundColor Red }
@@ -201,6 +269,11 @@ function Assert-NoGameFiles([string]$StageDir) {
 }
 
 function Assert-NoNgx([string]$StageDir) {
+    $dlss = @(Get-ChildItem -Path $StageDir -Recurse -File | Where-Object { $_.Name -ilike 'nvngx_dlss*.dll' })
+    if ($dlss.Count) {
+        foreach ($d in $dlss) { Write-Host "DLSS in staging: $($d.FullName)" -ForegroundColor Red }
+        Fail 'Refusing to package: DLSS must not ship. Build with scripts\build-sdk.ps1 -NoDlss.'
+    }
     $withNgx = @(Find-NgxBinaries $StageDir)
     if (-not $withNgx.Count) {
         Write-Host 'No NVIDIA NGX names in the staged .dll and .exe files.'
@@ -213,6 +286,7 @@ function Assert-NoNgx([string]$StageDir) {
 # ---- main ---------------------------------------------------------------------------------
 $root = Split-Path -Parent $PSScriptRoot
 $BuildDir = Resolve-RootedPath $root $BuildDir
+$FromBuildTu6 = Resolve-RootedPath $root $FromBuildTu6
 $SdkDir = Resolve-RootedPath $root $SdkDir
 $OutDir = Resolve-RootedPath $root $OutDir
 
@@ -226,7 +300,7 @@ if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
 New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
 Step 'Binaries'
-Copy-Binaries $BuildDir $SdkDir $stageDir
+Copy-Binaries $BuildDir $FromBuildTu6 $SdkDir $stageDir $Version
 Step 'Visual C++ runtime'
 Copy-VcRuntime $stageDir
 Step 'Glyphs, settings, docs and QUICKSTART.txt'

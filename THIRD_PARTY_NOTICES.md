@@ -110,6 +110,13 @@ The texture streaming pool setting follows the Gears of War 2 port's `gow2_textu
   only), Copyright 2023 The Teko Project Authors (https://www.github.com/googlefonts/teko).
 - License: SIL Open Font License 1.1, full text in `assets/fonts/OFL.txt`.
 
+## Dear ImGui
+
+- Used by `launcher.exe` (the Win32 and DirectX 11 backends are in `thirdparty/imgui-backends/`).
+- Copyright (c) 2014-2025 Omar Cornut. License: MIT; the full text is in
+  `thirdparty/imgui-backends/LICENSE.txt` and ships in the release zip as
+  `licenses/Dear-ImGui-MIT.txt`.
+
 ## NVIDIA DLSS SDK
 
 Not included. `scripts/build-sdk.ps1` clones [NVIDIA/DLSS](https://github.com/NVIDIA/DLSS) on the

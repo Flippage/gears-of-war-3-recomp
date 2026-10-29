@@ -23,8 +23,9 @@ reuses their open-source tools and runtime patches (see [Credits](#credits)).
 
 ## Status
 
-Built from the base disc executable only (title ID `4D5308AB`, disc version `0.0.0.11`, media ID
-`58122AD6`). Title updates are not supported.
+Built from the base disc executable (title ID `4D5308AB`, disc version `0.0.0.11`, media ID
+`58122AD6`). The release also includes a separate build for Title Update 6, which you can use
+when you have your own copy of that update (see [Download](#download)).
 
 - [x] Boots, title screen, menus, profile sign-in
 - [x] Campaign: loads into missions and plays (tested through the first chapters)
@@ -81,9 +82,12 @@ Get the latest `gow3-recomp-<version>-win64.zip` from
 [Releases](https://github.com/Flippage/gears-of-war-3-recomp/releases), extract it anywhere, and
 follow `QUICKSTART.txt` inside. It includes everything except the game itself, and DLSS:
 
-- **You still need your own game files** (see [Bring your own game](#bring-your-own-game)). Point
-  the exe at them with a `gow3_game_path.txt` next to `gow3.exe` (first line = the game folder),
-  or put the extracted folder inside or next to the game folder.
+- **You still need your own copy of the game** (see [Bring your own game](#bring-your-own-game)).
+  Run `gow3.exe`. It finds your ISO or game folder and walks you through setup. For Title Update 6
+  and DLC, put your own packages next to the game and setup offers them to you.
+- **`launcher.exe`** opens the settings, upgrades or switches between the base-game and Title
+  Update 6 builds, and checks for new releases (Update, Skip or Later). The zip holds both builds
+  in `builds\` (`gow3-base.exe`, `gow3-tu6.exe`); `gow3.exe` starts the one you chose.
 - **No DLSS in the download** (NVIDIA's DLSS SDK license; FSR 3.1 / FSR 4 are included). For DLSS,
   build it yourself: see [DLSS](#dlss-build-from-source).
 
@@ -158,7 +162,9 @@ game file. Stop and ask me before deleting anything. When it builds, tell me whe
 
 ## Running
 
-Run `out\build\release\gow3.exe`. It finds your game folder through, in order:
+From the release zip, run `gow3.exe`: the first run is guided (see [Download](#download)). The rest
+of this section is for a build from source and for advanced use: run `out\build\release\gow3.exe`.
+It finds your game folder through, in order:
 `--game_data_root=<folder>`, a `gow3_game_path.txt` next to the exe (first line = the folder), or
 the exe's folder and up to four parent folders (and their subfolders) holding `default.xex` and
 `GearGame`.
