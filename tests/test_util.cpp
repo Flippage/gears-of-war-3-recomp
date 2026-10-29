@@ -70,6 +70,10 @@ std::vector<uint8_t> MakeXex(uint32_t media_id, uint32_t title_id) {
 }
 
 bool WriteFile(const fs::path& path, std::string_view data) {
+  if (path.has_parent_path()) {
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+  }
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   out.write(data.data(), static_cast<std::streamsize>(data.size()));
   return static_cast<bool>(out);
@@ -281,4 +285,10 @@ std::vector<uint8_t> MakeXiso(uint64_t partition_offset,
     }
   }
   return img;
+}
+
+void MakeFakeGame(const fs::path& dir) {
+  WriteFile(dir / "default.xex", MakeXex(0x58122AD6, 0x4D5308AB));
+  std::error_code ec;
+  fs::create_directories(dir / "GearGame", ec);
 }

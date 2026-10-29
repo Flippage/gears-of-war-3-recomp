@@ -22,6 +22,7 @@
 #include <rex/system/xmemory.h>
 #include <rex/ui/flags.h>
 
+#include "setup/finder.h"
 #include "setup/state.h"
 #include "gow3_content_fix.h"
 #include "gow3_crash_log.h"
@@ -141,9 +142,7 @@ class Gow3App : public rex::ReXApp {
 
   // A game folder holds default.xex and GearGame\.
   static bool IsGameFolder(const std::filesystem::path& dir) {
-    std::error_code ec;
-    return !dir.empty() && std::filesystem::exists(dir / "default.xex", ec) &&
-           std::filesystem::is_directory(dir / "GearGame", ec);
+    return gow3::setup::IsGameFolder(dir);
   }
 
   // The folder itself or one of its subfolders.

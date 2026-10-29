@@ -67,3 +67,5 @@ std::vector<uint8_t> Bytes(size_t n);
 // name makes sub-directories (a trailing '\' makes an empty one); names are otherwise written raw.
 std::vector<uint8_t> MakeXiso(uint64_t partition_offset,
                               std::vector<std::pair<std::string, std::vector<uint8_t>>> files);
+// default.xex (Gears 3 title id) and an empty GearGame\ folder under dir.
+void MakeFakeGame(const std::filesystem::path& dir);
