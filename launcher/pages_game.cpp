@@ -892,7 +892,8 @@ void DrawSetup(App& app) {
   ImGui::PushTextWrapPos(0.0f);
   ImGui::TextColored(kMuted, "%s",
                      "Also install Title Update 6 or DLC? Tick what you want; Add files picks the package files, "
-                     "or a folder that holds them. DLC that needs Title Update 6 only shows up in the game with it.");
+                     "or a folder that holds them (unpack any .zip, .7z or .rar first). DLC that needs Title "
+                     "Update 6 only shows up in the game with it.");
   ImGui::PopTextWrapPos();
   const float list_h = ImGui::GetContentRegionAvail().y - Dp(40.0f) - Dp(20.0f);
   ImGui::BeginChild("##setup_list", ImVec2(0, std::max(list_h, Dp(60.0f))));
@@ -1054,9 +1055,10 @@ void DrawOffer(App& app) {
   ImGui::TextColored(kMuted, "%s",
                      g.items.empty()
                          ? "None were found next to your game or the launcher. Use Add files to pick the package "
-                           "files, or a folder that holds them."
+                           "files, or a folder that holds them. Unpack any .zip, .7z or .rar first: archives are "
+                           "not searched."
                          : "Tick what to install. Not listed? Use Add files to pick the package files, or a folder "
-                           "that holds them.");
+                           "that holds them. Unpack any .zip, .7z or .rar first: archives are not searched.");
   ImGui::PopTextWrapPos();
   ImGui::Dummy(ImVec2(0, Dp(4.0f)));
   const float list_h = ImGui::GetContentRegionAvail().y - Dp(40.0f) - Dp(54.0f);
@@ -1115,8 +1117,10 @@ void DrawAskContent(App& app) {
   ImGui::Dummy(ImVec2(0, Dp(4.0f)));
   ImGui::PushFont(nullptr, kSmallSize);
   ImGui::TextColored(kMuted, "%s",
-                     "They are your own packages, for example copied from your Xbox 360. Some DLC only shows up in "
-                     "the game with Title Update 6. You can also add them later on the Game files page.");
+                     "They are your own packages, for example copied from your Xbox 360. Put them in a folder "
+                     "next to the game; unpack any .zip, .7z or .rar first, since archives are not searched. Some "
+                     "DLC only shows up in the game with Title Update 6. You can also add them later on the Game "
+                     "files page.");
   ImGui::PopFont();
   ImGui::PopTextWrapPos();
   if (!g.message.empty()) ImGui::TextColored(kAccent, "%s", g.message.c_str());

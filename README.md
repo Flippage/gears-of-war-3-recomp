@@ -84,7 +84,8 @@ follow `QUICKSTART.txt` inside. It includes everything except the game itself, a
 
 - **You still need your own copy of the game** (see [Bring your own game](#bring-your-own-game)).
   Run `gow3.exe`. It finds your ISO or game folder and walks you through setup. For Title Update 6
-  and DLC, put your own packages next to the game and setup offers them to you.
+  and DLC, put your own packages next to the game and setup offers them to you. Unpack any
+  `.zip`, `.7z` or `.rar` first: the launcher reads the package files in folders, not archives.
 - **`launcher.exe`** opens the settings, upgrades or switches between the base-game and Title
   Update 6 builds, and checks for new releases (Update, Skip or Later). The zip holds both builds
   in `builds\` (`gow3-base.exe`, `gow3-tu6.exe`); `gow3.exe` starts the one you chose.
@@ -98,7 +99,9 @@ follow `QUICKSTART.txt` inside. It includes everything except the game itself, a
 ## Bring your own game
 
 The release can also use your own Title Update 6 and DLC packages: put them next to the game and
-the launcher offers them (see [Download](#download)).
+the launcher offers them (see [Download](#download)). Keep them as files in folders (for example
+`RAAM's Shadow\4D5308AB\00000002\<package>`); unpack them first if they came in a `.zip`, `.7z` or
+`.rar`, since the launcher doesn't look inside archives.
 
 1. Dump **your own** Gears of War 3 disc (base version, no title update) to an ISO.
 2. Extract it to a folder **outside this repository**, for example with
