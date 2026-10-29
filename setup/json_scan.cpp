@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "setup/path_util.h"
+
 namespace gow3::setup {
 namespace {
 
@@ -181,24 +183,6 @@ class Parser {
     return true;
   }
 
-  static void AppendUtf8(std::string* out, uint32_t cp) {
-    if (cp < 0x80) {
-      *out += static_cast<char>(cp);
-    } else if (cp < 0x800) {
-      *out += static_cast<char>(0xC0 | cp >> 6);
-      *out += static_cast<char>(0x80 | (cp & 0x3F));
-    } else if (cp < 0x10000) {
-      *out += static_cast<char>(0xE0 | cp >> 12);
-      *out += static_cast<char>(0x80 | (cp >> 6 & 0x3F));
-      *out += static_cast<char>(0x80 | (cp & 0x3F));
-    } else {
-      *out += static_cast<char>(0xF0 | cp >> 18);
-      *out += static_cast<char>(0x80 | (cp >> 12 & 0x3F));
-      *out += static_cast<char>(0x80 | (cp >> 6 & 0x3F));
-      *out += static_cast<char>(0x80 | (cp & 0x3F));
-    }
-  }
-
   // At '"': the decoded string (UTF-8). Raw control characters and bad escapes fail.
   bool String(std::string* out) {
     if (!Eat('"')) return false;
@@ -231,7 +215,7 @@ class Parser {
             if (!EatWord("\\u") || !Hex4(&lo) || lo < 0xDC00 || lo > 0xDFFF) return false;
             cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
           }
-          AppendUtf8(out, cp);
+          AppendUtf8(*out, cp);
           break;
         }
         default: return false;

@@ -206,4 +206,13 @@ bool SaveSettings(const std::filesystem::path& path, const opt::Model& m) {
   return rex::glue::UpdateTomlFile(path, entries);
 }
 
+bool CopyDefaultSettings(const std::filesystem::path& default_toml, const std::filesystem::path& toml) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  if (fs::exists(toml, ec) || ec || !fs::is_regular_file(default_toml, ec)) return false;
+  if (!fs::copy_file(default_toml, toml, fs::copy_options::none, ec)) return false;
+  fs::permissions(toml, fs::perms::owner_write, fs::perm_options::add, ec);
+  return true;
+}
+
 }  // namespace gow3::setup

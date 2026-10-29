@@ -25,5 +25,8 @@ std::string TomlLiteralFor(std::string_view key, std::string_view value);
 // Writes the touched rows only (composites expanded to their raw keys). False, and nothing
 // written, when the file is unreadable. No touched rows writes nothing.
 bool SaveSettings(const std::filesystem::path& toml, const rex::glue::options::Model& m);
+// When `toml` is missing and `default_toml` (the release's config\gow3.default.toml) exists, copies
+// it there (writable). True when it was copied.
+bool CopyDefaultSettings(const std::filesystem::path& default_toml, const std::filesystem::path& toml);
 
 }  // namespace gow3::setup

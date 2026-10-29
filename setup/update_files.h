@@ -22,4 +22,15 @@ std::optional<std::string> UnsafeEntry(std::string_view listing);
 // case-insensitively.
 std::vector<std::filesystem::path> FilesToCopy(const std::filesystem::path& src);
 
+// update.tmp\rollback-failed: written when an update's rollback could not put every file back (the
+// originals are then in update.tmp\backup). update.tmp is never removed while it exists.
+inline constexpr const wchar_t* kRollbackFailedMarker = L"rollback-failed";
+// <release_dir>\update.tmp holds originals a failed rollback left behind (kRollbackFailedMarker).
+// Files in update.tmp\backup alone mean nothing: after a good update the replaced DLLs the
+// launcher had loaded stay there until it exits.
+bool UpdateBackupPending(const std::filesystem::path& release_dir);
+// Removes a leftover <release_dir>\update.tmp (a finished update could not delete files that were
+// still loaded) unless UpdateBackupPending. Errors are ignored; the next start tries again.
+void RemoveStaleUpdateTmp(const std::filesystem::path& release_dir);
+
 }  // namespace gow3::setup

@@ -15,6 +15,7 @@ std::vector<const FoundPackage*> NewPackages(const std::vector<FoundPackage>& fo
 
 LaunchAction DecideLaunch(const LaunchInputs& in) {
   if (!in.game_valid) return LaunchAction::kSetup;
+  if (in.state->existed && in.state->build != in.build && in.recorded_build_available) return LaunchAction::kRepair;
   bool has_new = !NewPackages(*in.packages, *in.state, in.build).empty();
   if (in.build == Build::kBase) return has_new ? LaunchAction::kOffer : LaunchAction::kStartGame;
   if (!in.tu6_present) return LaunchAction::kRepair;

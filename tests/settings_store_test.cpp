@@ -84,3 +84,23 @@ TEST(settings_literals_by_control) {
   CHECK(TomlLiteralFor("user_name", "a\\b\"c") == "\"a\\\\b\\\"c\"");  // kText escapes
   CHECK(TomlLiteralFor("user_name", "a\nb\tc") == "\"a\\nb\\tc\"");
 }
+
+TEST(settings_copy_default) {
+  auto d = TempDir("set_default");
+  WriteFile(d / "config" / "gow3.default.toml", "# release default\nreadback_memexport = false\n");
+  const std::filesystem::path dflt = d / "config" / "gow3.default.toml";
+  std::filesystem::permissions(dflt, std::filesystem::perms::owner_write, std::filesystem::perm_options::remove);
+  CHECK(gow3::setup::CopyDefaultSettings(dflt, d / "gow3.toml"));
+  CHECK(FileText(d / "gow3.toml") == "# release default\nreadback_memexport = false\n");
+  // The copy is writable, so the touched keys go in after the default's lines.
+  auto m = gow3::setup::MakeSettingsModel(gow3::setup::LoadSettings(d / "gow3.toml"));
+  m.Set("window_mode", "windowed");
+  CHECK(gow3::setup::SaveSettings(d / "gow3.toml", m));
+  CHECK(FileText(d / "gow3.toml").contains("# release default") && FileText(d / "gow3.toml").contains("fullscreen = false"));
+  // An existing file is never replaced; no default, nothing copied.
+  CHECK(!gow3::setup::CopyDefaultSettings(dflt, d / "gow3.toml"));
+  CHECK(FileText(d / "gow3.toml").contains("fullscreen = false"));
+  CHECK(!gow3::setup::CopyDefaultSettings(d / "none.toml", d / "other.toml"));
+  CHECK(!std::filesystem::exists(d / "other.toml"));
+  std::filesystem::permissions(dflt, std::filesystem::perms::owner_write, std::filesystem::perm_options::add);
+}

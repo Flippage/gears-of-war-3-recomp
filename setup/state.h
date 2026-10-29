@@ -21,6 +21,7 @@ struct LauncherState {
 };
 
 // launcher.ini is `key = value` lines; unknown keys are ignored on load and dropped on save.
+// declined / installed are package ids separated by '|' (a file name can hold a comma, not a '|').
 LauncherState LoadState(const std::filesystem::path& ini);
 // Writes <ini>.tmp, then replaces the target.
 bool SaveState(const std::filesystem::path& ini, const LauncherState& s);

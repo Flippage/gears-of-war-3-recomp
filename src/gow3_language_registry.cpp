@@ -6,6 +6,8 @@
 #include "gow3_language.h"
 
 #include <cctype>
+#include <filesystem>
+#include <string>
 #include <system_error>
 
 namespace rex::glue {
@@ -28,14 +30,21 @@ const std::set<std::string>& GameLanguages() {
 std::vector<std::string> ScanGameLanguages(const std::filesystem::path& game_root) {
   std::vector<std::string> codes;
   std::error_code ec;
-  for (const auto& item :
-       std::filesystem::directory_iterator(game_root / "GearGame" / "CookedXbox360", ec)) {
-    const std::string name = item.path().filename().string();
+  // increment(ec) and the native (wide) name: nothing here throws, whatever the folder holds.
+  for (std::filesystem::directory_iterator it(game_root / "GearGame" / "CookedXbox360", ec), end;
+       !ec && it != end; it.increment(ec)) {
+    const std::wstring name = it->path().filename().native();
     // Coalesced_<code>.bin: the language's text bundle.
-    if (name.size() == 17 && name.rfind("Coalesced_", 0) == 0 && name.substr(13) == ".bin") {
-      std::string code = name.substr(10, 3);
-      for (char& c : code) c = char(std::toupper(static_cast<unsigned char>(c)));
-      codes.push_back(std::move(code));
+    if (name.size() == 17 && name.starts_with(L"Coalesced_") && name.ends_with(L".bin")) {
+      std::string code;
+      for (const wchar_t c : name.substr(10, 3)) {
+        if (c > 0x7F) {
+          code.clear();
+          break;
+        }
+        code += char(std::toupper(static_cast<unsigned char>(c)));
+      }
+      if (code.size() == 3) codes.push_back(std::move(code));
     }
   }
   return codes;

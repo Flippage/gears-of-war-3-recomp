@@ -96,3 +96,72 @@ TEST(finder_package_skip_list_and_size_floor) {
   auto p = gow3::setup::FindPackages({root}, 0);
   CHECK(p.size() == 1 && p[0].file.filename() == "exact");
 }
+
+TEST(finder_extracting_marker) {
+  auto root = TempDir("find7");
+  MakeFakeGame(root / "Game");
+  CHECK(gow3::setup::IsGameFolder(root / "Game"));
+  WriteFile(root / "Game" / gow3::setup::kExtractingMarker, "");
+  CHECK(!gow3::setup::IsGameFolder(root / "Game"));
+  CHECK(!gow3::setup::FindGame({root}).game);
+  fs::remove(root / "Game" / gow3::setup::kExtractingMarker);
+  CHECK(gow3::setup::IsGameFolder(root / "Game"));
+}
+
+TEST(finder_resolve_game_folder) {
+  using gow3::setup::ResolveGameFolder;
+  auto root = TempDir("resolve");
+  const fs::path exe_dir = root / "a" / "b" / "release";
+  fs::create_directories(exe_dir);
+  // Nothing anywhere: the given folder comes back as it is.
+  CHECK(ResolveGameFolder(root / "nope", exe_dir) == root / "nope");
+  // Two parents up, in a subfolder.
+  MakeFakeGame(root / "a" / "Gears of War 3");
+  CHECK(ResolveGameFolder({}, exe_dir) == root / "a" / "Gears of War 3");
+  // The path file wins over the search; it may name the game's parent.
+  MakeFakeGame(root / "elsewhere" / "G3");
+  CHECK(gow3::setup::WriteGamePathFile(exe_dir / "gow3_game_path.txt", root / "elsewhere"));
+  CHECK(ResolveGameFolder({}, exe_dir) == root / "elsewhere" / "G3");
+  // A stale path file falls through to the search.
+  CHECK(gow3::setup::WriteGamePathFile(exe_dir / "gow3_game_path.txt", root / "gone"));
+  CHECK(ResolveGameFolder({}, exe_dir) == root / "a" / "Gears of War 3");
+  // A valid --game_data_root wins over both.
+  CHECK(ResolveGameFolder(root / "elsewhere" / "G3", exe_dir) == root / "elsewhere" / "G3");
+  // Five levels up is too far.
+  const fs::path deep = root / "a" / "1" / "2" / "3" / "4" / "5";
+  fs::create_directories(deep);
+  CHECK(ResolveGameFolder({}, deep).empty());
+}
+
+TEST(finder_game_data_root_arg) {
+  using gow3::setup::GameDataRootArg;
+  CHECK(GameDataRootArg(L"").empty());
+  CHECK(GameDataRootArg(L"--fullscreen=false").empty());
+  CHECK(GameDataRootArg(L"--game_data_root=C:\\G3") == fs::path(L"C:\\G3"));
+  CHECK(GameDataRootArg(L"--x=1 --game_data_root=\"D:\\Spiele\\Gears of War 3\" --y") ==
+        fs::path(L"D:\\Spiele\\Gears of War 3"));
+  CHECK(GameDataRootArg(L"\"--game_data_root=D:\\My Games\\G3\"") == fs::path(L"D:\\My Games\\G3"));
+  CHECK(GameDataRootArg(L"--game_data_root \"E:\\G 3\"") == fs::path(L"E:\\G 3"));
+  // A trailing backslash before the closing quote: split as gow3.exe's own command line is.
+  CHECK(GameDataRootArg(L"--game_data_root=\"C:\\G3\\\\\" --y") == fs::path(L"C:\\G3\\"));
+  CHECK(GameDataRootArg(L"--game_data_root=\"C:\\G3\\\"") == fs::path(L"C:\\G3\""));
+  CHECK(GameDataRootArg(L"--game_data_root_x=C:\\G3").empty());
+}
+
+TEST(finder_title_update_folder) {
+  using gow3::setup::FindTitleUpdateFolderIn;
+  auto root = TempDir("tu6find");
+  const fs::path game = root / "game", exe = root / "release", own = root / "mine";
+  fs::create_directories(game);
+  fs::create_directories(exe);
+  CHECK(!FindTitleUpdateFolderIn(game, exe, {}));
+  WriteFile(game / "TU6" / "default.xexp", "x");
+  CHECK(FindTitleUpdateFolderIn(game, exe, {}) == game / "TU6");
+  WriteFile(exe / "TU6" / "default.xexp", "x");
+  CHECK(FindTitleUpdateFolderIn(game, exe, {}) == exe / "TU6");
+  // gow3_tu6_folder set: only that folder counts.
+  CHECK(!FindTitleUpdateFolderIn(game, exe, own));
+  WriteFile(own / "default.xexp", "x");
+  CHECK(FindTitleUpdateFolderIn(game, exe, own) == own);
+  CHECK(gow3::setup::TitleUpdateCandidates(game, exe, {}).size() == 2);
+}

@@ -20,11 +20,21 @@ TEST(state_format_and_overwrite) {
   CHECK(gow3::setup::SaveState(dir / "launcher.ini", s));
   CHECK(gow3::setup::SaveState(dir / "launcher.ini", s));  // replaces existing
   CHECK(FileText(dir / "launcher.ini") ==
-        "build = base\ndeclined = a:1,b:2\ninstalled = c:3\nskip_release = \ncheck_updates = true\nlast_check = 0\n");
+        "build = base\ndeclined = a:1|b:2\ninstalled = c:3\nskip_release = \ncheck_updates = true\nlast_check = 0\n");
   CHECK(!std::filesystem::exists(dir / "launcher.ini.tmp"));
   WriteFile(dir / "x.ini", "junk\nbuild = tu6\nfoo = bar\n");
   auto r = gow3::setup::LoadState(dir / "x.ini");
   CHECK(r.existed && r.build == gow3::setup::Build::kTu6 && r.declined.empty());
+}
+TEST(state_ids_with_comma) {
+  auto dir = TempDir("state4");
+  gow3::setup::LauncherState s;
+  s.installed = {"RAAM's Shadow, part 1:123", "x:1"};
+  s.declined = {"Fenix, Marcus:7"};
+  CHECK(gow3::setup::SaveState(dir / "launcher.ini", s));
+  auto r = gow3::setup::LoadState(dir / "launcher.ini");
+  CHECK(r.installed == s.installed && r.declined == s.declined);
+  CHECK(r.installed.count("RAAM's Shadow, part 1:123") == 1);
 }
 TEST(game_path_non_ascii) {
   auto dir = TempDir("path");

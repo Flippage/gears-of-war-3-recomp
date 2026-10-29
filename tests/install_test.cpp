@@ -118,3 +118,47 @@ TEST(install_tu_final_rename_failure_restores_old) {
   CHECK(r == gow3::setup::ExtractResult::kFailed && !err.empty());
   CHECK(FileText(game / "TU6" / "default.xexp") == "FIRST" && !fs::exists(game / "TU6.old"));
 }
+
+TEST(swap_build_clears_read_only) {
+  auto d = TempDir("swap_ro");
+  WriteFile(d / "builds" / "gow3-tu6.exe", "TU6");
+  WriteFile(d / "builds" / "gow3-base.exe", "BASE");
+  WriteFile(d / "gow3.exe", "OLD");
+  const fs::path tu6 = d / "builds" / "gow3-tu6.exe";
+  SetFileAttributesW(tu6.c_str(), FILE_ATTRIBUTE_READONLY);
+  CHECK(gow3::setup::SwapBuild(d, gow3::setup::Build::kTu6, 1s) == gow3::setup::SwapResult::kOk);
+  CHECK(!(GetFileAttributesW((d / "gow3.exe").c_str()) & FILE_ATTRIBUTE_READONLY));
+  CHECK(gow3::setup::SwapBuild(d, gow3::setup::Build::kBase, 1s) == gow3::setup::SwapResult::kOk);
+  CHECK(FileText(d / "gow3.exe") == "BASE");
+  SetFileAttributesW(tu6.c_str(), FILE_ATTRIBUTE_NORMAL);  // so TempDir can empty it next run
+}
+
+TEST(wait_for_game_exit) {
+  auto d = TempDir("wait");
+  WriteFile(d / "gow3.exe", "x");
+  CHECK(gow3::setup::WaitForGameExit(d / "gow3.exe", 0ms) == gow3::setup::WaitResult::kExited);
+  fs::create_directories(d / "ping");
+  fs::copy_file(SystemExe("PING.EXE"), d / "ping" / "gow3.exe");
+  TestProcess proc = StartProcess(d / "ping" / "gow3.exe", L"-n 6 127.0.0.1");
+  CHECK(gow3::setup::WaitForGameExit(d / "ping" / "gow3.exe", 300ms) == gow3::setup::WaitResult::kTimedOut);
+  CHECK(gow3::setup::WaitForGameExit(d / "ping" / "gow3.exe", 10s, [] { return true; }) ==
+        gow3::setup::WaitResult::kCancelled);
+  KillProcess(proc);
+}
+TEST(same_file_contents) {
+  auto d = TempDir("same");
+  WriteFile(d / "a", "BASE BUILD");
+  WriteFile(d / "b", "BASE BUILD");
+  WriteFile(d / "c", "TU6 BUILD!");  // same size, other bytes
+  WriteFile(d / "e", "TU6");
+  CHECK(gow3::setup::SameFileContents(d / "a", d / "b"));
+  CHECK(!gow3::setup::SameFileContents(d / "a", d / "c"));
+  CHECK(!gow3::setup::SameFileContents(d / "a", d / "e"));
+  CHECK(!gow3::setup::SameFileContents(d / "a", d / "missing"));
+  auto big = Bytes(3 << 20);
+  WriteFile(d / "big1", big);
+  big.back() ^= 1;
+  WriteFile(d / "big2", big);
+  CHECK(!gow3::setup::SameFileContents(d / "big1", d / "big2"));
+  CHECK(gow3::setup::SameFileContents(d / "big1", d / "big1"));
+}

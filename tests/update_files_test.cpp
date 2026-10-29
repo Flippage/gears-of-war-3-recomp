@@ -48,3 +48,32 @@ TEST(update_files_to_copy) {
                                            "builds/gow3.exe", "launcher.exe", "rexruntime.dll"}));
   CHECK(gow3::setup::FilesToCopy(src / "missing").empty());
 }
+
+TEST(update_backup_pending) {
+  using gow3::setup::RemoveStaleUpdateTmp;
+  using gow3::setup::UpdateBackupPending;
+  const fs::path dir = TempDir("update_pending");
+  CHECK(!UpdateBackupPending(dir));
+  RemoveStaleUpdateTmp(dir);  // nothing there: fine
+  // Left by a finished update (replaced DLLs that were loaded, a download): removed.
+  WriteFile(dir / "update.tmp" / "backup" / "rexruntime.dll", "old");
+  WriteFile(dir / "update.tmp" / "x.zip", "zip");
+  CHECK(!UpdateBackupPending(dir));
+  RemoveStaleUpdateTmp(dir);
+  CHECK(!fs::exists(dir / "update.tmp"));
+  // A failed rollback's originals (the marker): kept.
+  WriteFile(dir / "update.tmp" / "backup" / "builds" / "gow3-tu6.exe", "old");
+  WriteFile(dir / "update.tmp" / gow3::setup::kRollbackFailedMarker, "builds\\gow3-tu6.exe\n");
+  CHECK(UpdateBackupPending(dir));
+  RemoveStaleUpdateTmp(dir);
+  CHECK(fs::exists(dir / "update.tmp" / "backup" / "builds" / "gow3-tu6.exe"));
+}
+
+TEST(update_copies_default_toml) {
+  const fs::path src = TempDir("update_files2") / "gow3-recomp-9.9.9-win64";
+  WriteFile(src / "gow3.toml", "x");
+  WriteFile(src / "config" / "gow3.default.toml", "x");
+  const std::vector<fs::path> files = gow3::setup::FilesToCopy(src);
+  // gow3.toml is the player's; the release's default is replaced like any release file.
+  CHECK(files.size() == 1 && files[0].generic_string() == "config/gow3.default.toml");
+}

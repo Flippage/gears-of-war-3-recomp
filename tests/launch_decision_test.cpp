@@ -14,6 +14,30 @@ TEST(decide_order) {
   CHECK(DecideLaunch({Build::kBase, true, false, &dlc, &st}) == LaunchAction::kStartGame);
 }
 
+TEST(decide_build_replaced) {
+  using namespace gow3::setup;
+  LauncherState st;
+  st.existed = true;
+  st.build = Build::kTu6;
+  std::vector<FoundPackage> none, dlc{FakeDlc("raam", 10)};
+  // TU6 recorded, base gow3.exe running (a new zip extracted over the folder): repair, before the offer.
+  CHECK(DecideLaunch({Build::kBase, true, false, &none, &st, true}) == LaunchAction::kRepair);
+  CHECK(DecideLaunch({Build::kBase, true, false, &dlc, &st, true}) == LaunchAction::kRepair);
+  // No builds\gow3-tu6.exe to restore (a dev tree): as before.
+  CHECK(DecideLaunch({Build::kBase, true, false, &none, &st, false}) == LaunchAction::kStartGame);
+  // The recorded build is running.
+  CHECK(DecideLaunch({Build::kTu6, true, true, &none, &st, true}) == LaunchAction::kStartGame);
+  // Setup still comes first.
+  CHECK(DecideLaunch({Build::kBase, false, false, &none, &st, true}) == LaunchAction::kSetup);
+  // No launcher.ini (v0.2.2): its default build says nothing.
+  LauncherState old;
+  CHECK(DecideLaunch({Build::kTu6, true, true, &none, &old, true}) == LaunchAction::kStartGame);
+  // Base recorded, TU6 gow3.exe running.
+  LauncherState base;
+  base.existed = true;
+  CHECK(DecideLaunch({Build::kTu6, true, true, &none, &base, true}) == LaunchAction::kRepair);
+}
+
 TEST(new_packages_skip_other_disc_tu) {
   gow3::setup::LauncherState st;
   CHECK(gow3::setup::NewPackages({FakeTu("tu", 20, false)}, st, gow3::setup::Build::kBase).empty());

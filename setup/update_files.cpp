@@ -63,4 +63,15 @@ std::vector<fs::path> FilesToCopy(const fs::path& src) {
   return files;
 }
 
+bool UpdateBackupPending(const fs::path& release_dir) {
+  std::error_code ec;
+  return fs::exists(release_dir / "update.tmp" / kRollbackFailedMarker, ec);
+}
+
+void RemoveStaleUpdateTmp(const fs::path& release_dir) {
+  if (UpdateBackupPending(release_dir)) return;
+  std::error_code ec;
+  fs::remove_all(release_dir / "update.tmp", ec);
+}
+
 }  // namespace gow3::setup

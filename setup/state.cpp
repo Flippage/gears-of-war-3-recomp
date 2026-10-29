@@ -6,6 +6,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include "setup/path_util.h"
+
 namespace fs = std::filesystem;
 
 namespace gow3::setup {
@@ -17,14 +19,17 @@ std::string Trim(std::string_view s) {
   return std::string(s);
 }
 
+// Package ids are "<file name>:<size>"; a file name may hold commas, never '|'.
+constexpr char kListSeparator = '|';
+
 std::set<std::string> ParseList(std::string_view v) {
   std::set<std::string> out;
   while (!v.empty()) {
-    const size_t comma = v.find(',');
-    std::string item = Trim(v.substr(0, comma));
+    const size_t sep = v.find(kListSeparator);
+    std::string item = Trim(v.substr(0, sep));
     if (!item.empty()) out.insert(std::move(item));
-    if (comma == std::string_view::npos) break;
-    v.remove_prefix(comma + 1);
+    if (sep == std::string_view::npos) break;
+    v.remove_prefix(sep + 1);
   }
   return out;
 }
@@ -32,20 +37,12 @@ std::set<std::string> ParseList(std::string_view v) {
 std::string JoinList(const std::set<std::string>& l) {
   std::string out;
   for (const auto& s : l) {
-    if (!out.empty()) out += ',';
+    if (!out.empty()) out += kListSeparator;
     out += s;
   }
   return out;
 }
 
-std::string ToUtf8(const fs::path& p) {
-  const auto u = p.u8string();
-  return std::string(u.begin(), u.end());
-}
-
-fs::path FromUtf8(const std::string& s) {
-  return fs::path(std::u8string(s.begin(), s.end()));
-}
 
 }  // namespace
 
@@ -115,7 +112,7 @@ fs::path ReadGamePathFile(const fs::path& txt) {
 bool WriteGamePathFile(const fs::path& txt, const fs::path& game) {
   std::ofstream out(txt, std::ios::binary | std::ios::trunc);
   if (!out) return false;
-  out << ToUtf8(game) << "\n";
+  out << Utf8(game) << "\n";
   out.flush();
   return static_cast<bool>(out);
 }
@@ -146,7 +143,7 @@ bool IsNewer(std::string_view candidate, std::string_view current) {
 }
 
 std::string PackageId(const fs::path& file, uint64_t size) {
-  return ToUtf8(file.filename()) + ":" + std::to_string(size);
+  return Utf8(file.filename()) + ":" + std::to_string(size);
 }
 
 }  // namespace gow3::setup

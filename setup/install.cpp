@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <fstream>
+#include <vector>
 #include <thread>
 
 #define WIN32_LEAN_AND_MEAN
@@ -46,25 +48,52 @@ bool IsGameRunning(const fs::path& gow3_exe) {
   return found;
 }
 
+WaitResult WaitForGameExit(const fs::path& gow3_exe, std::chrono::milliseconds wait,
+                           const std::function<bool()>& cancelled) {
+  const auto deadline = std::chrono::steady_clock::now() + wait;
+  while (IsGameRunning(gow3_exe)) {
+    if (cancelled && cancelled()) return WaitResult::kCancelled;
+    if (std::chrono::steady_clock::now() >= deadline) return WaitResult::kTimedOut;
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  return WaitResult::kExited;
+}
+
 SwapResult SwapBuild(const fs::path& release_dir, Build build, std::chrono::seconds wait) {
   fs::path exe = release_dir / "gow3.exe", fresh = release_dir / "gow3.exe.new";
   fs::path src = release_dir / "builds" / (build == Build::kTu6 ? "gow3-tu6.exe" : "gow3-base.exe");
-  auto deadline = std::chrono::steady_clock::now() + wait;
-  while (IsGameRunning(exe)) {
-    if (std::chrono::steady_clock::now() >= deadline) return SwapResult::kGameRunning;
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
-  }
+  if (WaitForGameExit(exe, wait) != WaitResult::kExited) return SwapResult::kGameRunning;
   std::error_code ec;
   if (!fs::exists(src, ec)) return SwapResult::kFailed;
   if (!CopyFileW(src.c_str(), fresh.c_str(), FALSE)) {
     fs::remove(fresh, ec);
     return SwapResult::kFailed;
   }
+  // CopyFileW keeps the source's attributes; a read-only gow3.exe could not be swapped next time.
+  if (const DWORD attrs = GetFileAttributesW(fresh.c_str());
+      attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY)) {
+    SetFileAttributesW(fresh.c_str(), attrs & ~FILE_ATTRIBUTE_READONLY);
+  }
   if (!MoveFileExW(fresh.c_str(), exe.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
     fs::remove(fresh, ec);
     return SwapResult::kFailed;
   }
   return SwapResult::kOk;
+}
+
+bool SameFileContents(const fs::path& a, const fs::path& b) {
+  std::error_code ec;
+  const uintmax_t size = fs::file_size(a, ec);
+  if (ec || fs::file_size(b, ec) != size || ec) return false;
+  std::ifstream fa(a, std::ios::binary), fb(b, std::ios::binary);
+  if (!fa || !fb) return false;
+  std::vector<char> ba(1 << 20), bb(1 << 20);
+  while (fa && fb) {
+    fa.read(ba.data(), static_cast<std::streamsize>(ba.size()));
+    fb.read(bb.data(), static_cast<std::streamsize>(bb.size()));
+    if (fa.gcount() != fb.gcount() || !std::equal(ba.begin(), ba.begin() + fa.gcount(), bb.begin())) return false;
+  }
+  return fa.eof() && fb.eof();
 }
 
 ExtractResult InstallTitleUpdate(const FoundPackage& tu, const fs::path& game, const Progress& progress,

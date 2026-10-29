@@ -23,24 +23,6 @@ constexpr size_t kChunkBlocks = 64;  // progress / cancel granularity inside a f
 
 bool IsMagic(const std::string& m) { return m == "CON " || m == "LIVE" || m == "PIRS"; }
 
-void AppendUtf8(std::string& out, uint32_t cp) {
-  if (cp < 0x80) {
-    out += static_cast<char>(cp);
-  } else if (cp < 0x800) {
-    out += static_cast<char>(0xC0 | (cp >> 6));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  } else if (cp < 0x10000) {
-    out += static_cast<char>(0xE0 | (cp >> 12));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  } else {
-    out += static_cast<char>(0xF0 | (cp >> 18));
-    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-    out += static_cast<char>(0x80 | (cp & 0x3F));
-  }
-}
-
 struct Entry {
   std::string name;  // UTF-8
   bool dir = false;
