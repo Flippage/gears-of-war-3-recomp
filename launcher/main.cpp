@@ -121,6 +121,30 @@ void ReleaseDevice() {
   if (g_swap) g_swap->Release();
   if (g_context) g_context->Release();
   if (g_device) g_device->Release();
+  g_swap = nullptr;
+  g_context = nullptr;
+  g_device = nullptr;
+}
+
+// Present / ResizeBuffers results after a driver update, a TDR or a removed GPU.
+bool DeviceLost(HRESULT hr) { return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET; }
+
+// Rebuilds the device, swap chain, render target and ImGui's DX11 backend (the ImGui context and
+// fonts stay), at most once a second. On failure it tells the player and returns false: quit.
+bool RecreateDevice(HWND hwnd) {
+  static ULONGLONG last = 0;
+  if (const ULONGLONG since = GetTickCount64() - last; last && since < 1000) {
+    Sleep(static_cast<DWORD>(1000 - since));
+  }
+  last = GetTickCount64();
+  ImGui_ImplDX11_Shutdown();
+  ReleaseDevice();
+  g_resize_w = g_resize_h = 0;  // the new swap chain takes the window's size
+  if (CreateDevice(hwnd) && ImGui_ImplDX11_Init(g_device, g_context)) return true;
+  ReleaseDevice();
+  MessageBoxW(hwnd, L"The graphics device was lost. Close the launcher and open it again.",
+              L"Gears of War 3 Launcher", MB_ICONERROR);
+  return false;
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -323,9 +347,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
     if (g_resize_w && g_resize_h) {
       ReleaseRenderTarget();
-      g_swap->ResizeBuffers(0, g_resize_w, g_resize_h, DXGI_FORMAT_UNKNOWN, 0);
-      g_resize_w = g_resize_h = 0;
-      CreateRenderTarget();
+      const HRESULT hr = g_swap->ResizeBuffers(0, g_resize_w, g_resize_h, DXGI_FORMAT_UNKNOWN, 0);
+      if (SUCCEEDED(hr)) {
+        g_resize_w = g_resize_h = 0;
+        CreateRenderTarget();
+      } else if (DeviceLost(hr)) {
+        if (!RecreateDevice(app.hwnd)) break;
+        continue;
+      }
+    }
+    if (!g_rtv) {  // the resize failed: try it again in a moment
+      RECT rc{};
+      GetClientRect(app.hwnd, &rc);
+      g_resize_w = rc.right;
+      g_resize_h = rc.bottom;
+      Sleep(100);
+      continue;
     }
 
     ImGui_ImplDX11_NewFrame();
@@ -338,10 +375,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     g_context->OMSetRenderTargets(1, &g_rtv, nullptr);
     g_context->ClearRenderTargetView(g_rtv, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-    occluded = g_swap->Present(1, 0) == DXGI_STATUS_OCCLUDED;
+    const HRESULT hr = g_swap->Present(1, 0);
+    if (DeviceLost(hr) && !RecreateDevice(app.hwnd)) break;
+    occluded = hr == DXGI_STATUS_OCCLUDED;
   }
 
-  ImGui_ImplDX11_Shutdown();
+  if (g_device) ImGui_ImplDX11_Shutdown();  // already shut down when the device couldn't be rebuilt
   ImGui_ImplWin32_Shutdown();
   ImGui::DestroyContext();
   ReleaseDevice();
