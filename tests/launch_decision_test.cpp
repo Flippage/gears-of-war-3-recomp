@@ -11,7 +11,20 @@ TEST(decide_order) {
   CHECK(DecideLaunch({Build::kTu6, true, true, &dlc, &st}) == LaunchAction::kOffer);
   CHECK(DecideLaunch({Build::kTu6, true, true, &tu, &st}) == LaunchAction::kStartGame);
   st.declined.insert(dlc[0].id);
+  CHECK(DecideLaunch({Build::kBase, true, false, &dlc, &st}) == LaunchAction::kOffer);  // not asked yet
+  st.content_asked = true;
   CHECK(DecideLaunch({Build::kBase, true, false, &dlc, &st}) == LaunchAction::kStartGame);
+}
+
+TEST(decide_base_asks_once) {
+  using namespace gow3::setup;
+  LauncherState st;  // a v0.2.2 install: no launcher.ini
+  std::vector<FoundPackage> none;
+  CHECK(DecideLaunch({Build::kBase, true, false, &none, &st}) == LaunchAction::kOffer);
+  st.content_asked = true;  // "Keep base game" (or an install) answered it
+  CHECK(DecideLaunch({Build::kBase, true, false, &none, &st}) == LaunchAction::kStartGame);
+  const LauncherState fresh;
+  CHECK(DecideLaunch({Build::kTu6, true, true, &none, &fresh}) == LaunchAction::kStartGame);
 }
 
 TEST(decide_build_replaced) {
@@ -19,6 +32,7 @@ TEST(decide_build_replaced) {
   LauncherState st;
   st.existed = true;
   st.build = Build::kTu6;
+  st.content_asked = true;
   std::vector<FoundPackage> none, dlc{FakeDlc("raam", 10)};
   // TU6 recorded, base gow3.exe running (a new zip extracted over the folder): repair, before the offer.
   CHECK(DecideLaunch({Build::kBase, true, false, &none, &st, true}) == LaunchAction::kRepair);

@@ -68,8 +68,16 @@ void RunLaunchCheck(const std::filesystem::path& game_data_root) {
       exe_dir / "builds" / (state.build == Build::kTu6 ? "gow3-tu6.exe" : "gow3-base.exe"), ec);
   const LaunchInputs in{build, game_valid, FindTitleUpdateFolder(game_data_root).has_value(), &packages,
                         &state, recorded_build_available};
+  const LaunchAction action = DecideLaunch(in);
+  REXLOG_INFO("Launcher: check: {} build, game folder {}, {} TU6 / DLC package(s) found ({} new), TU6 asked {}",
+              build == Build::kTu6 ? "TU6" : "base", game_valid ? "ok" : "not found", packages.size(),
+              NewPackages(packages, state, build).size(), state.content_asked ? "yes" : "no");
+  for (const FoundPackage& p : packages) {
+    REXLOG_INFO("Launcher:   {} {} ({})", p.is_tu ? (p.matches_disc ? "TU" : "TU (other disc)") : "DLC",
+                rex::path_to_utf8(p.file), p.header.display_name);
+  }
   const char* flag = nullptr;
-  switch (DecideLaunch(in)) {
+  switch (action) {
     case LaunchAction::kStartGame: return;
     case LaunchAction::kSetup: flag = "--setup"; break;
     case LaunchAction::kOffer: flag = "--offer"; break;

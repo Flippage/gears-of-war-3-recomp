@@ -17,7 +17,11 @@ LaunchAction DecideLaunch(const LaunchInputs& in) {
   if (!in.game_valid) return LaunchAction::kSetup;
   if (in.state->existed && in.state->build != in.build && in.recorded_build_available) return LaunchAction::kRepair;
   bool has_new = !NewPackages(*in.packages, *in.state, in.build).empty();
-  if (in.build == Build::kBase) return has_new ? LaunchAction::kOffer : LaunchAction::kStartGame;
+  // The base build also hands over once to ask about TU6 / DLC (an install from before they were
+  // supported): the launcher records the answer (content_asked).
+  if (in.build == Build::kBase) {
+    return has_new || !in.state->content_asked ? LaunchAction::kOffer : LaunchAction::kStartGame;
+  }
   if (!in.tu6_present) return LaunchAction::kRepair;
   return has_new ? LaunchAction::kOffer : LaunchAction::kStartGame;
 }

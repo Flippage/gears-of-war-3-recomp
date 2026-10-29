@@ -1365,16 +1365,17 @@ void InitGameFiles(App& app) {
     app.page = App::Page::kGameFiles;
   } else if (app.start == App::Start::kRepair) {
     Show(View::kRepair);
+  } else if (app.state.build == Build::kBase && !app.state.content_asked) {
+    // An install from before TU6 / DLC support (opened by gow3.exe or by hand): ask once first;
+    // YES searches and shows what was found.
+    g.ask_existing = true;
+    Show(View::kAskContent);
+    app.page = App::Page::kGameFiles;
   } else if (app.start == App::Start::kOffer && BuildOffer(app, false)) {
     Show(View::kOffer);
   } else if (app.start == App::Start::kOffer) {
     // Handed over with nothing new for us (Ruling 19): don't strand the player here.
     FlowDone(app);
-  } else if (app.state.build == Build::kBase && !app.state.content_asked) {
-    // An install from before TU6 / DLC support: ask once.
-    g.ask_existing = true;
-    Show(View::kAskContent);
-    app.page = App::Page::kGameFiles;
   } else {
     Show(View::kOverview);
   }
