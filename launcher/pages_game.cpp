@@ -735,6 +735,19 @@ ExtractResult WaitAndSwap(const fs::path& dir, Build to, const Progress& progres
   return s == SwapResult::kOk ? ExtractResult::kOk : gow3::setup::Fail(error, SwapFailure(s, to));
 }
 
+// Installing a TU on the base build ends in a swap to builds\gow3-tu6.exe: say so before any work
+// starts when that file isn't there (a developer build folder, or a damaged release).
+bool Tu6BuildMissing(const App& app, bool tu_ticked) {
+  std::error_code ec;
+  if (!tu_ticked || app.state.build != Build::kBase ||
+      fs::is_regular_file(app.dir / "builds" / "gow3-tu6.exe", ec)) {
+    return false;
+  }
+  g.message = "Title Update 6 needs builds\\gow3-tu6.exe next to the launcher, and it isn't there (this "
+              "folder isn't a complete release). Untick Title Update 6, or use the release package.";
+  return true;
+}
+
 // TU (through InstallTitleUpdate), then the DLC copies, then (offer page, base build) the TU6 build
 // if the TU went in. kRepair reinstalls the TU only. Any failure, the swap included, fails the job
 // and nothing is recorded (installing again just overwrites <game>\TU6 and the DLC copies).
@@ -899,7 +912,9 @@ void DrawSetup(App& app) {
     HandlePicked(app, PickIsoOrFolder(app.hwnd));
   }
   if (b == kAdd) AddPicked(app, PickPackageOrFolder(app.hwnd));
-  if (b == "EXTRACT") StartExtract();
+  const bool tu_ticked =
+      std::any_of(g.items.begin(), g.items.end(), [](auto& i) { return i.usable && i.ticked && i.pkg.is_tu; });
+  if (b == "EXTRACT" && !Tu6BuildMissing(app, tu_ticked)) StartExtract();
 }
 
 void DrawWorking() {
@@ -1080,6 +1095,8 @@ void DrawOffer(App& app) {
       picked.push_back(i.pkg);
       g.install_names += (g.install_names.empty() ? "" : kDot) + ItemName(i);
     }
+    const bool tu_ticked = std::any_of(picked.begin(), picked.end(), [](auto& p) { return p.is_tu; });
+    if (Tu6BuildMissing(app, tu_ticked)) return;
     ContentAsked(app);
     StartInstall(app, picked, JobKind::kInstall);
   }
