@@ -3,6 +3,8 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -63,4 +65,24 @@ std::vector<uint8_t> MakeXex(uint32_t media_id, uint32_t title_id) {
   PutBe32(b, 0x100, media_id);
   PutBe32(b, 0x10C, title_id);
   return b;
+}
+
+bool WriteFile(const fs::path& path, std::string_view data) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out.write(data.data(), static_cast<std::streamsize>(data.size()));
+  return static_cast<bool>(out);
+}
+
+bool WriteFile(const fs::path& path, const std::vector<uint8_t>& data) {
+  return WriteFile(path, std::string_view(reinterpret_cast<const char*>(data.data()), data.size()));
+}
+
+std::string FileText(const fs::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+std::vector<uint8_t> FileBytes(const fs::path& path) {
+  const std::string s = FileText(path);
+  return std::vector<uint8_t>(s.begin(), s.end());
 }

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace gow3_test {
@@ -40,3 +41,10 @@ std::optional<std::filesystem::path> EnvPath(const char* name);
 
 // Minimal XEX2 header (0x200 bytes) with one execution-info entry.
 std::vector<uint8_t> MakeXex(uint32_t media_id, uint32_t title_id);
+
+// Writes (truncating) a file; returns false on failure.
+bool WriteFile(const std::filesystem::path& path, std::string_view data);
+bool WriteFile(const std::filesystem::path& path, const std::vector<uint8_t>& data);
+// Whole file as text / bytes; empty when unreadable.
+std::string FileText(const std::filesystem::path& path);
+std::vector<uint8_t> FileBytes(const std::filesystem::path& path);

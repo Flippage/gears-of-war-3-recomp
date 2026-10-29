@@ -22,6 +22,7 @@
 #include <rex/system/xmemory.h>
 #include <rex/ui/flags.h>
 
+#include "setup/state.h"
 #include "gow3_content_fix.h"
 #include "gow3_crash_log.h"
 #include "gow3_dlc.h"
@@ -164,11 +165,8 @@ class Gow3App : public rex::ReXApp {
   static std::filesystem::path ResolveGameFolder(const std::filesystem::path& given) {
     if (IsGameFolder(given)) return given;
     const std::filesystem::path home = rex::filesystem::GetExecutablePath().parent_path();
-    if (std::ifstream in(home / "gow3_game_path.txt"); in) {
-      std::string line;
-      std::getline(in, line);
-      while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
-      if (auto hit = FindGameFolderIn(std::filesystem::u8path(line)); !hit.empty()) return hit;
+    if (auto path = gow3::setup::ReadGamePathFile(home / "gow3_game_path.txt"); !path.empty()) {
+      if (auto hit = FindGameFolderIn(path); !hit.empty()) return hit;
     }
     std::filesystem::path dir = home;
     for (int depth = 0; depth <= 4 && !dir.empty(); ++depth, dir = dir.parent_path()) {
