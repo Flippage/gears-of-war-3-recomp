@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdio>
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -32,3 +34,9 @@ struct Registrar {
 
 // <exe dir>\test-tmp\<name>, emptied first.
 std::filesystem::path TempDir(const std::string& name);
+
+// Environment variable as a path; nullopt when unset or empty.
+std::optional<std::filesystem::path> EnvPath(const char* name);
+
+// Minimal XEX2 header (0x200 bytes) with one execution-info entry.
+std::vector<uint8_t> MakeXex(uint32_t media_id, uint32_t title_id);
