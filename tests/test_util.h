@@ -60,3 +60,10 @@ bool AnyFileEndsWith(const std::filesystem::path& dir, const std::string& suffix
 // Minimal read-only (LIVE) STFS package: one file-table block, then each file's data blocks, with
 // a level-0 hash table chaining them. Names are root-level.
 std::vector<uint8_t> MakeStfsPackage(const std::vector<std::pair<std::string, std::string>>& files);
+
+// Repeatable pattern: byte i is (i * 31 + 7) & 0xFF.
+std::vector<uint8_t> Bytes(size_t n);
+// In-memory XDVDFS image with the volume descriptor at partition_offset + 0x10000. A '\' in a
+// name makes sub-directories; names are otherwise written raw.
+std::vector<uint8_t> MakeXiso(uint64_t partition_offset,
+                              std::vector<std::pair<std::string, std::vector<uint8_t>>> files);

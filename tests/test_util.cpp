@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "test_util.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -179,4 +180,91 @@ std::vector<uint8_t> MakeStfsPackage(const std::vector<std::pair<std::string, st
   h.insert(h.end(), table.begin(), table.end());
   h.insert(h.end(), data.begin(), data.end());
   return h;
+}
+
+std::vector<uint8_t> Bytes(size_t n) {
+  std::vector<uint8_t> b(n);
+  for (size_t i = 0; i < n; ++i) b[i] = static_cast<uint8_t>(i * 31 + 7);
+  return b;
+}
+
+namespace {
+struct XNode {
+  std::map<std::string, XNode> dirs;
+  std::map<std::string, std::vector<uint8_t>> files;
+  uint32_t sector = 0, size = 0;
+  std::map<std::string, uint32_t> file_sectors;
+};
+size_t EntryLen(const std::string& name) { return (14 + name.size() + 3) & ~size_t{3}; }
+void XLayout(XNode& n, uint32_t& next, std::vector<XNode*>& order) {
+  size_t bytes = 0;
+  for (auto& [k, v] : n.dirs) bytes += EntryLen(k);
+  for (auto& [k, v] : n.files) bytes += EntryLen(k);
+  n.size = static_cast<uint32_t>(std::max<size_t>(2048, (bytes + 2047) & ~size_t{2047}));
+  n.sector = next;
+  next += n.size / 2048;
+  order.push_back(&n);
+  for (auto& [k, v] : n.dirs) XLayout(v, next, order);
+}
+}  // namespace
+
+std::vector<uint8_t> MakeXiso(uint64_t partition_offset,
+                              std::vector<std::pair<std::string, std::vector<uint8_t>>> files) {
+  XNode root;
+  for (auto& [path, data] : files) {
+    XNode* n = &root;
+    size_t pos;
+    while ((pos = path.find('\\')) != std::string::npos) {
+      n = &n->dirs[path.substr(0, pos)];
+      path.erase(0, pos + 1);
+    }
+    n->files[path] = std::move(data);
+  }
+  uint32_t next = 33;  // sector 32 holds the volume descriptor
+  std::vector<XNode*> order;
+  XLayout(root, next, order);
+  for (XNode* n : order) {
+    for (auto& [k, v] : n->files) {
+      n->file_sectors[k] = next;
+      next += static_cast<uint32_t>((v.size() + 2047) / 2048);
+    }
+  }
+  std::vector<uint8_t> img(partition_offset + uint64_t{next} * 2048, 0);
+  auto put32 = [&](size_t off, uint32_t v) {
+    for (int i = 0; i < 4; ++i) img[off + i] = static_cast<uint8_t>(v >> (8 * i));
+  };
+  auto put16 = [&](size_t off, uint32_t v) {
+    img[off] = static_cast<uint8_t>(v);
+    img[off + 1] = static_cast<uint8_t>(v >> 8);
+  };
+  size_t vd = partition_offset + 0x10000;
+  std::memcpy(&img[vd], "MICROSOFT*XBOX*MEDIA", 20);
+  put32(vd + 20, root.sector);
+  put32(vd + 24, root.size);
+
+  for (XNode* n : order) {
+    // Degenerate tree: every entry's right link points at the next one.
+    struct Item { const std::string* name; uint32_t sector, size; uint8_t attrib; };
+    std::vector<Item> items;
+    for (auto& [k, v] : n->dirs) items.push_back({&k, v.sector, v.size, 0x10});
+    for (auto& [k, v] : n->files)
+      items.push_back({&k, n->file_sectors[k], static_cast<uint32_t>(v.size()), 0x20});
+    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return *a.name < *b.name; });
+    size_t base = partition_offset + uint64_t{n->sector} * 2048, off = 0;
+    for (size_t i = 0; i < items.size(); ++i) {
+      size_t len = EntryLen(*items[i].name);
+      put16(base + off, 0);
+      put16(base + off + 2, i + 1 < items.size() ? static_cast<uint32_t>((off + len) / 4) : 0);
+      put32(base + off + 4, items[i].sector);
+      put32(base + off + 8, items[i].size);
+      img[base + off + 12] = items[i].attrib;
+      img[base + off + 13] = static_cast<uint8_t>(items[i].name->size());
+      std::memcpy(&img[base + off + 14], items[i].name->data(), items[i].name->size());
+      off += len;
+    }
+    for (auto& [k, v] : n->files) {
+      if (!v.empty()) std::memcpy(&img[partition_offset + uint64_t{n->file_sectors[k]} * 2048], v.data(), v.size());
+    }
+  }
+  return img;
 }

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "setup/be.h"
+#include "setup/path_util.h"
 
 namespace gow3::setup {
 
@@ -148,20 +149,9 @@ class Stfs {
   uint64_t cached_off_ = ~uint64_t{0};
 };
 
-std::string Utf8(const fs::path& p) {
-  auto u = p.u8string();
-  return std::string(u.begin(), u.end());
-}
-
 ExtractResult Fail(std::string* error, const std::string& msg) {
   if (error) *error = msg;
   return ExtractResult::kFailed;
-}
-
-// Entry paths may not climb out of the output folder or name another drive.
-bool SafeName(const std::string& rel) {
-  if (rel.empty() || rel[0] == '/' || rel[0] == '\\') return false;
-  return rel.find("..") == std::string::npos && rel.find(':') == std::string::npos;
 }
 }  // namespace
 
