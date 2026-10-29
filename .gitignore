@@ -5,6 +5,7 @@
 
 # Your copy of the game: the default.xex goes in game\, the extracted disc anywhere outside the repo.
 game/
+game-tu6/
 GearGame/
 $SystemUpdate/
 AvatarAssetPack/
@@ -47,3 +48,6 @@ gow2_shot.now
 .vs/
 .vscode/
 __pycache__/
+
+# Throwaway test profiles (saves, installed DLC copies).
+test-user/

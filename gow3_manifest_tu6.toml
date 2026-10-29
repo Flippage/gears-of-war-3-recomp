@@ -1,0 +1,17 @@
+# Title Update 6 (TU6): game-tu6\ holds the disc's default.xex and TU6's default.xexp; the loader
+# applies the patch, so codegen sees the updated executable. Function hints are per version: TU6 has
+# its own (hints/tu6/), the base game's addresses do not carry over.
+
+[project]
+name = "gow3"
+sdk_version = "0.10.0"
+game_root = "game-tu6"
+
+[entrypoint]
+file_path = "game-tu6/default.xex"
+out_directory_path = "generated/tu6"
+includes = ["hints/tu6/harvested.toml", "hints/tu6/runtime.toml"]  # tools/harvest_hints.py on the TU6 image, runtime FATAL addresses
+
+[entrypoint.functions]
+0x82DE11F0 = {}   # tail-call target of `b` at 0x82DE5DDC (codegen pass 1)
+0x82DCB448 = {}   # tail-call target of `b` at 0x82DCB5B4 (codegen pass 1)

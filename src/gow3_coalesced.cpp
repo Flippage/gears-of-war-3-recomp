@@ -13,6 +13,7 @@
 // 51 entries, coalesced_int.bin first.
 
 #include "gow3_coalesced.h"
+#include "gow3_addresses.h"
 
 #include <windows.h>
 #include <bcrypt.h>
@@ -42,8 +43,8 @@ namespace rex::glue {
 
 namespace {
 
-constexpr uint32_t kHashSecBegin = 0x835A0000;
-constexpr uint32_t kHashSecEnd = 0x835A07AF;
+constexpr uint32_t kHashSecBegin = addr::kHashSecBegin;
+constexpr uint32_t kHashSecEnd = addr::kHashSecEnd;
 
 struct FStr {
   bool wide = false;
@@ -304,6 +305,11 @@ std::vector<CoalescedHash> PrepareCoalescedOverrides(const std::filesystem::path
   const bool menu_mouse = REXCVAR_GET(gow3_menu_mouse);
   const bool menu_exit = REXCVAR_GET(gow3_main_menu_exit);
   if (!menu_mouse && !menu_exit) return hashes;
+  if (kHashSecBegin == 0) {
+    // An edited bundle needs its hash in HashSec, not located in this executable yet.
+    REXLOG_WARN("COALESCED: HashSec not mapped for this executable; the game's own bundles are used");
+    return hashes;
+  }
 
   const std::filesystem::path cooked = game_root / "GearGame" / "CookedXbox360";
   const std::filesystem::path out_dir = cache_root / "coalesced";

@@ -1,0 +1,83 @@
+Gears of War 3 (Title Update 6): GOW3_VFS_OVERLAY="<game folder>|<overlay folder>" adds the overlay's files
+and folders that the game folder does not have to the read-only game device, at the same relative path, so
+a title update's new files (default.xexp, GearGame\Patches) reach the game without copying anything into the
+player's game folder. Files the game folder has win; each overlay entry is logged (vfs overlay: ...).
+
+diff --git a/src/filesystem/devices/host_path_device.cpp b/src/filesystem/devices/host_path_device.cpp
+index 2c4e247..036b5e6 100644
+--- a/src/filesystem/devices/host_path_device.cpp
++++ b/src/filesystem/devices/host_path_device.cpp
+@@ -76,6 +76,32 @@ const std::unordered_map<std::string, std::string>& GetVfsOverrides() {
+   return overrides;
+ }
+ 
++// GOW3_VFS_OVERLAY="C:\game|D:\overlay": files and folders under the overlay that the game folder
++// does not have appear in it, at the same relative path (a title update's new files without
++// copying anything into the game folder). Files the game folder has win. Parsed once.
++struct VfsOverlay {
++  std::filesystem::path target;
++  std::filesystem::path overlay;
++};
++const VfsOverlay& GetVfsOverlay() {
++  static const VfsOverlay overlay = [] {
++    VfsOverlay result;
++    const char* raw = std::getenv("GOW3_VFS_OVERLAY");
++    if (!raw || !*raw) {
++      return result;
++    }
++    std::string_view value(raw);
++    const size_t bar = value.find('|');
++    if (bar == std::string_view::npos) {
++      return result;
++    }
++    result.target = rex::to_path(value.substr(0, bar));
++    result.overlay = rex::to_path(value.substr(bar + 1));
++    return result;
++  }();
++  return overlay;
++}
++
+ }  // namespace
+ 
+ HostPathDevice::HostPathDevice(const std::string_view mount_path,
+@@ -203,6 +229,40 @@ void HostPathDevice::PopulateEntry(HostPathEntry* parent_entry) {
+       PopulateEntry(child);
+     }
+   }
++
++  // The overlay's entries this folder lacks. A folder only the overlay has is listed from the
++  // overlay itself, so only folders under host_path_ are merged.
++  const VfsOverlay& overlay = GetVfsOverlay();
++  std::error_code ec;
++  if (overlay.overlay.empty() || !std::filesystem::equivalent(overlay.target, host_path_, ec)) {
++    return;
++  }
++  const std::filesystem::path relative =
++      std::filesystem::relative(parent_entry->host_path(), host_path_, ec);
++  if (ec || relative.empty() || *relative.begin() == "..") {
++    return;
++  }
++  const std::filesystem::path overlay_dir =
++      relative == "." ? overlay.overlay : overlay.overlay / relative;
++  for (auto& info : rex::filesystem::ListFiles(overlay_dir)) {
++    const std::string name = rex::path_to_utf8(info.name);
++    const bool present = std::any_of(
++        parent_entry->children_.begin(), parent_entry->children_.end(),
++        [&](const std::unique_ptr<Entry>& e) { return rex::string::utf8_equal_case(e->name(), name); });
++    if (present) {
++      continue;
++    }
++    auto child = HostPathEntry::Create(this, parent_entry, overlay_dir / info.name, info);
++    if (!child) {
++      continue;
++    }
++    parent_entry->children_.push_back(std::unique_ptr<Entry>(child));
++    REXLOG_INFO("vfs overlay: {} -> {}", rex::path_to_utf8(relative == "." ? info.name : relative / info.name),
++                rex::path_to_utf8(overlay_dir / info.name));
++    if (info.type == rex::filesystem::FileInfo::Type::kDirectory) {
++      PopulateEntry(child);
++    }
++  }
+ }
+ 
+ }  // namespace rex::filesystem

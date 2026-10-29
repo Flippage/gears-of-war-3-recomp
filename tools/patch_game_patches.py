@@ -133,6 +133,63 @@ SITES = [
 ]
 
 
+# Title Update 6 (generated/tu6): the same sites in the relinked executable, found with
+# tools/map_tu6_addresses.py (identical functions) and by hand where TU6 changed the function (the
+# instruction at each site is the same, which main() checks). TU6 folded the Depth of Field
+# virtual sub_824BAA48 into sub_82593DB8's copy (it gained the same 72(r11) test), so 824BAA50 has
+# no TU6 site: 8237271C covers both.
+TU6_ADDRESSES = {
+    0x82960B84: 0x82971B5C, 0x8253D9B0: 0x8254E4A8, 0x82AF66BC: 0x82B09E5C,
+    0x827B2BD0: 0x827C4F80, 0x827B6C58: 0x827C9090, 0x82861FD0: 0x82873D28,
+    0x82762C54: 0x82774444, 0x827C9628: 0x827DB8B8, 0x82430640: 0x82440F60,
+    0x827A2BCC: 0x827B4C9C, 0x82969614: 0x8297A65C, 0x827B8764: 0x827CAB9C,
+    0x827B88C0: 0x827CACF8, 0x827B8BA8: 0x827CAFE0, 0x824BAA50: None,
+    0x82593DC4: 0x8237271C, 0x82593DC0: 0x82372718, 0x82967858: 0x829788A0,
+    0x827D0878: 0x827E2AF0, 0x827CACC4: 0x827DCF3C, 0x829A138C: 0x829B29D4,
+    0x827CE810: 0x827E0A88, 0x82960C68: 0x82971C40, 0x82960F60: 0x82971F38,
+    0x82364E3C: 0x8237559C, 0x8261BE94: 0x8262CE24, 0x8261BEF8: 0x8262CE88,
+    0x8262E5D0: 0x8263F430, 0x8262E660: 0x8263F4C0,
+}
+# Branch targets inside the expected disassembly and the patched C++.
+TU6_TEXT = {
+    "0x827b92c8": "0x827cb700", "loc_827D08D4": "loc_827E2B4C",
+    "0x82960ca4": "0x82971c7c", "loc_82960CA4": "loc_82971C7C",
+}
+
+# Data offsets TU6 moved, per site (the instruction is the same): the Black Shading Fix store's
+# global moved by 1984 bytes; the back buffer setup's field at 2492(r20) is at 2552 (the structure
+# grew by 60 bytes before it), which the patched C++ reads too.
+TU6_SITE_TEXT = {
+    0x82960B84: {"-29808(r6)": "-27824(r6)"},
+    0x82960C68: {"2492": "2552"},
+}
+
+
+# TU6 only: load checkpoints saved before the update (format 3). sub_82A20478 serializes the
+# checkpoint format and refuses anything but 4; sub_823BFBD8 (a virtual Serialize) writes an array
+# of 4 ints where format 3 has 3. Gow3OldCheckpointFormat() accepts 3 and flags the load,
+# Gow3OldCheckpointArrayCount() reads 3 entries while it lasts (src/gow3_game_patches.cpp).
+TU6_ONLY_SITES = [
+    (0x82A204C0, "cmpwi cr6,r8,4", ("code",
+        "ctx.r8.u64 = uint32_t(Gow3OldCheckpointFormat(ctx.r8.s32)); "
+        "ctx.cr6.compare<int32_t>(ctx.r8.s32, 4, ctx.xer);"), 15),
+    (0x823BFBF8, "li r29,4", ("code", "ctx.r29.s64 = Gow3OldCheckpointArrayCount();"), 15),
+]
+
+
+def tu6_sites():
+    sites = []
+    for addr, expect, form, sid in SITES:
+        new = TU6_ADDRESSES[addr]
+        if new is None:
+            continue
+        for old_text, new_text in list(TU6_TEXT.items()) + list(TU6_SITE_TEXT.get(addr, {}).items()):
+            expect = expect.replace(old_text, new_text)
+            form = tuple(f.replace(old_text, new_text) if isinstance(f, str) else f for f in form)
+        sites.append((new, expect, form, sid))
+    return sites + TU6_ONLY_SITES
+
+
 def load_functions():
     funcs = []
     for path in glob.glob(f"{GEN}/gow3_recomp.*.cpp"):
@@ -190,6 +247,9 @@ def patched_code(form, code: list[str], sid: int, indent: str) -> list[str]:
 
 
 def main() -> int:
+    global GEN, SITES
+    if "--game" in sys.argv and sys.argv[sys.argv.index("--game") + 1] == "tu6":
+        GEN, SITES = "generated/tu6", tu6_sites()
     funcs = load_functions()
     starts = [f[0] for f in funcs]
     changed: dict[str, list[str]] = {}
@@ -230,6 +290,11 @@ def main() -> int:
             if 'Gow3WidescreenHalfFov' in text and 'extern "C" double Gow3WidescreenHalfFov' not in text:
                 first = text.find("DEFINE_REX_FUNC(")
                 text = text[:first] + f'extern "C" double Gow3WidescreenHalfFov(double half_fov, int site);  // {MARK}\n' + text[first:]
+                changed_decl = True
+            if 'Gow3OldCheckpoint' in text and 'extern "C" int Gow3OldCheckpointFormat' not in text:
+                first = text.find("DEFINE_REX_FUNC(")
+                text = (text[:first] + f'extern "C" int Gow3OldCheckpointFormat(int format);  // {MARK}\n'
+                        f'extern "C" int Gow3OldCheckpointArrayCount();  // {MARK}\n' + text[first:])
                 changed_decl = True
             if changed_decl:
                 Path(path).write_text(text, encoding="utf-8", newline="\n")

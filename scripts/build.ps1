@@ -7,11 +7,16 @@
   ReXGlue SDK folder (contains bin\rexglue.exe). Or set REXGLUE_SDK.
 .PARAMETER SkipCodegen
   Reuse the existing generated\ output.
+.PARAMETER Game
+  base (the disc's game\default.xex, the default) or tu6 (Title Update 6: game-tu6\ holds the
+  disc's default.xex and TU6's default.xexp). Each has its own generated\ folder and build folder
+  (out\build\release, out\build\tu6).
 #>
 param(
     [string]$Sdk = $env:REXGLUE_SDK,
     [ValidateSet('Release', 'RelWithDebInfo', 'Debug')][string]$Config = 'Release',
-    [switch]$SkipCodegen
+    [switch]$SkipCodegen,
+    [ValidateSet('base', 'tu6')][string]$Game = 'base'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,7 +29,13 @@ function Step($msg) { Write-Host "`n== $msg" -ForegroundColor Cyan }
 $rexglue = Join-Path $Sdk 'bin\rexglue.exe'
 if (-not $Sdk) { Fail 'Give the ReXGlue SDK folder with -Sdk <folder> or set REXGLUE_SDK.' }
 if (-not (Test-Path $rexglue)) { Fail "rexglue.exe not found in $Sdk\bin." }
-if (-not (Test-Path 'game\default.xex')) { Fail 'game\default.xex is missing.' }
+if ($Game -eq 'tu6') {
+    $gameDir = 'game-tu6'; $manifest = 'gow3_manifest_tu6.toml'; $generated = 'generated/tu6'
+    if (-not (Test-Path 'game-tu6\default.xexp')) { Fail 'game-tu6\default.xexp (Title Update 6) is missing.' }
+} else {
+    $gameDir = 'game'; $manifest = 'gow3_manifest.toml'; $generated = 'generated/default'
+}
+if (-not (Test-Path "$gameDir\default.xex")) { Fail "$gameDir\default.xex is missing." }
 
 $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('PATH', 'User')
 foreach ($tool in 'cmake', 'ninja') {
@@ -47,25 +58,25 @@ New-Item -ItemType Directory -Force 'out\logs' | Out-Null
 
 if (-not $SkipCodegen) {
     Step 'Generating C++ from default.xex'
-    & $rexglue --log-file out\logs\codegen.log codegen gow3_manifest.toml
-    if ($LASTEXITCODE -ne 0) { Fail 'rexglue codegen failed (see out\logs\codegen.log).' }
+    & $rexglue --log-file "out\logs\codegen-$Game.log" codegen $manifest
+    if ($LASTEXITCODE -ne 0) { Fail "rexglue codegen failed (see out\logs\codegen-$Game.log)." }
 }
 
 # Codegen gives up on under-counted jump tables with __builtin_trap(); dispatch through ctr instead.
 # Idempotent, so it also runs with -SkipCodegen.
 Step 'Patching switch traps in generated code'
-python -I tools\patch_switch_traps.py 'generated/default/*.cpp'
+python -I tools\patch_switch_traps.py "$generated/*.cpp"
 if ($LASTEXITCODE -ne 0) { Fail 'tools\patch_switch_traps.py failed.' }
 
 Step 'Applying the game patches'
-python -I tools\patch_game_patches.py 'generated/default/*.cpp'
+python -I tools\patch_game_patches.py --game $Game "$generated/*.cpp"
 if ($LASTEXITCODE -ne 0) { Fail 'tools\patch_game_patches.py failed.' }
 
-$build = Join-Path $root "out\build\$($Config.ToLower())"
+$build = if ($Game -eq 'tu6') { Join-Path $root 'out\build\tu6' } else { Join-Path $root "out\build\$($Config.ToLower())" }
 Step "Configuring ($Config)"
 cmake -S . -B $build -G Ninja "-DCMAKE_BUILD_TYPE=$Config" `
     "-DCMAKE_C_COMPILER=$llvm\clang.exe" "-DCMAKE_CXX_COMPILER=$llvm\clang++.exe" `
-    "-DCMAKE_LINKER=$llvm\lld-link.exe" "-DCMAKE_PREFIX_PATH=$Sdk" | Out-File out\logs\configure.txt -Encoding utf8
+    "-DCMAKE_LINKER=$llvm\lld-link.exe" "-DCMAKE_PREFIX_PATH=$Sdk" "-DGOW3_GAME_VERSION=$Game" | Out-File out\logs\configure.txt -Encoding utf8
 if ($LASTEXITCODE -ne 0) { Fail 'CMake configure failed (see out\logs\configure.txt).' }
 
 # CMake re-runs codegen during the build when its inputs (the manifest, hints, the xex) are newer
@@ -75,9 +86,9 @@ if ($LASTEXITCODE -ne 0) { Fail 'CMake configure failed (see out\logs\configure.
 Step 'Codegen target (only runs when its inputs changed)'
 cmake --build $build --target gow3_codegen
 if ($LASTEXITCODE -ne 0) { Fail 'The codegen target failed.' }
-python -I tools\patch_switch_traps.py 'generated/default/*.cpp'
+python -I tools\patch_switch_traps.py "$generated/*.cpp"
 if ($LASTEXITCODE -ne 0) { Fail 'tools\patch_switch_traps.py failed.' }
-python -I tools\patch_game_patches.py 'generated/default/*.cpp'
+python -I tools\patch_game_patches.py --game $Game "$generated/*.cpp"
 if ($LASTEXITCODE -ne 0) { Fail 'tools\patch_game_patches.py failed.' }
 
 Step 'Building'

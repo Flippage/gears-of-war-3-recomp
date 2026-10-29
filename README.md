@@ -292,6 +292,11 @@ console menus have no pointer; a known limitation).
 - Ultrawide: the main menu stays 16:9, and the full-screen pause tint, death tint and main-menu
   blood effect cover only the middle 16:9 of the screen.
 - Aim assist also applies to the mouse.
+- Saves and Title Update 6: the Title Update 6 build reads the base game's saves (a campaign
+  checkpoint from before the update loads, and is saved in the update's format at the next
+  checkpoint), but the base-game build cannot read saves the Title Update 6 build wrote. Once you
+  have played with Title Update 6, keep using that build; if the base-game build then reports
+  "Error Loading Checkpoints", choose Cancel, not Overwrite, or the updated saves are deleted.
 
 ## Finding the functions codegen misses
 

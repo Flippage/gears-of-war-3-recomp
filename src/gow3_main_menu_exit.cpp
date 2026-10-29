@@ -45,11 +45,20 @@ void ExitGame() {
 }  // namespace
 }  // namespace rex::glue
 
-extern "C" void __imp__sub_822FC8D0(PPCContext& ctx, uint8_t* base);
+// The same function in each executable: sub_822FC8D0 on the disc, sub_8230CF58 in Title Update 6.
+#if defined(GOW3_TU6)
+#define GOW3_NEED_LIVE_FN sub_8230CF58
+#define GOW3_NEED_LIVE_IMP __imp__sub_8230CF58
+#else
+#define GOW3_NEED_LIVE_FN sub_822FC8D0
+#define GOW3_NEED_LIVE_IMP __imp__sub_822FC8D0
+#endif
 
-extern "C" void sub_822FC8D0(PPCContext& ctx, uint8_t* base) {
+extern "C" void GOW3_NEED_LIVE_IMP(PPCContext& ctx, uint8_t* base);
+
+extern "C" void GOW3_NEED_LIVE_FN(PPCContext& ctx, uint8_t* base) {
   if (REXCVAR_GET(gow3_main_menu_exit) && rex::glue::MatchesNeedLive(base, ctx.r5.u32)) {
     rex::glue::ExitGame();
   }
-  __imp__sub_822FC8D0(ctx, base);
+  GOW3_NEED_LIVE_IMP(ctx, base);
 }

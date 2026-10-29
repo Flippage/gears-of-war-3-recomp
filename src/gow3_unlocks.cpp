@@ -10,6 +10,7 @@
 //               that vtable entry, and the hook goes on it from then on.
 
 #include "gow3_unlocks.h"
+#include "gow3_addresses.h"
 
 #include <windows.h>
 
@@ -33,12 +34,12 @@ namespace rex::glue {
 
 namespace {
 
-constexpr uint32_t kExecGetProfileSettingValueInt = 0x8251A2B0;
+constexpr uint32_t kExecGetProfileSettingValueInt = addr::kExecGetProfileSettingValueInt;
 constexpr uint32_t kGetValueIntVtableOffset = 336;
 // GearProfileSettings (vtable 0x82247140): setting 82 is read when the campaign difficulty screen
 // opens, and holds the unlockables as bits; Insane is unlockable 0 (Coalesced:
 // [InsaneDifficulty GearUnlockableResourceProvider] UnlockableId=0).
-constexpr uint32_t kGearProfileSettingsVtable = 0x82247140;
+constexpr uint32_t kGearProfileSettingsVtable = addr::kGearProfileSettingsVtable;
 constexpr int32_t kUnlockablesSetting = 82;
 constexpr uint32_t kInsaneUnlockBit = 1u << 0;
 

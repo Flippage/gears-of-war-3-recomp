@@ -8,7 +8,20 @@ project(gow3 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include(generated/rexglue.cmake)
+# Which Gears of War 3 executable to build: "tu6" (Title Update 6, needed for the DLC) or "base"
+# (the disc version). Each has its own manifest, generated code and build folder.
+set(GOW3_GAME_VERSION "base" CACHE STRING "Game version to build: base or tu6")
+set_property(CACHE GOW3_GAME_VERSION PROPERTY STRINGS base tu6)
+if(GOW3_GAME_VERSION STREQUAL "tu6")
+    set(GOW3_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated/tu6")
+    set(GOW3_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/gow3_manifest_tu6.toml")
+elseif(GOW3_GAME_VERSION STREQUAL "base")
+    set(GOW3_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated/default")
+    set(GOW3_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/gow3_manifest.toml")
+else()
+    message(FATAL_ERROR "GOW3_GAME_VERSION must be base or tu6, not '${GOW3_GAME_VERSION}'")
+endif()
+include(cmake/gow3_rexglue.cmake)
 
 # Sources
 set(GOW3_SOURCES
@@ -17,6 +30,9 @@ set(GOW3_SOURCES
     src/gow3_xam_input_guard.cpp
     src/gow3_xam_trace.cpp
     src/gow3_content_fix.cpp
+    src/gow3_crash_log.cpp
+    src/gow3_dlc.cpp
+    src/gow3_title_update.cpp
     src/gow3_game_patches.cpp
     src/gow3_options_actions.cpp
     src/gow3_options_catalog.cpp
@@ -44,6 +60,13 @@ else()
 endif()
 
 rexglue_setup_target(gow3 GPU_PLUGINS xenos)
+if(GOW3_GAME_VERSION STREQUAL "tu6")
+    target_compile_definitions(gow3 PRIVATE GOW3_TU6=1)
+endif()
+# gow3.map: names the recompiled function (sub_<guest address>) at an offset a CRASHLOG line gives.
+if(WIN32)
+    target_link_options(gow3 PRIVATE "LINKER:/MAP:${CMAKE_CURRENT_BINARY_DIR}/gow3.map")
+endif()
 
 # ReXApp is compiled into the game from the SDK's share/rexglue/rex_app.cpp; use our copy instead
 # (src/sdk/rex_app.cpp: the startup shader build behind a loading panel). SDK patches never reach

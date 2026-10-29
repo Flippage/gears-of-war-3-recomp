@@ -21,6 +21,7 @@
 // Upegui and the gow2-recomp contributors), which injects through the viewport client instead.
 
 #include "gow3_mouse_aim.h"
+#include "gow3_addresses.h"
 #include "gow3_button_glyphs.h"
 
 #include <windows.h>
@@ -53,25 +54,26 @@ namespace rex::glue {
 
 namespace {
 
-constexpr uint32_t kInputAxisFn = 0x8273B518;
-constexpr uint32_t kInputAxisSlot = 0x821897A4;
-constexpr uint32_t kMouseXName = 0x834440C8;
-constexpr uint32_t kMouseYName = 0x834440D0;
-constexpr uint32_t kMouseXString = 0x82146AA8;
+// Addresses per executable: gow3_addresses.h (base disc values in the comments below).
+constexpr uint32_t kInputAxisFn = addr::kInputAxisFn;
+constexpr uint32_t kInputAxisSlot = addr::kInputAxisSlot;
+constexpr uint32_t kMouseXName = addr::kMouseXName;
+constexpr uint32_t kMouseYName = addr::kMouseYName;
+constexpr uint32_t kMouseXString = addr::kMouseXString;
 // Diagnostics for menu mouse (gow3_mouse_aim_log): the player-level InputAxis dispatch, a virtual
 // (vtable 0x821617F8 + 0x24C) that walks the local player's PlayerController Interactions
 // (+1148 data, +1152 count; the player from GEngine 0x834290BC, GamePlayers +1184 / +1188, actor
 // +64) and calls each one's InputAxis (+300).
-constexpr uint32_t kControllerAxisFn = 0x826149D0;
-constexpr uint32_t kControllerAxisSlot = 0x82161A44;
-constexpr uint32_t kEnginePtr = 0x834290BC;
+constexpr uint32_t kControllerAxisFn = addr::kControllerAxisFn;
+constexpr uint32_t kControllerAxisSlot = addr::kControllerAxisSlot;
+constexpr uint32_t kEnginePtr = addr::kEnginePtr;
 // UGameViewportClient::InputAxis, entered through its FViewportClient interface (this r3 = the
 // object + 60; Viewport r4, ControllerId r5, Key r6, Delta f1, DeltaTime f2, bGamepad r9). It
 // offers each axis event to the GlobalInteractions (interface +16 data, +20 count) in turn and
 // calls their InputAxis (+300): the Scaleform GFxInteraction, which moves the menus' pointer by
 // the [GFxUI.GamepadMouse] axes, and the player manager that passes it on to PlayerInput
 // (0x826149D0). Mouse motion sent here reaches both; sent to PlayerInput it skipped the menus.
-constexpr uint32_t kViewportAxisFn = 0x82614F38;
+constexpr uint32_t kViewportAxisFn = addr::kViewportAxisFn;
 
 uint32_t LoadGuestU32(const uint8_t* base, uint32_t addr) {
   const uint8_t* p = base + addr;
@@ -369,6 +371,8 @@ void InstallNativeMouseAim(rex::ui::Window* window) {
   const char* why = nullptr;
   if (!runtime || !dispatcher || !base || !window) {
     why = "runtime, dispatcher, memory or window missing";
+  } else if (!kInputAxisSlot || !kMouseXString || !kMouseXName || !kMouseYName) {
+    why = "addresses not mapped for this executable";
   } else if (LoadGuestU32(base, kInputAxisSlot) != kInputAxisFn) {
     why = "PlayerInput InputAxis vtable entry mismatch";
   } else if (!GuestUtf16Is(base, kMouseXString, "MouseX")) {

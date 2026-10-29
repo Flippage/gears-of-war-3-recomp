@@ -1,0 +1,11 @@
+# Title Update 6: found by booting the game (FATAL: call to unregistered function).
+[functions]
+# The base game's boot-run hints (hints/runtime.toml), found in the TU6 image by their instructions.
+0x82FF0DE4 = {}  # base 0x82FDD3E4 (TU6 boot run 2)
+0x82FF0858 = {}  # base 0x82FDCE58
+0x82FF0F64 = {}  # base 0x82FDD564
+0x82FF10E4 = {}  # base 0x82FDD6E4
+0x82FF1264 = {}  # base 0x82FDD864
+0x82FF13E4 = {}  # base 0x82FDD9E4
+0x82FF15B0 = {}  # base 0x82FDDBB0
+0x82FF177C = {}  # base 0x82FDDD7C

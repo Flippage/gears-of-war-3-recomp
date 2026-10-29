@@ -1,7 +1,7 @@
 // gow3 - ReXGlue Recompiled Project
 //
 // Save-device mount fix: the root name ("SG0_0", "savedrive0") the guest passes to
-// XamContentCreateEx / XamContentClose lives in a stack buffer, and the call is asynchronous
+// XamContentCreateEx / XamContentCreate (Title Update 6) / XamContentClose lives in a stack buffer, and the call is asynchronous
 // (it returns ERROR_IO_PENDING). rexruntime reads the name when the deferred work runs, by which
 // time the guest has reused that stack: the device got mounted under garbage
 // (bytes 83 41 00 00 ff 3a at the very root-name address, logged by the UTF-8 guard), every
@@ -37,6 +37,7 @@ constexpr uint32_t kSlots = 64;
 uint32_t g_ring = 0;  // guest address of the slot ring
 std::atomic<uint32_t> g_next{0};
 PPCFunc* g_create_body = nullptr;
+PPCFunc* g_create_plain_body = nullptr;
 PPCFunc* g_close_body = nullptr;
 
 uint32_t NextSlot() { return g_ring + (g_next.fetch_add(1, std::memory_order_relaxed) % kSlots) * kSlotSize; }
@@ -48,9 +49,19 @@ void CopyName(uint8_t* base, uint32_t dst, uint32_t src) {
   base[dst + i] = 0;
 }
 
-// XamContentCreateEx(user r3, root_name r4, XCONTENT_DATA* r5, flags r6, disposition* r7,
-//                    license_mask* r8, cache_size r9, content_size r10, overlapped on the stack)
-void CreateWrap(PPCContext& ctx, uint8_t* base) {
+// Root name r4 and XCONTENT_DATA r5 into a slot: the arguments XamContentCreateEx and
+// XamContentCreate share.
+void CopyCreateArgs(PPCContext& ctx, uint8_t* base) {
+  static std::atomic<int> logged{0};
+  if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+    char name[24] = {};
+    for (int i = 0; ctx.r4.u32 && i < 23 && base[ctx.r4.u32 + i]; ++i) {
+      const char c = char(base[ctx.r4.u32 + i]);
+      name[i] = (c >= 32 && c < 127) ? c : '?';
+    }
+    REXLOG_INFO("CONTENTFIX create user={} root_name@{:08X} '{}' data@{:08X} flags={:#x} ring={}",
+                ctx.r3.u32, ctx.r4.u32, name, ctx.r5.u32, ctx.r6.u32, g_ring != 0);
+  }
   if (g_ring) {
     const uint32_t slot = NextSlot();
     if (ctx.r4.u32) {
@@ -62,7 +73,20 @@ void CreateWrap(PPCContext& ctx, uint8_t* base) {
       ctx.r5.u64 = slot + kNameSize;
     }
   }
+}
+
+// XamContentCreateEx(user r3, root_name r4, XCONTENT_DATA* r5, flags r6, disposition* r7,
+//                    license_mask* r8, cache_size r9, content_size r10, overlapped on the stack)
+void CreateWrap(PPCContext& ctx, uint8_t* base) {
+  CopyCreateArgs(ctx, base);
   g_create_body(ctx, base);
+}
+
+// XamContentCreate(user r3, root_name r4, XCONTENT_DATA* r5, flags r6, disposition* r7,
+//                  license_mask* r8, overlapped r9): what Title Update 6 calls for its saves.
+void CreatePlainWrap(PPCContext& ctx, uint8_t* base) {
+  CopyCreateArgs(ctx, base);
+  g_create_plain_body(ctx, base);
 }
 
 // XamContentClose(root_name r3, overlapped r4)
@@ -121,9 +145,10 @@ void InstallContentFix() {
   HMODULE mod = GetModuleHandleA("rexruntime.dll");
   if (!mod) return;
   g_create_body = Hook(mod, "__imp__XamContentCreateEx", &CreateWrap);
+  g_create_plain_body = Hook(mod, "__imp__XamContentCreate", &CreatePlainWrap);
   g_close_body = Hook(mod, "__imp__XamContentClose", &CloseWrap);
-  REXLOG_INFO("CONTENTFIX hooked create={} close={} (ring allocated on first guest launch)",
-              g_create_body != nullptr, g_close_body != nullptr);
+  REXLOG_INFO("CONTENTFIX hooked create_ex={} create={} close={} (ring allocated on first guest launch)",
+              g_create_body != nullptr, g_create_plain_body != nullptr, g_close_body != nullptr);
 }
 
 void AllocateContentFixRing() {

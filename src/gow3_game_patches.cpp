@@ -36,7 +36,45 @@ REXCVAR_DEFINE_BOOL(gow3_shadow_perf_b, false, "GameFixes",
 REXCVAR_DEFINE_BOOL(gow3_disable_dynamic_shadows, false, "GameFixes",
                     "No dynamic shadows at all (Performance Patch Option A without its broken byte).");
 
+REXCVAR_DEFINE_BOOL(gow3_tu6_old_checkpoints, true, "GameFixes",
+                    "Title Update 6: load campaign checkpoints saved before the update (format 3, "
+                    "one array entry fewer); the game saves them in its own format (4) afterwards.");
+
+#include <atomic>
+
+#include <rex/logging.h>
+#include <rex/ppc.h>
+
 #include "gow3_widescreen.h"
+
+// Title Update 6 checkpoints are format 4: TU6's checkpoint serializer (sub_82A20478) reads the
+// format and refuses anything but 4, and one virtual Serialize (sub_823BFBD8) writes an array of 4
+// ints where the disc wrote 3. While a format 3 checkpoint loads, the patch sites accept it and read
+// 3 entries; the flag is cleared when the serializer returns, so saving always writes format 4.
+namespace {
+std::atomic<int> g_old_checkpoint{0};
+}
+
+extern "C" int Gow3OldCheckpointFormat(int format) {
+  if (format == 3 && REXCVAR_GET(gow3_tu6_old_checkpoints)) {
+    if (!g_old_checkpoint.exchange(1)) {
+      REXLOG_INFO("CHECKPOINT loading a format 3 checkpoint (saved before Title Update 6)");
+    }
+    return 4;
+  }
+  g_old_checkpoint.store(0);
+  return format;
+}
+
+extern "C" int Gow3OldCheckpointArrayCount() { return g_old_checkpoint.load() ? 3 : 4; }
+
+#if defined(GOW3_TU6)
+extern "C" void __imp__sub_82A20478(PPCContext& ctx, uint8_t* base);
+extern "C" void sub_82A20478(PPCContext& ctx, uint8_t* base) {
+  __imp__sub_82A20478(ctx, base);
+  g_old_checkpoint.store(0);
+}
+#endif
 
 extern "C" double Gow3WidescreenHalfFov(double half_fov, int site) {
   return rex::glue::WidescreenHalfFov(half_fov, site);

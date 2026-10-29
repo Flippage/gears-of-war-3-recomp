@@ -15,10 +15,17 @@
 #include <rex/filesystem.h>
 #include <rex/rex_app.h>
 #include <rex/runtime.h>
+#include <rex/logging.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/user_module.h>
+#include <rex/system/xex_module.h>
 #include <rex/system/xmemory.h>
 #include <rex/ui/flags.h>
 
 #include "gow3_content_fix.h"
+#include "gow3_crash_log.h"
+#include "gow3_dlc.h"
+#include "gow3_title_update.h"
 #include "gow3_options_actions.h"
 #include "gow3_coalesced.h"
 #include "gow3_mouse_aim.h"
@@ -47,6 +54,7 @@ class Gow3App : public rex::ReXApp {
   // void OnPostInitLogging() override {}
   void OnPreSetup(rex::RuntimeConfig& config) override {
     rex::glue::options_actions::WaitForPreviousInstance();
+    rex::glue::InstallCrashLog();
     config.gpu_plugin = "xenos";
     rex::glue::ApplyRendererChoice();
     // Game language: the console language / region the kernel reports, from gow3_language.
@@ -88,15 +96,26 @@ class Gow3App : public rex::ReXApp {
     // The edited Coalesced copies' hashes, before any game code checks them.
     rex::glue::PatchCoalescedHashes(coalesced_hashes_);
     rex::glue::AllocateContentFixRing();
+    rex::glue::InstallPlayerDlc(game_data_root());
     // Dev tool: GOW3_DUMP_IMAGE=<dir> writes the loaded (decrypted, decompressed) image to
     // <dir>/image.bin for tools/make_image_blocks.py and the hint harvester.
     const char* dir = std::getenv("GOW3_DUMP_IMAGE");
     if (!dir || !*dir) return;
-    constexpr uint32_t kBase = 0x82000000, kEnd = 0x835B0000;
+    // The loaded module's own range, so Title Update 6's image (a different size) dumps whole.
+    auto module = rex::system::kernel_state()->GetExecutableModule();
+    auto* xex = module ? module->xex_module() : nullptr;
+    if (!xex) return;
+    const uint32_t base = xex->base_address(), size = xex->image_size();
     std::filesystem::create_directories(dir);
     std::ofstream out(std::filesystem::path(dir) / "image.bin", std::ios::binary);
-    const auto* bytes = runtime()->memory()->TranslateVirtual<const char*>(kBase);
-    out.write(bytes, kEnd - kBase);
+    const auto* bytes = runtime()->memory()->TranslateVirtual<const char*>(base);
+    out.write(bytes, size);
+    REXLOG_INFO("GOW3_DUMP_IMAGE: {:08X}..{:08X} -> {}", base, base + size, dir);
+    if (std::getenv("GOW3_DUMP_IMAGE_EXIT")) {
+      // Dump only (tools\map_tu6_addresses.py): stop before the game runs.
+      rex::FlushLogging();
+      std::exit(0);
+    }
   }
   void OnPostSetup() override {
     rex::glue::InstallNativeMouseAim(window());
@@ -183,6 +202,8 @@ class Gow3App : public rex::ReXApp {
       std::function<void(rex::PathConfig)> /*resume*/) override {
     rex::PathConfig p = defaults;
     ApplyConfigUserRoot(p);
+    // The TU6 executable: its title update as UPDATE: (or a clear stop without it).
+    rex::glue::PrepareTitleUpdate(p.game_data_root, p.update_data_root);
     options_paths_ = p;
     return p;
   }
