@@ -17,6 +17,7 @@ struct LauncherState {
   std::string skip_release;
   bool check_updates = true;
   int64_t last_check = 0;
+  bool content_asked = false;  // the "Title Update 6 and DLC are now supported" question was answered
   bool existed = false;  // false when launcher.ini was missing (v0.2.2 or older install)
 };
 

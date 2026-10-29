@@ -67,6 +67,8 @@ LauncherState LoadState(const fs::path& ini) {
       s.skip_release = val;
     } else if (key == "check_updates") {
       s.check_updates = val != "false";
+    } else if (key == "content_asked") {
+      s.content_asked = val == "true";
     } else if (key == "last_check") {
       int64_t n = 0;
       if (std::from_chars(val.data(), val.data() + val.size(), n).ec == std::errc()) s.last_check = n;
@@ -86,6 +88,7 @@ bool SaveState(const fs::path& ini, const LauncherState& s) {
         << "installed = " << JoinList(s.installed) << "\n"
         << "skip_release = " << s.skip_release << "\n"
         << "check_updates = " << (s.check_updates ? "true" : "false") << "\n"
+        << "content_asked = " << (s.content_asked ? "true" : "false") << "\n"
         << "last_check = " << s.last_check << "\n";
     out.flush();
     if (!out) return false;

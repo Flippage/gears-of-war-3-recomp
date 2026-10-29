@@ -300,6 +300,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
       IsGameFolder(game)) {
     app.game = game;
   }
+  if (app.game.empty()) app.page = App::Page::kGameFiles;  // nothing installed: open on setup
 
   WNDCLASSEXW wc{sizeof(wc)};
   wc.style = CS_CLASSDC;

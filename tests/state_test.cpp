@@ -5,10 +5,11 @@ TEST(state_round_trip) {
   auto dir = TempDir("state");
   gow3::setup::LauncherState s; s.build = gow3::setup::Build::kTu6;
   s.declined = {"a:1", "b:2"}; s.skip_release = "v0.3.1"; s.check_updates = false; s.last_check = 1793000000;
+  s.content_asked = true;
   CHECK(gow3::setup::SaveState(dir / "launcher.ini", s));
   auto r = gow3::setup::LoadState(dir / "launcher.ini");
   CHECK(r.existed && r.build == gow3::setup::Build::kTu6 && r.declined == s.declined);
-  CHECK(r.skip_release == "v0.3.1" && !r.check_updates && r.last_check == 1793000000);
+  CHECK(r.skip_release == "v0.3.1" && !r.check_updates && r.last_check == 1793000000 && r.content_asked);
 }
 TEST(state_missing_is_base) {
   auto r = gow3::setup::LoadState(TempDir("state2") / "launcher.ini");
@@ -20,7 +21,7 @@ TEST(state_format_and_overwrite) {
   CHECK(gow3::setup::SaveState(dir / "launcher.ini", s));
   CHECK(gow3::setup::SaveState(dir / "launcher.ini", s));  // replaces existing
   CHECK(FileText(dir / "launcher.ini") ==
-        "build = base\ndeclined = a:1|b:2\ninstalled = c:3\nskip_release = \ncheck_updates = true\nlast_check = 0\n");
+        "build = base\ndeclined = a:1|b:2\ninstalled = c:3\nskip_release = \ncheck_updates = true\ncontent_asked = false\nlast_check = 0\n");
   CHECK(!std::filesystem::exists(dir / "launcher.ini.tmp"));
   WriteFile(dir / "x.ini", "junk\nbuild = tu6\nfoo = bar\n");
   auto r = gow3::setup::LoadState(dir / "x.ini");
