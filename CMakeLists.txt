@@ -63,6 +63,16 @@ endif()
 
 rexglue_setup_target(gow3 GPU_PLUGINS xenos)
 target_link_libraries(gow3 PRIVATE gow3_setup)
+# rexglue_setup_target copies the stock SDK DLLs next to gow3.exe after every link. The game needs
+# the patched ones from out\sdk (sdk\patches: the TU6 file overlay, the save fixes, ...), which
+# scripts\build.ps1 copies too; copy them here as well so a plain `cmake --build` doesn't leave the
+# stock runtime behind (a TU6 build on it never applies default.xexp and crashes at start).
+file(GLOB GOW3_PATCHED_SDK_DLLS "${CMAKE_CURRENT_SOURCE_DIR}/out/sdk/*.dll")
+if(GOW3_PATCHED_SDK_DLLS)
+    add_custom_command(TARGET gow3 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${GOW3_PATCHED_SDK_DLLS} $<TARGET_FILE_DIR:gow3>
+        COMMENT "Patched SDK DLLs from out/sdk")
+endif()
 if(GOW3_GAME_VERSION STREQUAL "tu6")
     target_compile_definitions(gow3 PRIVATE GOW3_TU6=1)
 endif()
