@@ -6,8 +6,13 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 
 namespace rex::glue {
+
+// The folder holding the player's TU6 default.xexp (gow3_tu6_folder, else <exe>\TU6, else
+// <game>\TU6), or nothing.
+std::optional<std::filesystem::path> FindTitleUpdateFolder(const std::filesystem::path& game_folder);
 
 // TU6 executable only (does nothing in the base one). Call once gow3.toml is loaded and before the
 // runtime mounts its devices (OnFinalizePaths): sets update_root to the TU6 folder (the game's

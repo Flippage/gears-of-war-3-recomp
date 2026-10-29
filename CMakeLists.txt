@@ -36,6 +36,7 @@ set(GOW3_SOURCES
     src/gow3_crash_log.cpp
     src/gow3_dlc.cpp
     src/gow3_title_update.cpp
+    src/gow3_launch_check.cpp
     src/gow3_game_patches.cpp
     src/gow3_options_actions.cpp
     src/gow3_options_catalog.cpp
