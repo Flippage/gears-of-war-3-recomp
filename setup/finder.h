@@ -64,8 +64,17 @@ struct FindResult {
 // Each root and its direct subfolders: the first game folder found. Only when there is none, every Gears 3 ISO
 // (a found game folder returns at once with `isos` empty, so no image is opened).
 FindResult FindGame(const std::vector<std::filesystem::path>& roots);
-// Direct files of each root and of its direct subfolders: Gears 3 TU and DLC packages.
+// Gears 3 TU and DLC packages in each root and up to kPackageDepth folders below it, which covers the
+// Xbox layout (<name>\4D5308AB\00000002\<package>). Skips game data folders (GearGame, $SystemUpdate),
+// build/source trees (.git, out, generated, test-tmp) and the disc's own DLC\AvatarAwards; stops after
+// kPackageScanLimit folder entries so a huge folder can't slow gow3.exe's start.
+inline constexpr int kPackageDepth = 4;
+inline constexpr int kPackageScanLimit = 50000;
 std::vector<FoundPackage> FindPackages(const std::vector<std::filesystem::path>& roots,
                                        uint32_t disc_media_id);
+// A package file or a folder the player picked: that file, or the folder searched like a root.
+std::vector<FoundPackage> FindPackagesAt(const std::filesystem::path& file_or_folder, uint32_t disc_media_id);
+// The disc ships DLC\AvatarAwards (a marketplace-type package named "Gears of War 3"): never offered.
+bool IsDiscOwnPackage(const std::filesystem::path& file);
 
 }  // namespace gow3::setup

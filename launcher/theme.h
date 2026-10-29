@@ -20,7 +20,9 @@ inline constexpr ImVec4 kTitle = Rgb(0xF2F2F2), kNavActive = Rgb(0x1D2025), kOut
                         kPill = Rgb(0x1B1E22), kPillText = Rgb(0x9AA0A8), kTrackOff = Rgb(0x2A2E34);
 
 // Unscaled sizes (multiplied by the DPI scale through style.FontScaleDpi).
-inline constexpr float kBodySize = 16.0f, kPageTitleSize = 40.0f;
+inline constexpr float kBodySize = 18.0f, kPageTitleSize = 42.0f;
+// Descriptions and secondary lines, the settings group headers.
+inline constexpr float kSmallSize = 16.0f, kGroupSize = 14.0f;
 
 }  // namespace theme
 

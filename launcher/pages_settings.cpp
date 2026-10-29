@@ -288,7 +288,7 @@ bool ChoiceCombo(const char* id, const std::vector<opt::DynamicChoice>& choices,
 
 void GroupHeader(const char* name) {
   ImGui::Dummy(ImVec2(0, Dp(6.0f)));
-  ImGui::PushFont(nullptr, 12.0f);
+  ImGui::PushFont(nullptr, theme::kGroupSize);
   ImGui::TextColored(theme::kAccent, "%s", name);
   ImGui::PopFont();
 }
@@ -391,7 +391,7 @@ void DrawRow(App& app, const opt::RowSpec& row) {
   ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + left_w);
   ImGui::TextUnformatted(row.label.For());
   if (const char* help = row.help.For(); *help) {
-    ImGui::PushFont(nullptr, 13.0f);
+    ImGui::PushFont(nullptr, theme::kSmallSize);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, Dp(2.0f)));
     ImGui::TextColored(kHint, "%s", help);
     ImGui::PopStyleVar();
@@ -486,7 +486,7 @@ void DrawFooter(App& app, Page page) {
   } else if (g_save == SaveStatus::kNone && page == Page::kControls) {
     text = "Click a key to rebind";
   }
-  ImGui::PushFont(nullptr, 14.0f);
+  ImGui::PushFont(nullptr, theme::kSmallSize);
   ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + full - play_w - Dp(16.0f));
   const float text_h = ImGui::CalcTextSize(text.c_str(), nullptr, false, full - play_w - Dp(16.0f)).y;
   ImGui::SetCursorPosY(y + std::max(0.0f, (play_h - text_h) * 0.5f));

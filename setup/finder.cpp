@@ -16,11 +16,12 @@ namespace fs = std::filesystem;
 
 namespace {
 
-std::wstring LowerExt(const fs::path& p) {
-  std::wstring e = p.extension().native();
-  std::transform(e.begin(), e.end(), e.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-  return e;
+std::wstring Lower(std::wstring s) {
+  std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+  return s;
 }
+
+std::wstring LowerExt(const fs::path& p) { return Lower(p.extension().native()); }
 
 // Each root, then its direct subfolders (de-duplicated).
 std::vector<fs::path> WithSubfolders(const std::vector<fs::path>& roots) {
@@ -167,13 +168,22 @@ FindResult FindGame(const std::vector<fs::path>& roots) {
   return result;
 }
 
-std::vector<FoundPackage> FindPackages(const std::vector<fs::path>& roots, uint32_t disc_media_id) {
-  static const std::set<std::wstring> kSkip = {L".iso", L".zip", L".7z", L".rar", L".exe",
-                                               L".dll", L".txt", L".xex", L".xexp"};
+bool IsDiscOwnPackage(const fs::path& file) {
+  return Lower(file.filename().native()) == L"avatarawards";
+}
+
+namespace {
+
+struct PackageScan {
+  uint32_t disc_media_id;
   std::vector<FoundPackage> found;
   std::set<fs::path> seen;
-  ForEachFile(WithSubfolders(roots), [&](const fs::path& file, uint64_t size) {
-    if (size < 0x1000 || kSkip.count(LowerExt(file))) return;
+  int entries = 0;
+
+  void File(const fs::path& file, uint64_t size) {
+    static const std::set<std::wstring> kSkip = {L".iso", L".zip", L".7z", L".rar", L".exe",
+                                                 L".dll", L".txt", L".xex", L".xexp"};
+    if (size < 0x1000 || kSkip.count(LowerExt(file)) || IsDiscOwnPackage(file)) return;
     std::error_code ec;
     fs::path key = fs::weakly_canonical(file, ec);
     if (ec) key = file;
@@ -183,8 +193,52 @@ std::vector<FoundPackage> FindPackages(const std::vector<fs::path>& roots, uint3
     if (h->content_type != kTuType && h->content_type != kDlcType) return;
     const bool tu = h->content_type == kTuType;
     found.push_back({file, size, PackageId(file, size), *h, tu, !tu || h->media_id == disc_media_id});
-  });
-  return found;
+  }
+
+  void Folder(const fs::path& dir, int depth) {
+    static const std::set<std::wstring> kSkipDirs = {L"geargame",L"$systemupdate", L".git", L"out",
+                                                     L"generated", L"node_modules", L"test-tmp", L"tu6.part-dir",
+                                                     L"tu6.old"};
+    std::error_code ec;
+    for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::directory_iterator(); it.increment(ec)) {
+      if (++entries > kPackageScanLimit) return;
+      std::error_code e2;
+      if (it->is_directory(e2)) {
+        if (depth > 0 && !it->is_symlink(e2) && !kSkipDirs.count(Lower(it->path().filename().native()))) {
+          Folder(it->path(), depth - 1);
+        }
+      } else if (it->is_regular_file(e2)) {
+        const uint64_t size = it->file_size(e2);
+        if (!e2) File(it->path(), size);
+      }
+    }
+  }
+};
+
+}  // namespace
+
+std::vector<FoundPackage> FindPackages(const std::vector<fs::path>& roots, uint32_t disc_media_id) {
+  PackageScan scan{disc_media_id};
+  std::set<fs::path> done;
+  for (const fs::path& root : roots) {
+    std::error_code ec;
+    if (root.empty() || !fs::is_directory(root, ec)) continue;
+    fs::path key = fs::weakly_canonical(root, ec);
+    if (ec) key = root;
+    if (!done.insert(key).second) continue;
+    scan.Folder(root, kPackageDepth);
+  }
+  return std::move(scan.found);
+}
+
+std::vector<FoundPackage> FindPackagesAt(const fs::path& file_or_folder, uint32_t disc_media_id) {
+  std::error_code ec;
+  if (fs::is_directory(file_or_folder, ec)) return FindPackages({file_or_folder}, disc_media_id);
+  PackageScan scan{disc_media_id};
+  const uint64_t size = fs::file_size(file_or_folder, ec);
+  if (!ec) scan.File(file_or_folder, size);
+  return std::move(scan.found);
 }
 
 }  // namespace gow3::setup

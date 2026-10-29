@@ -235,6 +235,33 @@ fs::path PickIsoOrFolder(HWND owner) {
   return ItemPath(item.p);
 }
 
+fs::path PickPackageOrFolder(HWND owner) {
+  ComPtr<IFileOpenDialog> dialog;
+  if (FAILED(CoCreateInstance(__uuidof(FileOpenDialog), nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
+    return {};
+  }
+  DWORD options = 0;
+  dialog->GetOptions(&options);
+  dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+  dialog->SetTitle(L"Pick your Title Update 6 or DLC package, or a folder that holds them");
+  const COMDLG_FILTERSPEC filters[] = {{L"All files", L"*.*"}};
+  dialog->SetFileTypes(1, filters);
+  PickerEvents events;
+  ComPtr<IFileDialogCustomize> customize;
+  if (SUCCEEDED(dialog->QueryInterface(IID_PPV_ARGS(&customize)))) {
+    customize->AddPushButton(kUseFolderButton, L"Search this folder");
+  }
+  DWORD cookie = 0;
+  const bool advised = SUCCEEDED(dialog->Advise(&events, &cookie));
+  const HRESULT hr = dialog->Show(owner);
+  if (advised) dialog->Unadvise(cookie);
+  if (!events.folder.empty()) return events.folder;
+  if (FAILED(hr)) return {};
+  ComPtr<IShellItem> item;
+  if (FAILED(dialog->GetResult(&item))) return {};
+  return ItemPath(item.p);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Shared helpers
 
@@ -243,6 +270,14 @@ namespace {
 constexpr const char* kDot = " \xC2\xB7 ";  // " · "
 constexpr const char* kCloseFirst = "Close Gears of War 3 first, then try again.";
 constexpr const char* kNoteSaves = "Your saves carry over. The base game can't read saves made after this.";
+
+// "7.6 GB", or "3.2 MB" below 1 GB.
+std::string Size(uint64_t bytes) {
+  char buf[32];
+  if (bytes >= (1ull << 30)) std::snprintf(buf, sizeof(buf), "%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0));
+  else std::snprintf(buf, sizeof(buf), "%.1f MB", bytes / (1024.0 * 1024.0));
+  return buf;
+}
 
 std::string Gb(uint64_t bytes) {
   char buf[32];
@@ -326,7 +361,7 @@ bool Row(const char* label, const std::string& value, bool pill = false, const c
     right -= bw + Dp(12.0f);
   }
   if (pill) {
-    ImGui::PushFont(nullptr, 13.0f);
+    ImGui::PushFont(nullptr, theme::kSmallSize);
     const ImVec2 size(ImGui::CalcTextSize(value.c_str()).x + Dp(20.0f), ImGui::GetFontSize() + Dp(6.0f));
     ImGui::PopFont();
     ImGui::SetCursorScreenPos(ImVec2(right - size.x, p.y + (h - size.y) * 0.5f));
@@ -410,7 +445,7 @@ struct PlayInfo {
 };
 PlayInfo g_play;
 
-enum class View { kOverview, kSetup, kWorking, kOffer, kRepair, kRestoreBuild };
+enum class View { kOverview, kSetup, kWorking, kAskContent, kOffer, kRepair, kRestoreBuild };
 enum class JobKind { kExtract, kInstall, kRepair, kSwitch };
 
 struct OfferItem {
@@ -438,7 +473,7 @@ struct GameFiles {
   std::string drive;  // "D:"
   // New content.
   std::vector<OfferItem> items;
-  std::string offer_folder;  // common folder of the offered packages, or empty
+  std::string install_names;  // "Title Update 6 · RAAM's Shadow": what INSTALL was pressed for
   // Running job.
   JobKind kind = JobKind::kExtract;
   Build switch_to = Build::kBase;
@@ -483,7 +518,13 @@ std::vector<FoundPackage> ScanPackages(const App& app) {
   return FindPackages(PackageRoots(app.dir, app.game), xex ? xex->media_id : 0);
 }
 
-// Fills the offer list (TU first). Returns true when there is something new to offer.
+// Usable TUs first, then the greyed ones (another disc version), then the DLC.
+void SortItems() {
+  std::stable_partition(g.items.begin(), g.items.end(), [](const OfferItem& i) { return i.usable; });
+  std::stable_partition(g.items.begin(), g.items.end(), [](const OfferItem& i) { return i.pkg.is_tu; });
+}
+
+// Fills the offer list. Returns true when there is something new to offer.
 bool BuildOffer(const App& app, bool ignore_declined) {
   const std::vector<FoundPackage> found = ScanPackages(app);
   gow3::setup::LauncherState s = app.state;
@@ -499,17 +540,35 @@ bool BuildOffer(const App& app, bool ignore_declined) {
       if (p.is_tu && !p.matches_disc && seen.insert(p.id).second) g.items.push_back({p, false, false});
     }
   }
-  std::stable_partition(g.items.begin(), g.items.end(), [](const OfferItem& i) { return i.pkg.is_tu; });
-  std::stable_partition(g.items.begin(), g.items.end(), [](const OfferItem& i) { return i.usable; });
-  g.offer_folder.clear();
-  fs::path common;
-  for (const OfferItem& i : g.items) {
-    const fs::path dir = i.pkg.file.parent_path();
-    if (common.empty()) common = dir;
-    else if (common != dir) return any;
-  }
-  g.offer_folder = Utf8(common);
+  SortItems();
   return any;
+}
+
+// The player picked a package or a folder ("Add files…"): adds what it holds to the offer list.
+void AddPicked(const App& app, const fs::path& picked) {
+  using namespace gow3::setup;
+  if (picked.empty()) return;
+  const auto xex = ReadXexInfoFile(app.game / "default.xex");
+  const std::vector<FoundPackage> found = FindPackagesAt(picked, xex ? xex->media_id : 0);
+  int added = 0, installed = 0;
+  for (const FoundPackage& p : found) {
+    if (app.state.installed.count(p.id) || (p.is_tu && app.state.build == Build::kTu6)) {
+      ++installed;
+      continue;
+    }
+    if (std::any_of(g.items.begin(), g.items.end(), [&](const OfferItem& i) { return i.pkg.id == p.id; })) continue;
+    const bool usable = !p.is_tu || p.matches_disc;
+    g.items.push_back({p, usable, usable});
+    ++added;
+  }
+  SortItems();
+  std::string message;
+  if (found.empty()) {
+    message = "No Gears of War 3 Title Update or DLC package was found in " + Utf8(picked) + ".";
+  } else if (!added) {
+    message = installed ? "That is already installed." : "That is already in the list.";
+  }
+  Show(View::kOffer, std::move(message));
 }
 
 void UpdateTarget();
@@ -561,15 +620,11 @@ void UpdateTarget() {
   }
 }
 
-// After a game folder is set (found, picked or extracted): the package step, then Play.
+// After a game folder is set (found, picked or extracted): the TU6 / DLC step (offered when found,
+// asked about when not), then Play.
 void AfterGameSet(App& app) {
-  if (BuildOffer(app, false)) {
-    Show(View::kOffer);
-    app.page = App::Page::kGameFiles;
-  } else {
-    Show(View::kOverview);
-    app.page = App::Page::kPlay;
-  }
+  app.page = App::Page::kGameFiles;
+  Show(BuildOffer(app, false) ? View::kOffer : View::kAskContent);
 }
 
 // Picked from "Pick another file" / "Change…": an ISO, a game folder or nothing.
@@ -769,7 +824,7 @@ void DrawSetup(App& app) {
   std::string space = "Needs " + Gb(needed) + " GB free";
   if (g.free_bytes) space += " (" + g.drive + " has " + Gb(*g.free_bytes) + " GB)";
   space += ". Your ISO is not changed.";
-  ImGui::PushFont(nullptr, 14.0f);
+  ImGui::PushFont(nullptr, theme::kSmallSize);
   ImGui::TextColored(enough ? kMuted : kAccent, "%s", space.c_str());
   if (g.target_in_iso) ImGui::TextColored(kAccent, "Pick a folder outside the ISO file.");
   ImGui::PopFont();
@@ -824,7 +879,7 @@ void DrawWorking() {
     const float box_y = ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - Dp(40.0f) - Dp(70.0f);
     ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY() + Dp(8.0f), box_y));
     BeginBox("##wait");
-    ImGui::PushFont(nullptr, 14.0f);
+    ImGui::PushFont(nullptr, theme::kSmallSize);
     ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
     ImGui::TextWrapped(
         "While you wait: pick your settings in the tabs on the left. They are saved for the first launch.");
@@ -838,75 +893,116 @@ void DrawWorking() {
   }
 }
 
+// One offer row: tick box, name, then the file and its folder, then the IDs. Click toggles it.
+void DrawOfferItem(OfferItem& item) {
+  using namespace theme;
+  const ImVec2 p = ImGui::GetCursorScreenPos();
+  const float w = ImGui::GetContentRegionAvail().x, line = ImGui::GetTextLineHeight();
+  ImGui::PushFont(nullptr, kSmallSize);
+  const float small_h = ImGui::GetTextLineHeight();
+  ImGui::PopFont();
+  const float row_h = line + small_h * 2 + Dp(12.0f);
+  ImGui::BeginDisabled(!item.usable);
+  if (ImGui::InvisibleButton("##tick", ImVec2(w, row_h))) item.ticked = !item.ticked;
+  const bool hovered = ImGui::IsItemHovered();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const float box = Dp(15.0f);
+  const ImVec2 b0(p.x, p.y + Dp(3.0f) + (line - box) * 0.5f), b1(b0.x + box, b0.y + box);
+  if (item.ticked) {
+    dl->AddRectFilled(b0, b1, ImGui::GetColorU32(kAccent), Dp(3.0f));
+    const ImU32 white = ImGui::GetColorU32(ImVec4(1, 1, 1, 1));
+    dl->AddLine(ImVec2(b0.x + box * 0.22f, b0.y + box * 0.52f), ImVec2(b0.x + box * 0.42f, b0.y + box * 0.72f),
+                white, Dp(1.6f));
+    dl->AddLine(ImVec2(b0.x + box * 0.42f, b0.y + box * 0.72f), ImVec2(b0.x + box * 0.78f, b0.y + box * 0.3f),
+                white, Dp(1.6f));
+  } else {
+    dl->AddRect(b0, b1, ImGui::GetColorU32(hovered ? kMuted : kOutline), Dp(3.0f), 0, Dp(1.0f));
+  }
+  const float x = b1.x + Dp(10.0f), text_w = p.x + w - x;
+  std::string name, extra;
+  if (item.pkg.is_tu) {
+    name = "Title Update 6";
+    if (!item.usable) extra = " (for another disc version, can't be installed)";
+  } else {
+    name = item.pkg.header.display_name.empty() ? Utf8(item.pkg.file.filename()) : item.pkg.header.display_name;
+  }
+  const ImVec2 t(x, p.y + Dp(3.0f));
+  dl->AddText(t, ImGui::GetColorU32(item.usable ? kText : kMuted), name.c_str());
+  if (!extra.empty()) {
+    dl->AddText(ImVec2(t.x + ImGui::CalcTextSize(name.c_str()).x, t.y), ImGui::GetColorU32(kMuted), extra.c_str());
+  }
+  ImGui::PushFont(nullptr, kSmallSize);
+  const std::string file = Utf8(item.pkg.file.filename()) + kDot;
+  const std::string where =
+      file + FitLeft(Utf8(item.pkg.file.parent_path()), text_w - ImGui::CalcTextSize(file.c_str()).x);
+  dl->AddText(ImVec2(x, t.y + line + Dp(2.0f)), ImGui::GetColorU32(kMuted), where.c_str());
+  const std::string ids = Ids(item.pkg.header.title_id, item.pkg.header.media_id) + kDot + Size(item.pkg.size);
+  dl->AddText(ImVec2(x, t.y + line + small_h + Dp(3.0f)), ImGui::GetColorU32(kMuted), ids.c_str());
+  ImGui::PopFont();
+  ImGui::EndDisabled();
+}
+
+void OfferSection(const char* title, bool tu, const char* none) {
+  using namespace theme;
+  ImGui::PushFont(nullptr, kGroupSize);
+  ImGui::TextColored(kAccent, "%s", title);
+  ImGui::PopFont();
+  bool any = false;
+  int index = tu ? 0 : 10000, other_disc = 0;
+  for (OfferItem& item : g.items) {
+    if (item.pkg.is_tu != tu) continue;
+    if (!item.usable) {  // a TU for another disc version: counted on one line below, not listed
+      ++other_disc;
+      continue;
+    }
+    ImGui::PushID(index++);
+    DrawOfferItem(item);
+    ImGui::PopID();
+    any = true;
+  }
+  ImGui::PushFont(nullptr, kSmallSize);
+  if (!any) ImGui::TextColored(kMuted, "%s", none);
+  if (other_disc) {
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(kMuted, "Also found %d Title Update file%s for other versions of the disc (not your Media ID), "
+                       "so they can't be used.", other_disc, other_disc == 1 ? "" : "s");
+    ImGui::PopTextWrapPos();
+  }
+  ImGui::PopFont();
+  ImGui::Dummy(ImVec2(0, Dp(6.0f)));
+}
+
 void DrawOffer(App& app) {
   using namespace theme;
-  PageTitle("NEW CONTENT FOUND");
-  if (g.offer_folder.empty()) {
-    ImGui::TextColored(kMuted, "Next to your game:");
-  } else {
-    const std::string lead = "Next to your game, in ";
-    const std::string folder =
-        FitLeft(g.offer_folder, ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize((lead + ":").c_str()).x);
-    ImGui::TextColored(kMuted, "%s%s:", lead.c_str(), folder.c_str());
+  PageTitle("TITLE UPDATE 6 AND DLC");
+  ImGui::PushTextWrapPos(0.0f);
+  ImGui::TextColored(kMuted, "%s",
+                     g.items.empty()
+                         ? "None were found next to your game or the launcher. Use Add files to pick the package "
+                           "files, or a folder that holds them."
+                         : "Tick what to install. Not listed? Use Add files to pick the package files, or a folder "
+                           "that holds them.");
+  ImGui::PopTextWrapPos();
+  ImGui::Dummy(ImVec2(0, Dp(4.0f)));
+  const float list_h = ImGui::GetContentRegionAvail().y - Dp(40.0f) - Dp(54.0f);
+  ImGui::BeginChild("##offer_list", ImVec2(0, std::max(list_h, Dp(80.0f))));
+  if (app.state.build == Build::kBase) {
+    OfferSection("TITLE UPDATE 6", true, "No Title Update 6 package found. It is needed for the DLC.");
   }
-  BeginBox("##items");
-  int index = 0;
-  for (OfferItem& item : g.items) {
-    ImGui::PushID(index++);
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const float w = ImGui::GetContentRegionAvail().x, line = ImGui::GetTextLineHeight();
-    const float row_h = line * 2 + Dp(8.0f);
-    ImGui::BeginDisabled(!item.usable);
-    if (ImGui::InvisibleButton("##tick", ImVec2(w, row_h))) item.ticked = !item.ticked;
-    const bool hovered = ImGui::IsItemHovered();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float box = Dp(13.0f);
-    const ImVec2 b0(p.x, p.y + Dp(2.0f) + (line - box) * 0.5f), b1(b0.x + box, b0.y + box);
-    if (item.ticked) {
-      dl->AddRectFilled(b0, b1, ImGui::GetColorU32(kAccent), Dp(3.0f));
-      const ImU32 white = ImGui::GetColorU32(ImVec4(1, 1, 1, 1));
-      dl->AddLine(ImVec2(b0.x + box * 0.22f, b0.y + box * 0.52f), ImVec2(b0.x + box * 0.42f, b0.y + box * 0.72f),
-                  white, Dp(1.6f));
-      dl->AddLine(ImVec2(b0.x + box * 0.42f, b0.y + box * 0.72f), ImVec2(b0.x + box * 0.78f, b0.y + box * 0.3f),
-                  white, Dp(1.6f));
-    } else {
-      dl->AddRect(b0, b1, ImGui::GetColorU32(hovered ? kMuted : kOutline), Dp(3.0f), 0, Dp(1.0f));
-    }
-    const float x = b1.x + Dp(9.0f);
-    std::string name, extra;
-    if (item.pkg.is_tu) {
-      name = item.usable ? "Title Update 6" : "Title Update";
-      extra = item.usable ? " (needed for the DLC)" : " (for another disc version)";
-    } else {
-      name = item.pkg.header.display_name.empty() ? Utf8(item.pkg.file.filename()) : item.pkg.header.display_name;
-    }
-    const ImVec2 t(x, p.y + Dp(2.0f));
-    dl->AddText(t, ImGui::GetColorU32(item.usable ? kText : kMuted), name.c_str());
-    if (!extra.empty()) {
-      dl->AddText(ImVec2(t.x + ImGui::CalcTextSize(name.c_str()).x, t.y), ImGui::GetColorU32(kMuted), extra.c_str());
-    }
-    ImGui::PushFont(nullptr, 13.0f);
-    std::string ids = Ids(item.pkg.header.title_id, item.pkg.header.media_id);
-    if (g.offer_folder.empty()) {
-      ids += kDot;
-      ids += FitLeft(Utf8(item.pkg.file.parent_path()),
-                     p.x + w - x - ImGui::CalcTextSize((ids + "  ").c_str()).x);
-    }
-    dl->AddText(ImVec2(x, t.y + line + Dp(1.0f)), ImGui::GetColorU32(kMuted), ids.c_str());
-    ImGui::PopFont();
-    ImGui::EndDisabled();
-    ImGui::PopID();
-  }
-  EndBox();
-  ImGui::PushFont(nullptr, 14.0f);
+  OfferSection("DLC", false, "No DLC package found.");
+  ImGui::EndChild();
+  ImGui::PushFont(nullptr, kSmallSize);
   ImGui::TextColored(kMuted, "%s", kNoteSaves);
   ImGui::PopFont();
   if (!g.message.empty()) ImGui::TextColored(kAccent, "%s", g.message.c_str());
 
   const bool any = std::any_of(g.items.begin(), g.items.end(), [](auto& i) { return i.usable && i.ticked; });
-  const char* keep = app.state.build == Build::kBase ? "Keep base game" : "Not now";
-  const std::string_view b = BottomButtons({{keep}, {"INSTALL", true, any}});
-  if (b == keep) {
+  const bool listed = std::any_of(g.items.begin(), g.items.end(), [](auto& i) { return i.usable; });
+  const char* keep = !listed ? "Back" : app.state.build == Build::kBase ? "Keep base game" : "Not now";
+  const std::string_view b = BottomButtons({{"Add files\xE2\x80\xA6"}, {keep}, {"INSTALL", true, any}});
+  if (b == "Add files\xE2\x80\xA6") {
+    AddPicked(app, PickPackageOrFolder(app.hwnd));
+  } else if (b == keep) {
     for (const OfferItem& i : g.items) {
       if (i.usable) app.state.declined.insert(i.pkg.id);
     }
@@ -915,12 +1011,47 @@ void DrawOffer(App& app) {
   } else if (b == "INSTALL") {
     std::vector<FoundPackage> picked;
     g.offered.clear();
+    g.install_names.clear();
     for (const OfferItem& i : g.items) {
       if (!i.usable) continue;
       g.offered.push_back(i.pkg.id);
-      if (i.ticked) picked.push_back(i.pkg);
+      if (!i.ticked) continue;
+      picked.push_back(i.pkg);
+      g.install_names += (g.install_names.empty() ? "" : kDot) +
+                         (i.pkg.is_tu ? std::string("Title Update 6")
+                          : i.pkg.header.display_name.empty() ? Utf8(i.pkg.file.filename())
+                                                              : i.pkg.header.display_name);
     }
     StartInstall(app, picked, JobKind::kInstall);
+  }
+}
+
+// After setup, when nothing was found next to the game: ask before going to Play.
+void DrawAskContent(App& app) {
+  using namespace theme;
+  PageTitle("TITLE UPDATE 6 AND DLC");
+  ImGui::PushTextWrapPos(0.0f);
+  ImGui::TextUnformatted("Your game is set up. Do you also have Title Update 6 or DLC (RAAM's Shadow, the map "
+                         "packs) for it?");
+  ImGui::Dummy(ImVec2(0, Dp(4.0f)));
+  ImGui::PushFont(nullptr, kSmallSize);
+  ImGui::TextColored(kMuted, "%s",
+                     "They are your own packages, for example copied from your Xbox 360. Title Update 6 is needed "
+                     "for the DLC. You can also add them later on the Game files page.");
+  ImGui::PopFont();
+  ImGui::PopTextWrapPos();
+  if (!g.message.empty()) ImGui::TextColored(kAccent, "%s", g.message.c_str());
+  const std::string_view b = BottomButtons({{"No, just play"}, {"YES", true}});
+  if (b == "No, just play") {
+    FlowDone(app);
+    if (app.start == App::Start::kNormal) app.page = App::Page::kPlay;
+  } else if (b == "YES") {
+    if (!BuildOffer(app, true)) {
+      Show(View::kOffer);
+      AddPicked(app, PickPackageOrFolder(app.hwnd));
+    } else {
+      Show(View::kOffer);
+    }
   }
 }
 
@@ -936,7 +1067,7 @@ void DrawRepair(App& app) {
   ImGui::Dummy(ImVec2(0, Dp(4.0f)));
   BeginBox("##repair");
   ImGui::TextWrapped("Install it again from your Title Update 6 package, or switch back to the base game.");
-  ImGui::PushFont(nullptr, 14.0f);
+  ImGui::PushFont(nullptr, theme::kSmallSize);
   ImGui::TextColored(kMuted, "The launcher looks for the package next to the game and next to itself.");
   if (!g_tu6_configured.empty()) {
     ImGui::PushTextWrapPos(0.0f);
@@ -993,7 +1124,7 @@ void DrawRestoreBuild(App& app) {
                            "this folder). Restore it?"
                          : "Your base-game build was replaced (for example by copying another gow3.exe into this "
                            "folder). Restore it?");
-  ImGui::PushFont(nullptr, 14.0f);
+  ImGui::PushFont(nullptr, theme::kSmallSize);
   ImGui::PushTextWrapPos(0.0f);
   ImGui::TextColored(kMuted, "%s",
                      tu6 ? "The base game can't read saves made with Title Update 6. Restore keeps them working."
@@ -1063,8 +1194,8 @@ void DrawOverview(App& app) {
   const bool look = !BottomButtons({{"Look for TU6 / DLC"}}).empty();
   ImGui::EndDisabled();
   if (look) {
-    if (BuildOffer(app, true)) Show(View::kOffer);
-    else g.message = "No new Title Update 6 or DLC packages were found next to the game or the launcher.";
+    BuildOffer(app, true);
+    Show(View::kOffer);  // with nothing found: the empty lists and Add files
   }
 }
 
@@ -1125,6 +1256,14 @@ void DrawPlayPage(App& app) {
 
 void InitGameFiles(App& app) {
   using namespace gow3::setup;
+  // Earlier launchers offered (and recorded) the disc's own DLC\AvatarAwards: forget it.
+  bool cleaned = false;
+  for (std::set<std::string>* ids : {&app.state.installed, &app.state.declined}) {
+    cleaned |= std::erase_if(*ids, [](const std::string& id) {
+                 return IsDiscOwnPackage(FromUtf8(id.substr(0, id.rfind(':'))));
+               }) > 0;
+  }
+  if (cleaned) SaveState(app);
   if (app.game.empty()) {
     const FindResult found = FindGame(SearchRoots(app.dir, 2));
     if (found.game) {
@@ -1212,15 +1351,19 @@ void PollGameFiles(App& app) {
   if (outcome->swap == SwapResult::kOk) app.state.build = Build::kTu6;
   SaveState(app);
   RefreshPlayPage(app);
-  FlowDone(app, g.message);
-  // From a manual "Look for TU6 / DLC" (Ruling 18): back to Play with the new state.
-  if (g.kind == JobKind::kInstall && app.start == App::Start::kNormal) app.page = App::Page::kPlay;
+  std::string done = g.message;
+  if (g.kind == JobKind::kInstall && done.empty()) {
+    done = "Installed: " + g.install_names + "." +
+           (outcome->swap == SwapResult::kOk ? " gow3.exe is now the Title Update 6 build." : "");
+  }
+  FlowDone(app, done);  // after a manual install: the Game files page, saying what went in
 }
 
 void DrawGameFilesPage(App& app) {
   switch (g.view) {
     case View::kSetup: DrawSetup(app); break;
     case View::kWorking: DrawWorking(); break;
+    case View::kAskContent: DrawAskContent(app); break;
     case View::kOffer: DrawOffer(app); break;
     case View::kRepair: DrawRepair(app); break;
     case View::kRestoreBuild: DrawRestoreBuild(app); break;

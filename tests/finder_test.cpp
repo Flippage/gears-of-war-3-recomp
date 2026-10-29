@@ -60,6 +60,27 @@ TEST(finder_packages_classify) {
   CHECK(std::ranges::count_if(p, [](auto& x) { return !x.is_tu && x.matches_disc; }) == 1);
 }
 
+TEST(finder_packages_xbox_layout_and_skips) {
+  auto root = TempDir("find_layout");
+  // <name>\4D5308AB\00000002\<package> (4 folders below the root) and a TU two folders down.
+  WriteFile(root / "Gears3-DLC" / "RAAM's Shadow" / "4D5308AB" / "00000002" / "354B60",
+            MakeStfsHeader("LIVE", 0x00000002, 0x4D5308AB, 0, u"RAAM's Shadow"));
+  WriteFile(root / "Gears3-TU6" / "Title Update 6" / "TU_16L625B",
+            MakeStfsHeader("LIVE", 0x000B0000, 0x4D5308AB, 0x58122AD6, u"TU6"));
+  // Too deep, the disc's own avatar awards, and a skipped game data folder.
+  WriteFile(root / "a" / "b" / "c" / "d" / "e" / "deep", MakeStfsHeader("LIVE", 0x00000002, 0x4D5308AB, 0, u"Deep"));
+  WriteFile(root / "Game" / "DLC" / "AvatarAwards", MakeStfsHeader("PIRS", 0x00000002, 0x4D5308AB, 0, u"Gears of War 3"));
+  WriteFile(root / "Game" / "GearGame" / "pkg", MakeStfsHeader("LIVE", 0x00000002, 0x4D5308AB, 0, u"Data"));
+  auto p = gow3::setup::FindPackages({root}, 0x58122AD6);
+  CHECK(p.size() == 2);
+  CHECK(std::ranges::count_if(p, [](auto& x) { return x.is_tu && x.matches_disc; }) == 1);
+  CHECK(std::ranges::count_if(p, [](auto& x) { return x.header.display_name == "RAAM's Shadow"; }) == 1);
+  // Picked by the player: a file, or a folder searched like a root.
+  CHECK(gow3::setup::FindPackagesAt(root / "Gears3-TU6" / "Title Update 6" / "TU_16L625B", 0x58122AD6).size() == 1);
+  CHECK(gow3::setup::FindPackagesAt(root / "a", 0).size() == 1);
+  CHECK(gow3::setup::FindPackagesAt(root / "Game" / "DLC" / "AvatarAwards", 0).empty());
+}
+
 TEST(finder_locked_file_skipped) {
   auto root = TempDir("find4");
   WriteFile(root / "pkg", MakeStfsHeader("LIVE", 0x00000002, 0x4D5308AB, 0, u"X"));

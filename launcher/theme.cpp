@@ -161,7 +161,7 @@ bool Toggle(const char* id, bool* v) {
 
 void Pill(const char* text) {
   using namespace theme;
-  ImGui::PushFont(nullptr, 13.0f);
+  ImGui::PushFont(nullptr, theme::kSmallSize);
   const ImVec2 ts = ImGui::CalcTextSize(text);
   const ImVec2 pad(Dp(10.0f), Dp(3.0f));
   const ImVec2 p = ImGui::GetCursorScreenPos();

@@ -50,6 +50,8 @@ std::filesystem::path PickFolder(HWND owner, const std::filesystem::path& start)
 // IFileOpenDialog filtered to *.iso, with a "Use this folder" button that returns the folder being
 // shown instead. Empty when cancelled.
 std::filesystem::path PickIsoOrFolder(HWND owner);
+// A TU / DLC package file, or (the "Search this folder" button) a folder to search; empty if cancelled.
+std::filesystem::path PickPackageOrFolder(HWND owner);
 
 // Re-reads what the Play page shows: the build's content (<game>\DLC) and the renderer (gow3.toml).
 // Call at start and whenever the game folder, build or content changes.

@@ -35,7 +35,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 namespace {
 
-constexpr int kWidth = 900, kHeight = 560;
+constexpr int kWidth = 1000, kHeight = 640;
 
 ID3D11Device* g_device = nullptr;
 ID3D11DeviceContext* g_context = nullptr;
@@ -173,7 +173,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-// 900 x 560 times the DPI scale, centred on the monitor the window is on.
+// 1000 x 640 times the DPI scale, centred on the monitor the window is on.
 void PlaceWindow(HWND hwnd, float scale) {
   MONITORINFO mi{sizeof(mi)};
   GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi);
