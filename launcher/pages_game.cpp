@@ -1118,4 +1118,6 @@ void DrawGameFilesPage(App& app) {
   }
 }
 
+bool GameFilesBusy() { return g_job.Running(); }
+
 void ShutdownGameFiles() { g_job.Stop(); }

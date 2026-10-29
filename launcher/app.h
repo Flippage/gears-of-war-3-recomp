@@ -3,8 +3,11 @@
 #include <windows.h>
 
 #include <filesystem>
+#include <optional>
 #include <string>
 
+#include "gow3_options_model.h"
+#include "setup/settings_store.h"
 #include "setup/state.h"
 
 struct App {
@@ -17,6 +20,10 @@ struct App {
   std::wstring pass_args;  // after "--", handed back to gow3.exe
   HWND hwnd = nullptr;
   std::string error;  // last failure, shown on the Play page
+  // The settings pages' gow3.toml, read when one is first shown, and the Model over it. The Model's
+  // reader points at settings_file, so the two are kept (and would be reloaded) together.
+  gow3::setup::SettingsFile settings_file;
+  std::optional<rex::glue::options::Model> settings;
 
   // A valid game folder and a gow3.exe next to the launcher.
   bool CanPlay() const;

@@ -62,5 +62,7 @@ void InitGameFiles(App& app);
 // Collects a finished job and moves the flow on. Call every frame, whatever page is shown.
 void PollGameFiles(App& app);
 void DrawGameFilesPage(App& app);
+// An extraction, install or build switch is running (PLAY waits for it).
+bool GameFilesBusy();
 // Cancels a running job and waits for it.
 void ShutdownGameFiles();

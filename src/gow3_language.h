@@ -9,6 +9,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace rex::glue {
 
@@ -20,6 +21,9 @@ bool GameHasLanguage(std::string_view code);
 // The registry behind GameHasLanguage (gow3_language_registry.cpp, no rex runtime needed).
 // Only PrepareLanguage and the launcher's game scan should call this.
 void NoteGameLanguage(const std::string& code);
+// The language codes of the Coalesced_<code>.bin files in <game_root>\GearGame\CookedXbox360,
+// upper case (no rex runtime needed; PrepareLanguage and the launcher share it).
+std::vector<std::string> ScanGameLanguages(const std::filesystem::path& game_root);
 const std::set<std::string>& GameLanguages();
 
 }  // namespace rex::glue

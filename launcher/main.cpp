@@ -23,6 +23,7 @@
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 #include "pages_game.h"
+#include "pages_settings.h"
 #include "setup/finder.h"
 #include "setup/state.h"
 #include "theme.h"
@@ -148,6 +149,7 @@ bool RecreateDevice(HWND hwnd) {
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (SettingsCaptureMessage(msg, wparam, lparam)) return 0;  // a key-binding slot takes the key
   if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam)) return 1;
   switch (msg) {
     case WM_SIZE:
@@ -180,8 +182,6 @@ void PlaceWindow(HWND hwnd, float scale) {
   SetWindowPos(hwnd, nullptr, wa.left + (wa.right - wa.left - w) / 2, wa.top + (wa.bottom - wa.top - h) / 2, w, h,
                SWP_NOZORDER | SWP_NOACTIVATE);
 }
-
-void DrawPlaceholderPage(const char* title) { PageTitle(title); }
 
 void DrawFrame(App& app) {
   using namespace theme;
@@ -236,14 +236,15 @@ void DrawFrame(App& app) {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(32.0f), Dp(28.0f)));
   ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding,
                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+  using Opt = rex::glue::options::Page;
   switch (app.page) {
     case P::kPlay: DrawPlayPage(app); break;
     case P::kGameFiles: DrawGameFilesPage(app); break;
-    case P::kDisplay: DrawPlaceholderPage("DISPLAY"); break;
-    case P::kGraphics: DrawPlaceholderPage("GRAPHICS"); break;
-    case P::kControls: DrawPlaceholderPage("CONTROLS"); break;
-    case P::kNetwork: DrawPlaceholderPage("NETWORK"); break;
-    case P::kSaves: DrawPlaceholderPage("SAVES"); break;
+    case P::kDisplay: DrawSettingsPage(app, Opt::kDisplay); break;
+    case P::kGraphics: DrawSettingsPage(app, Opt::kGraphics); break;
+    case P::kControls: DrawSettingsPage(app, Opt::kControls); break;
+    case P::kNetwork: DrawSettingsPage(app, Opt::kNetwork); break;
+    case P::kSaves: DrawSettingsPage(app, Opt::kSaves); break;
   }
   ImGui::EndChild();
   ImGui::PopStyleVar();

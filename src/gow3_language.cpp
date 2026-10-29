@@ -78,16 +78,8 @@ std::string FromSystem() {
 }  // namespace
 
 void PrepareLanguage(const std::filesystem::path& game_root) {
-  std::error_code ec;
-  for (const auto& item :
-       std::filesystem::directory_iterator(game_root / "GearGame" / "CookedXbox360", ec)) {
-    const std::string name = item.path().filename().string();
-    // Coalesced_<code>.bin: the language's text bundle.
-    if (name.size() == 17 && name.rfind("Coalesced_", 0) == 0 && name.substr(13) == ".bin") {
-      std::string code = name.substr(10, 3);
-      for (char& c : code) c = char(std::toupper(static_cast<unsigned char>(c)));
-      if (Find(code)) NoteGameLanguage(code);
-    }
+  for (const std::string& code : ScanGameLanguages(game_root)) {
+    if (Find(code)) NoteGameLanguage(code);
   }
   std::string list;
   for (const std::string& code : GameLanguages()) list += (list.empty() ? "" : " ") + code;

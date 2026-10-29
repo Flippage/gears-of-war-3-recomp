@@ -5,6 +5,9 @@
 
 #include "gow3_language.h"
 
+#include <cctype>
+#include <system_error>
+
 namespace rex::glue {
 namespace {
 std::set<std::string> g_available;
@@ -20,6 +23,22 @@ void NoteGameLanguage(const std::string& code) {
 
 const std::set<std::string>& GameLanguages() {
   return g_available;
+}
+
+std::vector<std::string> ScanGameLanguages(const std::filesystem::path& game_root) {
+  std::vector<std::string> codes;
+  std::error_code ec;
+  for (const auto& item :
+       std::filesystem::directory_iterator(game_root / "GearGame" / "CookedXbox360", ec)) {
+    const std::string name = item.path().filename().string();
+    // Coalesced_<code>.bin: the language's text bundle.
+    if (name.size() == 17 && name.rfind("Coalesced_", 0) == 0 && name.substr(13) == ".bin") {
+      std::string code = name.substr(10, 3);
+      for (char& c : code) c = char(std::toupper(static_cast<unsigned char>(c)));
+      codes.push_back(std::move(code));
+    }
+  }
+  return codes;
 }
 
 }  // namespace rex::glue
