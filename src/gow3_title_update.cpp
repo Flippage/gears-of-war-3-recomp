@@ -24,6 +24,7 @@
 #include <rex/logging.h>
 
 #include "gow3_addresses.h"
+#include "setup/finder.h"
 
 REXCVAR_DEFINE_STRING(gow3_tu6_folder, "", "Content",
                       "Folder with your own extracted Title Update 6 (default.xexp, GearGame, TU__ "
@@ -31,25 +32,20 @@ REXCVAR_DEFINE_STRING(gow3_tu6_folder, "", "Content",
 
 namespace rex::glue {
 
-// The folders searched for the player's TU6, in order.
-static std::vector<std::filesystem::path> TitleUpdateCandidates(const std::filesystem::path& game_folder) {
-  std::vector<std::filesystem::path> candidates;
+static std::filesystem::path ConfiguredFolder() {
   const std::string configured = REXCVAR_GET(gow3_tu6_folder);
-  if (!configured.empty()) {
-    candidates.push_back(std::filesystem::u8path(configured));
-  } else {
-    candidates.push_back(rex::filesystem::GetExecutablePath().parent_path() / "TU6");
-    candidates.push_back(game_folder / "TU6");
-  }
-  return candidates;
+  return configured.empty() ? std::filesystem::path() : std::filesystem::u8path(configured);
+}
+
+// The folders searched for the player's TU6, in order (gow3::setup, shared with launcher.exe).
+static std::vector<std::filesystem::path> TitleUpdateCandidates(const std::filesystem::path& game_folder) {
+  return gow3::setup::TitleUpdateCandidates(game_folder, rex::filesystem::GetExecutablePath().parent_path(),
+                                            ConfiguredFolder());
 }
 
 std::optional<std::filesystem::path> FindTitleUpdateFolder(const std::filesystem::path& game_folder) {
-  std::error_code ec;
-  for (const std::filesystem::path& folder : TitleUpdateCandidates(game_folder)) {
-    if (std::filesystem::is_regular_file(folder / "default.xexp", ec)) return folder;
-  }
-  return std::nullopt;
+  return gow3::setup::FindTitleUpdateFolderIn(game_folder, rex::filesystem::GetExecutablePath().parent_path(),
+                                              ConfiguredFolder());
 }
 
 void PrepareTitleUpdate(const std::filesystem::path& game_folder, std::filesystem::path& update_root) {

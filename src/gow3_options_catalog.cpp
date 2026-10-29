@@ -5,6 +5,7 @@
 #include "gow3_options_catalog.h"
 
 #include "gow3_language.h"
+#include "setup/path_util.h"
 
 #include <filesystem>
 #include <string>
@@ -19,17 +20,29 @@
 #include <windows.h>
 
 namespace rex::glue::options {
-namespace {
 
-// The folder of the running exe (no rex runtime needed, so the launcher can build this file).
-std::filesystem::path ExeFolder() {
-  wchar_t buf[MAX_PATH * 4];
-  const DWORD n = GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
-  if (n == 0 || n >= std::size(buf)) return {};
-  return std::filesystem::path(buf).parent_path();
+const std::vector<Choice>& AllLanguageChoices() {
+  static const std::vector<Choice> kChoices = {
+      {"auto", {"Automatic (Windows Language)"}},
+      {"INT", {"English"}},
+      {"FRA", {"French"}},
+      {"DEU", {"German"}},
+      {"ITA", {"Italian"}},
+      {"ESN", {"Spanish (Spain)"}},
+      {"ESM", {"Spanish (Latin America)"}},
+      {"PTB", {"Portuguese (Brazil)"}},
+      {"POL", {"Polish"}},
+      {"RUS", {"Russian"}},
+      {"CZE", {"Czech"}},
+      {"HUN", {"Hungarian"}},
+      {"JPN", {"Japanese"}},
+      {"KOR", {"Korean"}},
+      {"CHN", {"Chinese"}},
+      {"CHT", {"Chinese (Traditional)"}},
+  };
+  return kChoices;
 }
 
-}  // namespace
 namespace {
 
 std::vector<Choice> PadButtonChoices() {
@@ -207,24 +220,7 @@ std::vector<PageSpec> BuildCatalog() {
               {"Game Language"},
               {"Text and subtitles, and speech where your copy of the game has it (otherwise English speech). Only the languages your copy contains are listed. Automatic follows Windows' display language. Takes effect on next start."},
               "auto",
-              {
-                  {"auto", {"Automatic (Windows Language)"}},
-                  {"INT", {"English"}},
-                  {"FRA", {"French"}},
-                  {"DEU", {"German"}},
-                  {"ITA", {"Italian"}},
-                  {"ESN", {"Spanish (Spain)"}},
-                  {"ESM", {"Spanish (Latin America)"}},
-                  {"PTB", {"Portuguese (Brazil)"}},
-                  {"POL", {"Polish"}},
-                  {"RUS", {"Russian"}},
-                  {"CZE", {"Czech"}},
-                  {"HUN", {"Hungarian"}},
-                  {"JPN", {"Japanese"}},
-                  {"KOR", {"Korean"}},
-                  {"CHN", {"Chinese"}},
-                  {"CHT", {"Chinese (Traditional)"}},
-              },
+              AllLanguageChoices(),
           },
       },
   });
@@ -785,13 +781,15 @@ std::vector<PageSpec> BuildCatalog() {
   // scripts\ngx-scan.ps1 treats as NVIDIA code and refuses to package.
   const std::string dlss_dll = std::string("nv") + "ngx" + "_dlss.dll";
   std::error_code ec;
-  if (!std::filesystem::exists(ExeFolder() / dlss_dll, ec)) {
+  if (!std::filesystem::exists(gow3::setup::ExeFolder() / dlss_dll, ec)) {
     for (auto& page : pages) {
       std::erase_if(page.rows,
                     [](const RowSpec& row) { return std::string_view(row.cvar) == "gow2_dlss_preset"; });
       for (auto& row : page.rows) {
         if (std::string_view(row.cvar) != "upscaler") continue;
         std::erase_if(row.choices, [](const Choice& c) { return std::string_view(c.value) == "dlss"; });
+        row.help = {"Reconstructs a sharper image from camera jitter, depth, and motion vectors. Auto picks FSR 4 "
+                    "on RDNA 4, or FSR 3 elsewhere."};
       }
     }
   }

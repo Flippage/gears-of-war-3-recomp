@@ -64,14 +64,16 @@ void RunLaunchCheck(const std::filesystem::path& game_data_root) {
     const auto xex = ReadXexInfoFile(game_data_root / "default.xex");
     packages = FindPackages(PackageRoots(exe_dir, game_data_root), xex ? xex->media_id : 0);
   }
+  const bool recorded_build_available = std::filesystem::is_regular_file(
+      exe_dir / "builds" / (state.build == Build::kTu6 ? "gow3-tu6.exe" : "gow3-base.exe"), ec);
   const LaunchInputs in{build, game_valid, FindTitleUpdateFolder(game_data_root).has_value(), &packages,
-                        &state};
+                        &state, recorded_build_available};
   const char* flag = nullptr;
   switch (DecideLaunch(in)) {
     case LaunchAction::kStartGame: return;
     case LaunchAction::kSetup: flag = "--setup"; break;
     case LaunchAction::kOffer: flag = "--offer"; break;
-    case LaunchAction::kRepair: flag = "--repair"; break;
+    case LaunchAction::kRepair: flag = "--repair"; break;  // TU6 missing, or the recorded build replaced
   }
 
   std::wstring command = L"\"" + launcher.wstring() + L"\" ";

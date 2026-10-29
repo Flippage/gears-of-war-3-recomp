@@ -76,6 +76,10 @@ struct PageSpec {
 };
 
 const std::vector<PageSpec>& Catalog();
+// Every Game Language choice ("auto" first). The catalog's row keeps the ones this copy of the
+// game has, as noted when Catalog() is first built; the launcher filters this list again whenever
+// its game folder changes (Model::SetDynamicChoices).
+const std::vector<Choice>& AllLanguageChoices();
 const RowSpec* FindRow(std::string_view cvar);
 const Text& UiText(std::string_view key);
 Lang CurrentLang();

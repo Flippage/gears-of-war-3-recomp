@@ -146,34 +146,13 @@ class Gow3App : public rex::ReXApp {
     return gow3::setup::IsGameFolder(dir);
   }
 
-  // The folder itself or one of its subfolders.
-  static std::filesystem::path FindGameFolderIn(const std::filesystem::path& dir) {
-    if (IsGameFolder(dir)) return dir;
-    std::error_code ec;
-    for (std::filesystem::directory_iterator it(
-             dir, std::filesystem::directory_options::skip_permission_denied, ec);
-         !ec && it != std::filesystem::directory_iterator(); it.increment(ec)) {
-      if (IsGameFolder(it->path())) return it->path();
-    }
-    return {};
-  }
-
   // Lets a double-click boot without --game_data_root, in this order: the folder given on the
   // command line, the first line of gow3_game_path.txt next to the exe, then the exe's folder and
   // up to four parent folders (each with its direct subfolders). Same idea as the Gears of War 2
-  // port's ResolveContentRoot.
+  // port's ResolveContentRoot. Shared with launcher.exe (gow3::setup::ResolveGameFolder), so both
+  // act on the same folder.
   static std::filesystem::path ResolveGameFolder(const std::filesystem::path& given) {
-    if (IsGameFolder(given)) return given;
-    const std::filesystem::path home = rex::filesystem::GetExecutablePath().parent_path();
-    if (auto path = gow3::setup::ReadGamePathFile(home / "gow3_game_path.txt"); !path.empty()) {
-      if (auto hit = FindGameFolderIn(path); !hit.empty()) return hit;
-    }
-    std::filesystem::path dir = home;
-    for (int depth = 0; depth <= 4 && !dir.empty(); ++depth, dir = dir.parent_path()) {
-      if (auto hit = FindGameFolderIn(dir); !hit.empty()) return hit;
-      if (dir == dir.parent_path()) break;
-    }
-    return given;
+    return gow3::setup::ResolveGameFolder(given, rex::filesystem::GetExecutablePath().parent_path());
   }
   // Saves, profile and shader cache in %LOCALAPPDATA%\GearsOfWar3PC (as the Gears of War 2 port
   // does with GearsOfWar2PC); without a user data root the save devices are never mounted.
