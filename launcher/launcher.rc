@@ -1,0 +1,22 @@
+// launcher.exe version resource (the file's Properties > Details). The manifest, launcher.manifest,
+// is embedded by the linker.
+1 VERSIONINFO
+FILEVERSION 0, 0, 0, 0
+PRODUCTVERSION 0, 0, 0, 0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "Gears of War 3 Recompiled launcher"
+      VALUE "ProductName", "Gears of War 3 Recompiled"
+      VALUE "OriginalFilename", "launcher.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

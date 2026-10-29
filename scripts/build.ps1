@@ -92,7 +92,7 @@ python -I tools\patch_game_patches.py --game $Game "$generated/*.cpp"
 if ($LASTEXITCODE -ne 0) { Fail 'tools\patch_game_patches.py failed.' }
 
 Step 'Building'
-cmake --build $build --target gow3
+cmake --build $build --target gow3 launcher
 if ($LASTEXITCODE -ne 0) { Fail 'Build failed.' }
 
 # The runtime DLLs the exe loads (rexgpu-xenos.dll is loaded by name as the GPU plugin).

@@ -23,6 +23,7 @@ else()
 endif()
 include(cmake/gow3_rexglue.cmake)
 add_subdirectory(setup)
+add_subdirectory(launcher)
 enable_testing()
 add_subdirectory(tests)
 
