@@ -28,6 +28,7 @@
 #include "setup/xdvdfs.h"
 #include "setup/xex_info.h"
 #include "theme.h"
+#include "update.h"
 
 namespace fs = std::filesystem;
 using gow3::setup::Build;
@@ -956,6 +957,26 @@ void DrawOverview(App& app) {
     for (const std::string& dlc : InstalledDlc(app.game)) content += (content.empty() ? "" : kDot) + dlc;
   }
   Row("Installed content", content.empty() ? std::string("None") : content);
+  {
+    // Check for updates: the switch (launcher.ini, once a day at start) left of Check now.
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x, h = Dp(42.0f);
+    const char* label = UpdateCheckRunning() ? "Checking\xE2\x80\xA6" : "Check now";
+    if (Row("Check for updates", "", false, label, UpdateChecksAvailable() && !UpdateCheckRunning())) {
+      CheckForUpdateNow(app);
+    }
+    const float bw = ImGui::CalcTextSize(label).x + Dp(24.0f);
+    ImGui::SetCursorScreenPos(ImVec2(p.x + w - bw - Dp(12.0f) - Dp(36.0f), p.y + (h - Dp(20.0f)) * 0.5f));
+    if (Toggle("##check_updates", &app.state.check_updates)) SaveState(app);
+    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h));
+    ImGui::Dummy(ImVec2(0, 0));
+    const std::string& status = UpdateStatus();
+    if (!status.empty()) {
+      ImGui::PushTextWrapPos(0.0f);
+      ImGui::TextColored(kMuted, "%s", status.c_str());
+      ImGui::PopTextWrapPos();
+    }
+  }
   if (!g.message.empty()) {
     ImGui::Dummy(ImVec2(0, Dp(2.0f)));
     ImGui::PushTextWrapPos(0.0f);

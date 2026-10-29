@@ -18,6 +18,7 @@ struct App {
   // How gow3.exe opened the launcher: --setup, --offer, --repair, or not at all (kNormal).
   enum class Start { kNormal, kSetup, kOffer, kRepair } start = Start::kNormal;
   std::wstring pass_args;  // after "--", handed back to gow3.exe
+  std::filesystem::path update_zip;  // --update_zip=<zip>: test only, installs it at start (no HTTP)
   HWND hwnd = nullptr;
   std::string error;  // last failure, shown on the Play page
   // The settings pages' gow3.toml, read when one is first shown, and the Model over it. The Model's

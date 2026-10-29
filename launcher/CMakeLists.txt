@@ -13,6 +13,7 @@ add_executable(launcher WIN32
   theme.cpp
   pages_game.cpp
   pages_settings.cpp
+  update.cpp
   ${CMAKE_SOURCE_DIR}/src/gow3_keybind_text.cpp
   ${CMAKE_SOURCE_DIR}/src/gow3_options_actions.cpp
   launcher.rc
@@ -20,6 +21,6 @@ add_executable(launcher WIN32
   ${GOW3_IMGUI_BACKENDS}/imgui_impl_win32.cpp
   ${GOW3_IMGUI_BACKENDS}/imgui_impl_dx11.cpp)
 target_include_directories(launcher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${GOW3_IMGUI_BACKENDS})
-target_link_libraries(launcher PRIVATE gow3_setup rex::runtime d3d11 d3dcompiler dxgi dwmapi ole32 shell32)
+target_link_libraries(launcher PRIVATE gow3_setup rex::runtime d3d11 d3dcompiler dxgi dwmapi ole32 shell32 winhttp bcrypt)
 # Next to gow3.exe and rexruntime.dll, as in a release.
 set_target_properties(launcher PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})

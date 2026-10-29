@@ -1,10 +1,11 @@
 // launcher.exe: window, DX11, the ImGui frame loop and page routing. Pages live in pages_*.cpp,
 // widgets and colours in theme.cpp.
 //
-//   launcher.exe [--setup | --offer | --repair] [-- <gow3.exe arguments>]
+//   launcher.exe [--setup | --offer | --repair] [--update_zip=<zip>] [-- <gow3.exe arguments>]
 //
 // gow3.exe starts it with one of the three flags when setup is needed (they open Game files); with
-// none it opens Play. Everything after "--" is handed back to gow3.exe.
+// none it opens Play. Everything after "--" is handed back to gow3.exe. --update_zip is for tests:
+// it installs that release zip (with its .sha256 next to it) as an update would, without HTTP.
 
 #include <windows.h>
 
@@ -27,6 +28,7 @@
 #include "setup/finder.h"
 #include "setup/state.h"
 #include "theme.h"
+#include "update.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -79,6 +81,12 @@ void ParseArguments(const wchar_t* p, App& app) {
     if (arg == L"--setup") app.start = App::Start::kSetup;
     if (arg == L"--offer") app.start = App::Start::kOffer;
     if (arg == L"--repair") app.start = App::Start::kRepair;
+    // "--update_zip=<zip>" or --update_zip="<zip>"
+    std::wstring unquoted(arg);
+    std::erase(unquoted, L'"');
+    if (constexpr std::wstring_view kZip = L"--update_zip="; unquoted.starts_with(kZip)) {
+      app.update_zip = unquoted.substr(kZip.size());
+    }
   }
 }
 
@@ -281,8 +289,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   using namespace gow3::setup;
   App app;
   app.dir = ExeFolder();
+  // Left behind by a release update. The old launcher may still be closing: give it 3 s.
+  const std::filesystem::path old_launcher = app.dir / "launcher.old.exe";
   std::error_code ec;
-  std::filesystem::remove(app.dir / "launcher.old.exe", ec);  // left behind by a release update
+  for (int i = 0; i < 30 && std::filesystem::exists(old_launcher, ec) && !std::filesystem::remove(old_launcher, ec);
+       ++i) {
+    Sleep(100);
+  }
   ParseArguments(GetCommandLineW(), app);
   if (app.start != App::Start::kNormal) app.page = App::Page::kGameFiles;
   // A v0.2.2 install has no launcher.ini: LoadState's defaults (build = base) apply and the path
@@ -326,6 +339,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   // The file pickers need COM on this (the UI) thread.
   const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE));
   InitGameFiles(app);
+  InitUpdate(app);
 
   ShowWindow(app.hwnd, show);
   UpdateWindow(app.hwnd);
@@ -373,7 +387,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     PollGameFiles(app);
+    PollUpdate(app);
     DrawFrame(app);
+    DrawUpdatePrompt(app);
     ImGui::Render();
     const ImVec4 bg = theme::kBackground;
     const float clear[4] = {bg.x, bg.y, bg.z, 1.0f};
@@ -386,6 +402,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   }
 
   ShutdownGameFiles();  // a running extraction or install is cancelled and joined
+  ShutdownUpdate();
   if (com) CoUninitialize();
   if (g_device) ImGui_ImplDX11_Shutdown();  // already shut down when the device couldn't be rebuilt
   ImGui_ImplWin32_Shutdown();
