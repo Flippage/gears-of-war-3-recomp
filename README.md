@@ -93,6 +93,9 @@ follow `QUICKSTART.txt` inside. It includes everything except the game itself, a
 
 ## Bring your own game
 
+The release can also use your own Title Update 6 and DLC packages: put them next to the game and
+the launcher offers them (see [Download](#download)).
+
 1. Dump **your own** Gears of War 3 disc (base version, no title update) to an ISO.
 2. Extract it to a folder **outside this repository**, for example with
    [xdvdfs](https://github.com/antangelo/xdvdfs):

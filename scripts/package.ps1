@@ -76,11 +76,54 @@ function Resolve-RootedPath([string]$Root, [string]$Path) {
 
 function Assert-Unlocked([string]$Path) {
     try {
+        # Opening for write (no truncation) fails with a sharing violation while the exe runs.
         $fs = [System.IO.File]::Open($Path, 'Open', 'Write', 'ReadWrite')
         $fs.Dispose()
     } catch {
-        Fail "$Path is locked (the game or launcher is running?). Close it and retry."
+        Fail "$Path is locked or unreadable (is the game or launcher running?): $($_.Exception.Message)"
     }
+}
+
+function Find-Llvm([string]$Tool) {
+    $path = Join-Path (Join-Path $env:ProgramFiles 'LLVM\bin') $Tool
+    if (-not (Test-Path $path)) { Fail "$Tool not found at $path (install LLVM, as scripts\build.ps1 needs)." }
+    return $path
+}
+
+# Symbols a binary imports from one DLL (llvm-readobj --coff-imports).
+function Get-ImportedSymbols([string]$Binary, [string]$DllName) {
+    $in = $false
+    foreach ($line in (& (Find-Llvm 'llvm-readobj.exe') --coff-imports $Binary)) {
+        if ($line -match '^Import \{') { $in = $false; continue }
+        if ($line -match '^  Name: (.+)$') { $in = ($Matches[1].Trim() -ieq $DllName); continue }
+        if ($in -and $line -match '^  Symbol: (.+) \(\d+\)$') { $Matches[1] }
+    }
+}
+
+function Get-ExportedSymbols([string]$Dll) {
+    $set = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($line in (& (Find-Llvm 'llvm-readobj.exe') --coff-exports $Dll)) {
+        if ($line -match '^  Name: (.+)$') { [void]$set.Add($Matches[1]) }
+    }
+    return ,$set
+}
+
+# Every function the exes import from the runtime DLLs must exist in the DLLs that ship
+# (the build folders hold DLSS-enabled copies, so their hashes say nothing about the shipped ones).
+function Assert-RuntimeExports([string[]]$Exes, [string]$FromSdk) {
+    foreach ($dllName in @('rexruntime.dll', 'rexgpu-xenos.dll')) {
+        $dll = Join-Path $FromSdk $dllName
+        if (-not (Test-Path $dll)) { continue }
+        $exports = Get-ExportedSymbols $dll
+        foreach ($exe in $Exes) {
+            $missing = @(Get-ImportedSymbols $exe $dllName | Where-Object { -not $exports.Contains($_) })
+            if ($missing.Count) {
+                foreach ($m in $missing) { Write-Host "Missing in ${dllName}: $m" -ForegroundColor Red }
+                Fail "$exe imports $($missing.Count) symbol(s) that the shipped $dllName does not export."
+            }
+        }
+    }
+    Write-Host 'Every runtime import of the staged exes is exported by the shipped runtime DLLs.'
 }
 
 function Get-RuntimeHash([string]$Dir) {
@@ -97,10 +140,11 @@ function Copy-Binaries([string]$FromBuild, [string]$FromBuildTu6, [string]$FromS
     if (-not (Test-Path $exeTu6)) { Fail "gow3.exe not found in $FromBuildTu6. Run scripts\build.ps1 -Game tu6 first." }
     if (-not (Test-Path $launcher)) { Fail "launcher.exe not found in $FromBuild. Build the launcher target." }
     foreach ($f in @($exe, $exeTu6, $launcher)) { Assert-Unlocked $f }
-    # Both builds load the one rexruntime.dll in the zip, so they must come from the same SDK.
+    # Both builds load the one rexruntime.dll in the zip; built against different SDK builds they could not share it.
     if ((Get-RuntimeHash $FromBuild) -ne (Get-RuntimeHash $FromBuildTu6)) {
-        Fail 'rexruntime.dll differs between the base and Title Update 6 build folders (different SDK builds).'
+        Fail 'The base and TU6 builds were made against different SDK builds (their rexruntime.dll files differ).'
     }
+    Assert-RuntimeExports @($exe, $exeTu6, $launcher) $FromSdk
     $builds = Join-Path $StageDir 'builds'
     New-Item -ItemType Directory -Force -Path $builds | Out-Null
     Copy-Item -Force $exe (Join-Path $builds 'gow3-base.exe')
@@ -256,7 +300,7 @@ function Test-StfsMagic([string]$Path, [string[]]$Magics) {
 
 function Assert-NoGameFiles([string]$StageDir) {
     $stfs = @('CON ', 'LIVE', 'PIRS')
-    $bad = Get-ChildItem -Path $StageDir -Recurse -File | Where-Object {
+    $bad = Get-ChildItem -Path $StageDir -Recurse -File -Force | Where-Object {
         ($_.Name -ieq 'default.xex') -or ($_.Name -ilike 'Coalesced*.bin') -or
         ($_.FullName.Substring($StageDir.Length) -ilike '*GearGame*') -or
         ($_.Extension -in @('.xxx', '.tfc', '.bik', '.dds', '.upk', '.iso', '.xex', '.xexp')) -or
@@ -269,7 +313,7 @@ function Assert-NoGameFiles([string]$StageDir) {
 }
 
 function Assert-NoNgx([string]$StageDir) {
-    $dlss = @(Get-ChildItem -Path $StageDir -Recurse -File | Where-Object { $_.Name -ilike 'nvngx_dlss*.dll' })
+    $dlss = @(Get-ChildItem -Path $StageDir -Recurse -File -Force | Where-Object { $_.Name -ilike 'nvngx_dlss*.dll' })
     if ($dlss.Count) {
         foreach ($d in $dlss) { Write-Host "DLSS in staging: $($d.FullName)" -ForegroundColor Red }
         Fail 'Refusing to package: DLSS must not ship. Build with scripts\build-sdk.ps1 -NoDlss.'

@@ -27,7 +27,7 @@ function Find-NgxMarkers([string]$path) {
 
 # Every .dll and .exe under $dir that holds an NGX marker, with the markers it holds.
 function Find-NgxBinaries([string]$dir) {
-    $binaries = Get-ChildItem -Path $dir -Recurse -File -Include '*.dll', '*.exe' -ErrorAction SilentlyContinue
+    $binaries = Get-ChildItem -Path $dir -Recurse -File -Force -Include '*.dll', '*.exe' -ErrorAction SilentlyContinue
     foreach ($binary in $binaries) {
         $markers = Find-NgxMarkers $binary.FullName
         if ($markers.Count) { [pscustomobject]@{ Path = $binary.FullName; Markers = $markers -join ', ' } }
