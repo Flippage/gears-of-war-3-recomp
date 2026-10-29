@@ -17,6 +17,7 @@ namespace {
 constexpr size_t kHeaderSize = 0x1000;
 constexpr uint64_t kBlock = 0x1000;
 constexpr uint64_t kHashesPerTable = 0xAA;
+constexpr size_t kMaxDepth = 64;  // directory nesting limit
 constexpr size_t kChunkBlocks = 64;  // progress / cancel granularity inside a file
 
 bool IsMagic(const std::string& m) { return m == "CON " || m == "LIVE" || m == "PIRS"; }
@@ -62,6 +63,10 @@ class Stfs {
     const size_t desc = 0x379;
     uint8_t block_sep = h[desc + 2];
     ft_blocks_ = Le16(s, desc + 3);
+    in_.clear();
+    in_.seekg(0, std::ios::end);
+    uint64_t file_size = static_cast<uint64_t>(in_.tellg());
+    if (uint64_t{ft_blocks_} * kBlock > file_size) { *err = "file table larger than package"; return false; }
     ft_start_ = Le32(s, desc + 5) & 0xFFFFFF;
     // Packages created read only (LIVE / PIRS) use one hash table per level.
     tables_per_level_ = (block_sep & 1) ? 1 : 2;
@@ -143,6 +148,11 @@ class Stfs {
   uint64_t cached_off_ = ~uint64_t{0};
 };
 
+std::string Utf8(const fs::path& p) {
+  auto u = p.u8string();
+  return std::string(u.begin(), u.end());
+}
+
 ExtractResult Fail(std::string* error, const std::string& msg) {
   if (error) *error = msg;
   return ExtractResult::kFailed;
@@ -186,7 +196,7 @@ std::optional<StfsHeader> ReadStfsHeader(const fs::path& file) {
 ExtractResult ExtractStfs(const fs::path& package, const fs::path& out_dir, const Progress& progress,
                           std::string* error) {
   std::ifstream in(package, std::ios::binary);
-  if (!in) return Fail(error, "cannot open " + package.string());
+  if (!in) return Fail(error, "cannot open " + Utf8(package));
   Stfs stfs(in);
   std::string err;
   std::vector<Entry> entries;
@@ -199,7 +209,7 @@ ExtractResult ExtractStfs(const fs::path& package, const fs::path& out_dir, cons
     std::string p = entries[i].name;
     int parent = entries[i].parent;
     for (size_t depth = 0; parent >= 0 && parent < static_cast<int>(entries.size()); ++depth) {
-      if (depth > entries.size()) return Fail(error, "directory loop in file table");
+      if (depth > kMaxDepth) return Fail(error, "directory loop in file table");
       p = entries[parent].name + "/" + p;
       parent = entries[parent].parent;
     }
@@ -216,18 +226,18 @@ ExtractResult ExtractStfs(const fs::path& package, const fs::path& out_dir, cons
     std::error_code ec;
     if (e.dir) {
       fs::create_directories(target, ec);
-      if (ec) return Fail(error, "cannot create " + target.string());
+      if (ec) return Fail(error, "cannot create " + Utf8(target));
       continue;
     }
     fs::create_directories(target.parent_path(), ec);
-    if (ec) return Fail(error, "cannot create " + target.parent_path().string());
+    if (ec) return Fail(error, "cannot create " + Utf8(target.parent_path()));
     if (progress && !progress(done, total, paths[i])) return ExtractResult::kCancelled;
 
     fs::path part = target;
     part += ".part";
     // Closes and deletes the partial file, then reports.
     std::ofstream out(part, std::ios::binary | std::ios::trunc);
-    if (!out) return Fail(error, "cannot write " + part.string());
+    if (!out) return Fail(error, "cannot write " + Utf8(part));
     auto abandon = [&](ExtractResult r, const std::string& msg) {
       out.close();
       std::error_code rm;
@@ -261,7 +271,7 @@ ExtractResult ExtractStfs(const fs::path& package, const fs::path& out_dir, cons
     out.close();
     if (!out || remaining != 0) return abandon(ExtractResult::kFailed, "short or failed write: " + paths[i]);
     fs::rename(part, target, ec);
-    if (ec) return abandon(ExtractResult::kFailed, "cannot rename " + part.string());
+    if (ec) return abandon(ExtractResult::kFailed, "cannot rename " + Utf8(part));
     done += e.size;
   }
   if (progress) progress(total, total, "");

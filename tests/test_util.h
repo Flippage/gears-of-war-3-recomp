@@ -57,3 +57,6 @@ std::vector<uint8_t> MakeStfsHeader(std::string_view magic, uint32_t content_typ
 bool SameTree(const std::filesystem::path& a, const std::filesystem::path& b);
 // True when any file under dir has a name ending in suffix.
 bool AnyFileEndsWith(const std::filesystem::path& dir, const std::string& suffix);
+// Minimal read-only (LIVE) STFS package: one file-table block, then each file's data blocks, with
+// a level-0 hash table chaining them. Names are root-level.
+std::vector<uint8_t> MakeStfsPackage(const std::vector<std::pair<std::string, std::string>>& files);

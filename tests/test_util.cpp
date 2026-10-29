@@ -138,3 +138,45 @@ bool AnyFileEndsWith(const fs::path& dir, const std::string& suffix) {
   }
   return false;
 }
+
+std::vector<uint8_t> MakeStfsPackage(const std::vector<std::pair<std::string, std::string>>& files) {
+  // Layout (block_sep = 1, one table per level): header 0x1000, hash table 0x1000, then blocks
+  // 0.. at +0x1000 each. Block 0 is the file table; files follow.
+  auto put24le = [](std::vector<uint8_t>& b, size_t off, uint32_t v) {
+    b[off] = v & 0xFF; b[off + 1] = (v >> 8) & 0xFF; b[off + 2] = (v >> 16) & 0xFF;
+  };
+  std::vector<uint8_t> h = MakeStfsHeader("LIVE", 0, 0, 0, u"");
+  PutBe32(h, 0x340, 0x1000);
+  h[0x379] = 0x24;
+  h[0x379 + 2] = 1;  // block separation: read only
+  h[0x379 + 3] = 1;  // file table block count (LE16)
+  put24le(h, 0x379 + 5, 0);
+
+  std::vector<uint8_t> table(0x1000, 0), hashes(0x1000, 0), data;
+  auto set_next = [&](uint32_t block, uint32_t next) {
+    size_t at = block * 0x18 + 0x15;
+    hashes[at] = next >> 16; hashes[at + 1] = (next >> 8) & 0xFF; hashes[at + 2] = next & 0xFF;
+  };
+  set_next(0, 0xFFFFFF);
+  uint32_t next_block = 1;
+  for (size_t i = 0; i < files.size(); ++i) {
+    const auto& [name, content] = files[i];
+    uint8_t* e = &table[i * 0x40];
+    std::memcpy(e, name.data(), name.size());
+    e[0x28] = static_cast<uint8_t>(name.size() | 0x40);
+    uint32_t blocks = static_cast<uint32_t>((content.size() + 0xFFF) / 0x1000);
+    put24le(table, i * 0x40 + 0x29, blocks);
+    put24le(table, i * 0x40 + 0x2F, next_block);
+    e[0x32] = 0xFF; e[0x33] = 0xFF;  // parent: root
+    PutBe32(table, i * 0x40 + 0x34, static_cast<uint32_t>(content.size()));
+    for (uint32_t k = 0; k < blocks; ++k) set_next(next_block + k, k + 1 < blocks ? next_block + k + 1 : 0xFFFFFF);
+    size_t at = data.size();
+    data.resize(at + size_t{blocks} * 0x1000, 0);
+    std::memcpy(&data[at], content.data(), content.size());
+    next_block += blocks;
+  }
+  h.insert(h.end(), hashes.begin(), hashes.end());
+  h.insert(h.end(), table.begin(), table.end());
+  h.insert(h.end(), data.begin(), data.end());
+  return h;
+}
