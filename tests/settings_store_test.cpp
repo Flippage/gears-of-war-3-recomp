@@ -68,3 +68,19 @@ TEST(settings_composites_expand_to_raw_keys) {
   CHECK(text.contains("gow2_temporal = false") && text.contains("gow2_upscaler = \"off\""));
   CHECK(text.contains("window_width = 1920") && text.contains("window_height = 1080"));
 }
+
+TEST(settings_missing_file_shows_cvar_defaults) {  // what F10 shows on a stock install
+  auto m = gow3::setup::MakeSettingsModel(gow3::setup::LoadSettings(TempDir("set6") / "gow3.toml"));
+  CHECK(m.Get("window_size") == "0x0");
+  CHECK(m.Get("window_mode") == "borderless");
+  CHECK(m.Get("upscaler") == "off");
+}
+
+TEST(settings_literals_by_control) {
+  using gow3::setup::TomlLiteralFor;
+  CHECK(TomlLiteralFor("monitor", "1") == "1");                       // kChoice, integer choices
+  CHECK(TomlLiteralFor("gow3_widescreen", "21:9") == "\"21:9\"");     // kChoice, string choices
+  CHECK(TomlLiteralFor("gow3_mouse_scale", "1") == "1.0");            // kSliderFloat
+  CHECK(TomlLiteralFor("user_name", "a\\b\"c") == "\"a\\\\b\\\"c\"");  // kText escapes
+  CHECK(TomlLiteralFor("user_name", "a\nb\tc") == "\"a\\nb\\tc\"");
+}

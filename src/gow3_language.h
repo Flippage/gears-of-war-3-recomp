@@ -18,6 +18,7 @@ void PrepareLanguage(const std::filesystem::path& game_root);
 // Whether this copy of the game has the language (Unreal Engine's code: INT, FRA, RUS, ...).
 bool GameHasLanguage(std::string_view code);
 // The registry behind GameHasLanguage (gow3_language_registry.cpp, no rex runtime needed).
+// Only PrepareLanguage and the launcher's game scan should call this.
 void NoteGameLanguage(const std::string& code);
 const std::set<std::string>& GameLanguages();
 

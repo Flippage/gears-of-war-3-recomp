@@ -12,6 +12,7 @@
 #include "gow3_options_catalog.h"
 #include "gow3_options_values_text.h"
 #include "gow3_toml_edit.h"
+#include "setup/path_util.h"
 
 namespace gow3::setup {
 namespace opt = rex::glue::options;
@@ -52,8 +53,16 @@ bool IsInteger(std::string_view s) {
 std::string Quote(std::string_view v) {
   std::string out = "\"";
   for (char c : v) {
-    if (c == '\\' || c == '"') out += '\\';
-    out += c;
+    if (c == '\n') {
+      out += "\\n";
+    } else if (c == '\t') {
+      out += "\\t";
+    } else if (c == '\r') {
+      out += "\\r";
+    } else {
+      if (c == '\\' || c == '"') out += '\\';
+      out += c;
+    }
   }
   return out + "\"";
 }
@@ -81,11 +90,17 @@ std::string FloatLiteral(std::string_view v) {
 SettingsFile LoadSettings(const std::filesystem::path& path) {
   SettingsFile f;
   std::error_code ec;
-  if (!std::filesystem::exists(path, ec)) return f;
+  const bool there = std::filesystem::exists(path, ec);
+  if (ec) {
+    f.readable = false;
+    f.error = "cannot check " + Utf8(path) + ": " + ec.message();
+    return f;
+  }
+  if (!there) return f;
   std::ifstream in(path, std::ios::binary);
   if (!in) {
     f.readable = false;
-    f.error = "cannot open " + path.string();
+    f.error = "cannot open " + Utf8(path);
     return f;
   }
   std::ostringstream ss;
@@ -110,24 +125,24 @@ SettingsFile LoadSettings(const std::filesystem::path& path) {
 }
 
 opt::Model MakeSettingsModel(const SettingsFile& f) {
-  auto raw = [&f](const char* key, std::string_view fallback) -> std::string {
+  // A raw key missing from the file reads as its cvar default, as the game sees it
+  // (fullscreen, fullscreen_exclusive, window_width, window_height: SDK ui/window.cpp;
+  // gow2_temporal, gow2_upscaler: SDK graphics/d3d12/gow2_temporal.cpp, gow2_upscale.cpp).
+  auto raw = [&f](const char* key, const char* cvar_default) -> std::string {
     auto it = f.values.find(key);
-    return it != f.values.end() ? it->second : std::string(fallback);
+    return it != f.values.end() ? it->second : std::string(cvar_default);
   };
   auto reader = [&f, raw](std::string_view cvar) -> std::string {
     const opt::RowSpec* row = opt::FindRow(cvar);
     const std::string def = row && row->default_value ? row->default_value : "";
     if (cvar == "window_mode") {
-      auto d = opt::SplitWindowMode(def);
-      return opt::JoinWindowMode(raw("fullscreen", d.first), raw("fullscreen_exclusive", d.second));
+      return opt::JoinWindowMode(raw("fullscreen", "true"), raw("fullscreen_exclusive", "false"));
     }
     if (cvar == "window_size") {
-      auto d = opt::SplitWindowSize(def);
-      return opt::JoinWindowSize(raw("window_width", d.first), raw("window_height", d.second));
+      return opt::JoinWindowSize(raw("window_width", "0"), raw("window_height", "0"));
     }
     if (cvar == "upscaler") {
-      auto d = opt::SplitUpscaler(def);
-      return opt::JoinUpscaler(raw("gow2_temporal", d.first), raw("gow2_upscaler", d.second));
+      return opt::JoinUpscaler(raw("gow2_temporal", "false"), raw("gow2_upscaler", "off"));
     }
     auto it = f.values.find(std::string(cvar));
     return it != f.values.end() ? it->second : def;
