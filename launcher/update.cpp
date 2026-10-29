@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -24,6 +25,7 @@
 #include "setup/json_scan.h"
 #include "setup/path_util.h"
 #include "setup/state.h"
+#include "setup/update_files.h"
 #include "theme.h"
 
 namespace fs = std::filesystem;
@@ -67,7 +69,7 @@ std::string NetError(DWORD code) {
 
 // GET url (https only) and hand the body to sink(data, size, content_length) in pieces; sink
 // returns false to stop. Redirects are followed, but never to plain http.
-bool Fetch(const std::wstring& url, const wchar_t* accept,
+bool Fetch(const std::wstring& url, const std::wstring& user_agent, const wchar_t* accept,
            const std::function<bool(const char*, size_t, uint64_t)>& sink, std::string* error) {
   auto fail = [&](std::string msg) {
     if (error) *error = std::move(msg);
@@ -91,10 +93,10 @@ bool Fetch(const std::wstring& url, const wchar_t* accept,
   path += extra;
 
   Handle session, connect, request;
-  session.h = WinHttpOpen(g_user_agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+  session.h = WinHttpOpen(user_agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                           WINHTTP_NO_PROXY_BYPASS, 0);
   if (!session.h) {  // before Windows 8.1
-    session.h = WinHttpOpen(g_user_agent.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+    session.h = WinHttpOpen(user_agent.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
                             WINHTTP_NO_PROXY_BYPASS, 0);
   }
   if (!session.h) return fail(NetError(GetLastError()));
@@ -112,10 +114,15 @@ bool Fetch(const std::wstring& url, const wchar_t* accept,
     return fail(NetError(GetLastError()));
   }
   // Where the redirects ended: still https.
-  wchar_t final_url[4096];
-  DWORD len = sizeof(final_url);
-  if (!WinHttpQueryOption(request.h, WINHTTP_OPTION_URL, final_url, &len) ||
-      std::wstring_view(final_url, len / sizeof(wchar_t)).substr(0, 8) != L"https://") {
+  DWORD len = 0;  // bytes, asked for first: a signed download URL can be long
+  WinHttpQueryOption(request.h, WINHTTP_OPTION_URL, nullptr, &len);
+  if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || len == 0) return fail(NetError(GetLastError()));
+  std::wstring final_url(len / sizeof(wchar_t) + 1, L' ');
+  len = static_cast<DWORD>(final_url.size() * sizeof(wchar_t));
+  if (!WinHttpQueryOption(request.h, WINHTTP_OPTION_URL, final_url.data(), &len)) {
+    return fail(NetError(GetLastError()));
+  }
+  if (std::wstring_view(final_url).substr(0, 8) != L"https://") {
     return fail("GitHub redirected to an address that isn't https.");
   }
   DWORD status = 0, size = sizeof(status);
@@ -142,14 +149,19 @@ bool Fetch(const std::wstring& url, const wchar_t* accept,
   }
 }
 
-std::string Lower(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(), [](char c) { return c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c; });
-  return s;
+// A Windows error code as text, without the trailing period and line break.
+std::string WinError(DWORD code) {
+  std::string s = std::system_category().message(static_cast<int>(code));
+  while (!s.empty() && (s.back() == '.' || s.back() == ' ' || s.back() == '\r' || s.back() == '\n')) s.pop_back();
+  return s.empty() ? "error " + std::to_string(code) : s;
 }
 
-// Runs System32\tar.exe in `cwd` (never a PATH lookup); stdout to `out` when given. The exit code,
-// or -1 when it couldn't run.
-int RunTar(const std::wstring& args, const fs::path& cwd, const fs::path& out) {
+constexpr int kTarStopped = -2;
+
+// Runs System32\tar.exe in `cwd` (never a PATH lookup); stdout to `out` when given. It inherits only
+// its own std handles. Waits up to 10 minutes, polling `cancelled`; on either it is terminated and
+// kTarStopped returned. Otherwise the exit code, or -1 when it couldn't run.
+int RunTar(const std::wstring& args, const fs::path& cwd, const fs::path& out, const std::function<bool()>& cancelled) {
   wchar_t system[MAX_PATH];
   const UINT n = GetSystemDirectoryW(system, MAX_PATH);
   if (n == 0 || n >= MAX_PATH) return -1;
@@ -160,72 +172,63 @@ int RunTar(const std::wstring& args, const fs::path& cwd, const fs::path& out) {
                            OPEN_EXISTING, 0, nullptr);
   HANDLE file = out.empty() ? INVALID_HANDLE_VALUE
                             : CreateFileW(out.c_str(), GENERIC_WRITE, 0, &sa, CREATE_ALWAYS, 0, nullptr);
-  STARTUPINFOW si{};
-  si.cb = sizeof(si);
-  si.dwFlags = STARTF_USESTDHANDLES;
-  si.hStdInput = nul;
-  si.hStdOutput = file != INVALID_HANDLE_VALUE ? file : nul;
-  si.hStdError = nul;
-  PROCESS_INFORMATION pi{};
   int code = -1;
-  if ((out.empty() || file != INVALID_HANDLE_VALUE) && nul != INVALID_HANDLE_VALUE &&
-      CreateProcessW(tar.c_str(), command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, cwd.c_str(), &si,
-                     &pi)) {
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD exit = 0;
-    if (GetExitCodeProcess(pi.hProcess, &exit)) code = static_cast<int>(exit);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+  if (nul != INVALID_HANDLE_VALUE && (out.empty() || file != INVALID_HANDLE_VALUE)) {
+    HANDLE inherit[2] = {nul, file};
+    const DWORD inherit_count = file != INVALID_HANDLE_VALUE ? 2 : 1;
+    SIZE_T size = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+    std::vector<char> attr_buf(size);
+    auto* attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf.data());
+    if (InitializeProcThreadAttributeList(attrs, 1, 0, &size)) {
+      STARTUPINFOEXW si{};
+      si.StartupInfo.cb = sizeof(si);
+      si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+      si.StartupInfo.hStdInput = nul;
+      si.StartupInfo.hStdOutput = file != INVALID_HANDLE_VALUE ? file : nul;
+      si.StartupInfo.hStdError = nul;
+      si.lpAttributeList = attrs;
+      PROCESS_INFORMATION pi{};
+      if (UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit,
+                                    inherit_count * sizeof(HANDLE), nullptr, nullptr) &&
+          CreateProcessW(tar.c_str(), command.data(), nullptr, nullptr, TRUE,
+                         CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, cwd.c_str(), &si.StartupInfo,
+                         &pi)) {
+        const ULONGLONG deadline = GetTickCount64() + 10 * 60 * 1000;
+        for (;;) {
+          if (WaitForSingleObject(pi.hProcess, 250) == WAIT_OBJECT_0) {
+            DWORD exit = 0;
+            if (GetExitCodeProcess(pi.hProcess, &exit)) code = static_cast<int>(exit);
+            break;
+          }
+          if ((cancelled && cancelled()) || GetTickCount64() > deadline) {
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 5000);
+            code = kTarStopped;
+            break;
+          }
+        }
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+      }
+      DeleteProcThreadAttributeList(attrs);
+    }
   }
   if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
   if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
   return code;
 }
 
-// The files the update copies: regular files under src, relative, minus the kept ones; version.txt
-// last. Links and anything SafeName rejects are skipped.
-// The first line of a `tar -tf` listing that SafeName rejects (it would land outside update.tmp\x).
-std::optional<std::string> UnsafeEntry(const fs::path& listing) {
-  std::ifstream in(listing, std::ios::binary);
-  std::string line;
-  while (std::getline(in, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (!line.empty() && !gow3::setup::SafeName(line)) return line;
-  }
-  return std::nullopt;
+std::string ReadAll(const fs::path& file) {
+  std::ifstream in(file, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-std::vector<fs::path> FilesToCopy(const fs::path& src) {
-  std::vector<fs::path> files;
-  bool version = false;
-  std::error_code ec;
-  for (fs::recursive_directory_iterator it(src, ec), end; !ec && it != end; it.increment(ec)) {
-    if (!fs::is_regular_file(it->symlink_status(ec))) continue;
-    const fs::path rel = it->path().lexically_relative(src);
-    if (!gow3::setup::SafeName(gow3::setup::Utf8(rel))) continue;
-    const std::string first = Lower(gow3::setup::Utf8(*rel.begin()));
-    if (first == "update.tmp") continue;
-    if (std::next(rel.begin()) == rel.end()) {
-      if (first == "gow3.toml" || first == "gow3_game_path.txt" || first == "launcher.ini" ||
-          first == "launcher.old.exe") {
-        continue;
-      }
-      if (first == "version.txt") {
-        version = true;
-        continue;
-      }
-    }
-    files.push_back(rel);
-  }
-  if (version) files.emplace_back("version.txt");
-  return files;
-}
-
-}  // namespace
-
-std::optional<std::string> HttpGet(const std::wstring& url, std::string* error) {
+// The body of an HTTPS GET (see HttpGet), with the user agent passed in: the check thread may
+// outlive wWinMain, so it holds its own copy.
+std::optional<std::string> GetBody(const std::wstring& url, const std::wstring& user_agent, std::string* error) {
   std::string body;
-  const bool ok = Fetch(url, L"application/vnd.github+json",
+  const bool ok = Fetch(url, user_agent, L"application/vnd.github+json",
                         [&](const char* data, size_t n, uint64_t) {
                           if (body.size() + n > (8u << 20)) {  // a release answer is a few KB
                             if (error) *error = "GitHub's answer was too large.";
@@ -239,6 +242,12 @@ std::optional<std::string> HttpGet(const std::wstring& url, std::string* error) 
   return body;
 }
 
+}  // namespace
+
+std::optional<std::string> HttpGet(const std::wstring& url, std::string* error) {
+  return GetBody(url, g_user_agent, error);
+}
+
 bool HttpDownload(const std::wstring& url, const fs::path& to, const std::function<bool(uint64_t, uint64_t)>& progress,
                   std::string* error) {
   std::ofstream out(to, std::ios::binary | std::ios::trunc);
@@ -247,7 +256,7 @@ bool HttpDownload(const std::wstring& url, const fs::path& to, const std::functi
     return false;
   }
   uint64_t done = 0;
-  const bool ok = Fetch(url, L"application/octet-stream",
+  const bool ok = Fetch(url, g_user_agent, L"application/octet-stream",
                         [&](const char* data, size_t n, uint64_t total) {
                           out.write(data, static_cast<std::streamsize>(n));
                           if (!out) {
@@ -295,7 +304,8 @@ std::string Sha256File(const fs::path& file) {
   return hex;
 }
 
-UpdateResult ApplyUpdate(const fs::path& release_dir, const fs::path& zip, Build build, std::string* error) {
+UpdateResult ApplyUpdate(const fs::path& release_dir, const fs::path& zip, Build build, std::string* error,
+                         const std::function<bool()>& cancelled) {
   using gow3::setup::Utf8;
   const fs::path tmp = release_dir / "update.tmp";
   auto cleanup = [&] {
@@ -312,22 +322,16 @@ UpdateResult ApplyUpdate(const fs::path& release_dir, const fs::path& zip, Build
   if (ec) return fail("Could not create " + Utf8(tmp) + ".");
 
   // <hash>  <zip name>: the first field must be the zip's SHA-256.
-  {
-    fs::path sha_file = zip;
-    sha_file += L".sha256";
-    std::string want;
-    {
-      std::ifstream in(sha_file, std::ios::binary);  // closed before any cleanup removes it
-      in >> want;
-    }
-    if (want.empty()) return fail("Could not read " + Utf8(sha_file.filename()) + ".");
-    const std::string have = Sha256File(zip);
-    if (have.empty()) return fail("Could not read " + Utf8(zip.filename()) + ".");
-    if (Lower(want) != have) {
-      if (error) *error = "The download is damaged (its SHA-256 doesn't match). Nothing was changed.";
-      cleanup();
-      return UpdateResult::kHashMismatch;
-    }
+  fs::path sha_file = zip;
+  sha_file += L".sha256";
+  const std::optional<std::string> want = gow3::setup::ParseSha256File(ReadAll(sha_file));
+  if (!want) return fail("Could not read " + Utf8(sha_file.filename()) + ".");
+  const std::string have = Sha256File(zip);
+  if (have.empty()) return fail("Could not read " + Utf8(zip.filename()) + ".");
+  if (*want != have) {
+    if (error) *error = "The download is damaged (its SHA-256 doesn't match). Nothing was changed.";
+    cleanup();
+    return UpdateResult::kHashMismatch;
   }
 
   // tar runs inside update.tmp with relative paths where it can, so a non-ASCII release folder
@@ -337,18 +341,22 @@ UpdateResult ApplyUpdate(const fs::path& release_dir, const fs::path& zip, Build
   fs::create_directories(x, ec);
   if (ec) return fail("Could not create " + Utf8(x) + ".");
   const std::wstring zip_arg = L"\"" + (zip.parent_path() == tmp ? zip.filename() : zip).wstring() + L"\"";
-  if (RunTar(L"-tf " + zip_arg, tmp, list) != 0) return fail("The update could not be read (tar.exe -t failed).");
-  if (const std::optional<std::string> bad = UnsafeEntry(list)) {
+  auto tar_failed = [&](int code, const char* what) {
+    return fail(code == kTarStopped ? "The update was stopped (cancelled, or tar.exe ran over 10 minutes)."
+                                    : std::string("The update could not be ") + what + " (tar.exe failed).");
+  };
+  if (const int r = RunTar(L"-tf " + zip_arg, tmp, list, cancelled); r != 0) return tar_failed(r, "read");
+  if (const std::optional<std::string> bad = gow3::setup::UnsafeEntry(ReadAll(list))) {
     return fail("The update holds an unsafe path (" + *bad + "). Nothing was changed.");
   }
-  if (RunTar(L"-xf " + zip_arg + L" -C x", tmp, {}) != 0) {
-    return fail("The update could not be extracted (tar.exe failed).");
-  }
+  if (const int r = RunTar(L"-xf " + zip_arg + L" -C x", tmp, {}, cancelled); r != 0) return tar_failed(r, "extracted");
   const fs::path src = x / zip.stem();  // gow3-recomp-<version>-win64
-  if (!fs::is_regular_file(src / "launcher.exe", ec) || !fs::is_regular_file(src / "version.txt", ec)) {
-    return fail("The update has no " + Utf8(zip.stem()) + "\\launcher.exe and version.txt.");
+  for (const char* need : {"launcher.exe", "version.txt", "builds/gow3-base.exe", "builds/gow3-tu6.exe"}) {
+    if (!fs::is_regular_file(src / need, ec)) {
+      return fail("The update is missing " + fs::path(need).make_preferred().string() + ". Nothing was changed.");
+    }
   }
-  const std::vector<fs::path> files = FilesToCopy(src);
+  const std::vector<fs::path> files = gow3::setup::FilesToCopy(src);
 
   for (int i = 0; gow3::setup::IsGameRunning(release_dir / "gow3.exe"); ++i) {
     if (i >= 120) {
@@ -358,34 +366,86 @@ UpdateResult ApplyUpdate(const fs::path& release_dir, const fs::path& zip, Build
     }
     Sleep(250);
   }
+  if (cancelled && cancelled()) return fail("The update was cancelled. Nothing was changed.");
 
-  // The running launcher.exe can be renamed but not overwritten.
+  // From here every file that gets replaced is first moved to update.tmp\backup (gow3.exe is
+  // copied there, as SwapBuild replaces it in place). A failure moves them all back, removes the
+  // files that are new, and renames launcher.old.exe back to launcher.exe.
+  const fs::path backup = tmp / "backup";
+  struct Change {
+    fs::path rel, saved;  // saved empty: the file is new
+  };
+  std::vector<Change> changes;
   const fs::path launcher = release_dir / "launcher.exe", old = release_dir / "launcher.old.exe";
   const bool had_launcher = fs::exists(launcher, ec);
+  // The running launcher.exe can be renamed but not overwritten.
   if (had_launcher && !MoveFileExW(launcher.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-    return fail("Could not rename launcher.exe (error " + std::to_string(GetLastError()) + ").");
+    return fail("Could not rename launcher.exe (" + WinError(GetLastError()) + "). Nothing was changed.");
   }
-  auto restore = [&](std::string msg) {
-    if (had_launcher) MoveFileExW(old.c_str(), launcher.c_str(), MOVEFILE_REPLACE_EXISTING);
-    return fail(std::move(msg) + " The launcher was put back; some files may be from the new version.");
+  auto rollback = [&](std::string msg) {
+    std::vector<std::string> stuck;
+    for (auto it = changes.rbegin(); it != changes.rend(); ++it) {
+      const fs::path to = release_dir / it->rel;
+      std::error_code e;
+      const bool ok = it->saved.empty() ? (fs::remove(to, e), !e)
+                                        : MoveFileExW(it->saved.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+      if (!ok) stuck.push_back(Utf8(it->rel));
+    }
+    if (had_launcher && !MoveFileExW(old.c_str(), launcher.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+      stuck.push_back("launcher.exe (it is launcher.old.exe now)");
+    }
+    if (stuck.empty()) return fail(std::move(msg) + " Nothing was changed.");
+    // Keep update.tmp: the originals that could not go back are in update.tmp\backup.
+    std::string list;
+    for (const std::string& s : stuck) list += (list.empty() ? "" : ", ") + s;
+    if (error) {
+      *error = std::move(msg) + " These files could not be put back: " + list +
+               ". The originals are in update.tmp\\backup; or unzip the release again.";
+    }
+    return UpdateResult::kFailed;
+  };
+  // Moves release/rel aside (if it exists), then copies `from` there.
+  auto replace = [&](const fs::path& from, const fs::path& rel) -> std::string {
+    const fs::path to = release_dir / rel, saved = backup / rel;
+    std::error_code e;
+    fs::create_directories(to.parent_path(), e);
+    if (e) return "Could not create the folder for " + Utf8(rel) + " (" + e.message() + ").";
+    if (fs::exists(to, e)) {
+      fs::create_directories(saved.parent_path(), e);
+      if (e || !MoveFileExW(to.c_str(), saved.c_str(), 0)) {
+        return "Could not replace " + Utf8(rel) + " (" + WinError(e ? ERROR_PATH_NOT_FOUND : GetLastError()) + ").";
+      }
+      changes.push_back({rel, saved});
+    } else {
+      changes.push_back({rel, {}});
+    }
+    if (!CopyFileW(from.c_str(), to.c_str(), FALSE)) {
+      return "Copying " + Utf8(rel) + " failed (" + WinError(GetLastError()) + ").";
+    }
+    return {};
   };
   for (const fs::path& rel : files) {
-    const fs::path to = release_dir / rel;
-    fs::create_directories(to.parent_path(), ec);
-    if (ec || !fs::copy_file(src / rel, to, fs::copy_options::overwrite_existing, ec) || ec) {
-      std::string why = ec ? ec.message() : std::string();
-      while (!why.empty() && (why.back() == '.' || why.back() == ' ' || why.back() == '\r' || why.back() == '\n')) {
-        why.pop_back();
+    if (std::string msg = replace(src / rel, rel); !msg.empty()) return rollback(std::move(msg));
+  }
+  {
+    const fs::path gow3 = release_dir / "gow3.exe", saved = backup / "gow3.exe";
+    if (fs::exists(gow3, ec)) {
+      if (!CopyFileW(gow3.c_str(), saved.c_str(), FALSE)) {
+        return rollback("Could not back up gow3.exe (" + WinError(GetLastError()) + ").");
       }
-      return restore("Copying " + Utf8(rel) + " failed" + (why.empty() ? "" : " (" + why + ")") + ".");
+      changes.push_back({"gow3.exe", saved});
+    } else {
+      changes.push_back({"gow3.exe", {}});
     }
   }
   const gow3::setup::SwapResult swap = gow3::setup::SwapBuild(release_dir, build, std::chrono::seconds(30));
-  if (swap == gow3::setup::SwapResult::kGameRunning) return restore("Gears of War 3 was started during the update.");
+  if (swap == gow3::setup::SwapResult::kGameRunning) return rollback("Gears of War 3 was started during the update.");
   if (swap != gow3::setup::SwapResult::kOk) {
-    return restore(std::string("Could not switch gow3.exe to builds\\gow3-") +
-                   (build == Build::kTu6 ? "tu6" : "base") + ".exe.");
+    return rollback(std::string("Could not switch gow3.exe to builds\\gow3-") +
+                    (build == Build::kTu6 ? "tu6" : "base") + ".exe.");
   }
+  // Last, so an update that failed anywhere above is offered again.
+  if (std::string msg = replace(src / "version.txt", "version.txt"); !msg.empty()) return rollback(std::move(msg));
   cleanup();
   return UpdateResult::kOk;
 }
@@ -439,9 +499,9 @@ void StartCheck(bool manual) {
   if (u.check) return;
   u.manual = manual;
   u.check = std::make_shared<Check>();
-  u.thread = std::jthread([check = u.check] {
+  u.thread = std::jthread([check = u.check, user_agent = g_user_agent] {
     std::string error;
-    if (const std::optional<std::string> body = HttpGet(kApiUrl, &error)) {
+    if (const std::optional<std::string> body = GetBody(kApiUrl, user_agent, &error)) {
       check->release = gow3::setup::ParseRelease(*body);
       if (!check->release) error = "GitHub's answer could not be read.";
     }
@@ -487,8 +547,10 @@ void StartUpdate(App& app, const fs::path& test_zip) {
       outcome->downloading = false;
       zip = tmp / name;
     }
-    progress(0, 0, "Installing");
-    return ApplyUpdate(dir, zip, build, error) == UpdateResult::kOk ? ExtractResult::kOk : ExtractResult::kFailed;
+    const auto cancelled = [&] { return !progress(0, 0, "Installing"); };
+    cancelled();
+    return ApplyUpdate(dir, zip, build, error, cancelled) == UpdateResult::kOk ? ExtractResult::kOk
+                                                                               : ExtractResult::kFailed;
   });
 }
 
@@ -611,18 +673,23 @@ void DrawUpdatePrompt(App& app) {
   const float button_h = Dp(38.0f), gap = Dp(8.0f);
   const float bottom = ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - button_h;
   // Buttons right-aligned along the bottom; returns the pressed label.
-  auto buttons = [&](std::initializer_list<std::pair<const char*, bool>> list, bool enabled = true) {
+  struct Button {
+    const char* label;
+    bool primary = false;
+    bool enabled = true;
+  };
+  auto buttons = [&](std::initializer_list<Button> list) {
     float total = 0.0f;
-    for (const auto& [label, primary] : list) {
+    for (const auto& [label, primary, enabled] : list) {
       total += std::max(ImGui::CalcTextSize(label).x + Dp(28.0f), primary ? Dp(120.0f) : 0.0f) + gap;
     }
     ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - total + gap, bottom));
     std::string pressed;
     bool first = true;
-    ImGui::BeginDisabled(!enabled);
-    for (const auto& [label, primary] : list) {
+    for (const auto& [label, primary, enabled] : list) {
       if (!first) ImGui::SameLine(0, gap);
       first = false;
+      ImGui::BeginDisabled(!enabled);
       const float w = std::max(ImGui::CalcTextSize(label).x + Dp(28.0f), primary ? Dp(120.0f) : 0.0f);
       if (primary) {
         ImGui::PushFont(HeadingFont(), 22.0f);
@@ -631,8 +698,8 @@ void DrawUpdatePrompt(App& app) {
       } else if (GhostButton(label, ImVec2(w, button_h))) {
         pressed = label;
       }
+      ImGui::EndDisabled();
     }
-    ImGui::EndDisabled();
     return pressed;
   };
 
@@ -656,14 +723,14 @@ void DrawUpdatePrompt(App& app) {
       ImGui::SetCursorPos(ImVec2(ImGui::GetStyle().WindowPadding.x, bottom + (button_h - ImGui::GetFontSize()) * 0.5f));
       ImGui::TextColored(kMuted, "Wait for Game files to finish.");
     }
-    const std::string b = buttons({{"Later", false}, {"Skip this version", false}, {"UPDATE", true}});
+    const std::string b = buttons({{"Later"}, {"Skip this version"}, {"UPDATE", true, !busy}});
     if (b == "Later") {
       u.prompt = Prompt::kNone;
     } else if (b == "Skip this version") {
       app.state.skip_release = u.release.tag;
       SaveState(app);
       u.prompt = Prompt::kNone;
-    } else if (b == "UPDATE" && !busy) {
+    } else if (b == "UPDATE") {
       StartUpdate(app, {});
     }
   } else if (u.prompt == Prompt::kWorking) {
@@ -681,13 +748,13 @@ void DrawUpdatePrompt(App& app) {
     ImGui::Dummy(ImVec2(w, h));
     if (total) ImGui::TextColored(kMuted, "%.1f of %.1f MB", done / 1048576.0, total / 1048576.0);
     const bool can_cancel = u.outcome && u.outcome->downloading.load() && !g_update_job.Cancelling();
-    if (buttons({{"Cancel", false}}, can_cancel) == "Cancel") g_update_job.Cancel();
+    if (buttons({{"Cancel", false, can_cancel}}) == "Cancel") g_update_job.Cancel();
   } else if (u.prompt == Prompt::kFailed) {
     PageTitle("UPDATE FAILED", kAccent);
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextColored(kText, "%s", u.message.c_str());
     ImGui::PopTextWrapPos();
-    if (buttons({{"Close", false}}) == "Close") u.prompt = Prompt::kNone;
+    if (buttons({{"Close"}}) == "Close") u.prompt = Prompt::kNone;
   }
   if (u.prompt == Prompt::kNone) ImGui::CloseCurrentPopup();
   ImGui::EndPopup();

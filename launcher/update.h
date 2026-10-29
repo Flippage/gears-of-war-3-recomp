@@ -22,13 +22,16 @@ std::string Sha256File(const std::filesystem::path&);
 enum class UpdateResult { kOk, kHashMismatch, kGameRunning, kFailed };
 // Installs <zip> (gow3-recomp-<v>-win64.zip, with <zip>.sha256 next to it) over release_dir:
 // checks the hash, lists the zip (every entry must pass SafeName), extracts it into
-// <release_dir>\update.tmp\x with System32\tar.exe, waits up to 30 s for gow3.exe to close,
-// renames launcher.exe to launcher.old.exe, copies the files over the release (never gow3.toml,
-// gow3_game_path.txt or launcher.ini; version.txt last), then SwapBuild(release_dir, build) and
-// removes update.tmp. A failure after the rename puts launcher.exe back. Deletes nothing outside
-// update.tmp.
+// <release_dir>\update.tmp\x with System32\tar.exe (10 min limit; `cancelled` stops it), requires
+// launcher.exe, version.txt and both builds\ exes, waits up to 30 s for gow3.exe to close, renames
+// launcher.exe to launcher.old.exe and copies FilesToCopy over the release, moving each file it
+// replaces to update.tmp\backup first. Then SwapBuild(release_dir, build) writes gow3.exe, then
+// version.txt is copied, and update.tmp is removed. Any failure after the rename moves every
+// backup back, removes the new files and restores launcher.exe (if that fails too, update.tmp is
+// kept and the message names the files). Deletes nothing outside update.tmp except files the
+// update itself added.
 UpdateResult ApplyUpdate(const std::filesystem::path& release_dir, const std::filesystem::path& zip,
-                         gow3::setup::Build build, std::string* error);
+                         gow3::setup::Build build, std::string* error, const std::function<bool()>& cancelled = {});
 
 // Reads version.txt; with --update_zip installs that zip straight away (test only, no HTTP),
 // otherwise starts the daily check when it is due. Call once, after InitGameFiles.
