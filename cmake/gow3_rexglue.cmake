@@ -116,10 +116,17 @@ endmacro()
 # codegen, including one a project assembles itself rather than taking the
 # library rexglue_setup_target() builds. The stamp comes first: the DEPFILE
 # names it.
+# Each codegen run is followed by the fix-ups scripts\build.ps1 applies (switch traps and unresolved
+# branches, then the game patches): without them a codegen that the build re-runs on its own (an
+# input newer than the stamp) leaves REX_FATAL traps that stop the game at boot.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_custom_command(
     OUTPUT "${GOW3_GENERATED_DIR}/codegen.build.stamp"
            ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
     COMMAND $<TARGET_FILE:rex::rexglue> codegen ${GOW3_MANIFEST}
+    COMMAND ${Python3_EXECUTABLE} -I tools/patch_switch_traps.py "${GOW3_GENERATED_DIR}/*.cpp"
+    COMMAND ${Python3_EXECUTABLE} -I tools/patch_game_patches.py --game ${GOW3_GAME_VERSION}
+            "${GOW3_GENERATED_DIR}/*.cpp"
     DEPFILE "${GOW3_GENERATED_DIR}/codegen.d"
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Generating recompiled code for gow3"
