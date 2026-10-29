@@ -238,7 +238,7 @@ void DrawFrame(App& app) {
                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
   switch (app.page) {
     case P::kPlay: DrawPlayPage(app); break;
-    case P::kGameFiles: DrawPlaceholderPage("GAME FILES"); break;
+    case P::kGameFiles: DrawGameFilesPage(app); break;
     case P::kDisplay: DrawPlaceholderPage("DISPLAY"); break;
     case P::kGraphics: DrawPlaceholderPage("GRAPHICS"); break;
     case P::kControls: DrawPlaceholderPage("CONTROLS"); break;
@@ -322,6 +322,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   LoadFonts(app.dir);
   ApplyTheme(scale);
   RefreshPlayPage(app);
+  // The file pickers need COM on this (the UI) thread.
+  const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE));
+  InitGameFiles(app);
 
   ShowWindow(app.hwnd, show);
   UpdateWindow(app.hwnd);
@@ -368,6 +371,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
+    PollGameFiles(app);
     DrawFrame(app);
     ImGui::Render();
     const ImVec4 bg = theme::kBackground;
@@ -380,6 +384,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     occluded = hr == DXGI_STATUS_OCCLUDED;
   }
 
+  ShutdownGameFiles();  // a running extraction or install is cancelled and joined
+  if (com) CoUninitialize();
   if (g_device) ImGui_ImplDX11_Shutdown();  // already shut down when the device couldn't be rebuilt
   ImGui_ImplWin32_Shutdown();
   ImGui::DestroyContext();

@@ -17,6 +17,6 @@ add_executable(launcher WIN32
   ${GOW3_IMGUI_BACKENDS}/imgui_impl_win32.cpp
   ${GOW3_IMGUI_BACKENDS}/imgui_impl_dx11.cpp)
 target_include_directories(launcher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${GOW3_IMGUI_BACKENDS})
-target_link_libraries(launcher PRIVATE gow3_setup rex::runtime d3d11 d3dcompiler dwmapi)
+target_link_libraries(launcher PRIVATE gow3_setup rex::runtime d3d11 d3dcompiler dwmapi ole32 shell32)
 # Next to gow3.exe and rexruntime.dll, as in a release.
 set_target_properties(launcher PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
