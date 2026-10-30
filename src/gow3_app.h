@@ -179,8 +179,6 @@ class Gow3App : public rex::ReXApp {
       std::function<void(rex::PathConfig)> /*resume*/) override {
     rex::PathConfig p = defaults;
     ApplyConfigUserRoot(p);
-    // Setup, offer or repair needed: hand over to launcher.exe (when it is next to gow3.exe) and exit.
-    rex::glue::RunLaunchCheck(p.game_data_root);
     // The TU6 executable: its title update as UPDATE: (or a clear stop without it).
     rex::glue::PrepareTitleUpdate(p.game_data_root, p.update_data_root);
     options_paths_ = p;

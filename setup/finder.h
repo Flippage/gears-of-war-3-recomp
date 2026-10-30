@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -70,8 +71,11 @@ FindResult FindGame(const std::vector<std::filesystem::path>& roots);
 // kPackageScanLimit folder entries so a huge folder can't slow gow3.exe's start.
 inline constexpr int kPackageDepth = 4;
 inline constexpr int kPackageScanLimit = 50000;
+// `budget` > 0 stops the search after that long (gow3.exe's start-up check); 0 = no time limit.
+// Cloud-only files (OneDrive) are never read and linked folders (junctions) are not followed.
 std::vector<FoundPackage> FindPackages(const std::vector<std::filesystem::path>& roots,
-                                       uint32_t disc_media_id);
+                                       uint32_t disc_media_id,
+                                       std::chrono::milliseconds budget = std::chrono::milliseconds(0));
 // A package file or a folder the player picked: that file, or the folder searched like a root.
 std::vector<FoundPackage> FindPackagesAt(const std::filesystem::path& file_or_folder, uint32_t disc_media_id);
 // The disc ships DLC\AvatarAwards (a marketplace-type package named "Gears of War 3"): never offered.

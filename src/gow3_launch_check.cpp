@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <chrono>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -61,8 +62,17 @@ void RunLaunchCheck(const std::filesystem::path& game_data_root) {
   const bool game_valid = IsGameFolder(game_data_root);
   std::vector<FoundPackage> packages;
   if (game_valid) {
+    // Logged and flushed first, so a slow search (a huge or cloud-synced folder) shows in the log.
+    REXLOG_INFO("Launcher: looking for TU6 / DLC packages around {}", rex::path_to_utf8(game_data_root));
+    rex::FlushLogging();
+    const auto started = std::chrono::steady_clock::now();
     const auto xex = ReadXexInfoFile(game_data_root / "default.xex");
-    packages = FindPackages(PackageRoots(exe_dir, game_data_root), xex ? xex->media_id : 0);
+    // At most 2 s at every start: the launcher's own search (no limit) finds the rest.
+    packages = FindPackages(PackageRoots(exe_dir, game_data_root), xex ? xex->media_id : 0,
+                            std::chrono::milliseconds(2000));
+    REXLOG_INFO("Launcher: search took {} ms",
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started)
+                    .count());
   }
   const bool recorded_build_available = std::filesystem::is_regular_file(
       exe_dir / "builds" / (state.build == Build::kTu6 ? "gow3-tu6.exe" : "gow3-base.exe"), ec);
@@ -100,7 +110,9 @@ void RunLaunchCheck(const std::filesystem::path& game_data_root) {
   CloseHandle(pi.hProcess);
   REXLOG_INFO("Launcher: handed over to launcher.exe {}", flag);
   rex::FlushLogging();
-  ExitProcess(0);
+  // Ends at once: nothing of the game has started, and a normal exit (DLL detach, static
+  // destructors) can hang while the graphics device is up.
+  TerminateProcess(GetCurrentProcess(), 0);
 }
 
 }  // namespace rex::glue

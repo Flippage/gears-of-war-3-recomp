@@ -51,6 +51,7 @@
 
 #include <imgui.h>
 
+#include "gow3_launch_check.h"
 #include "gow3_loading_screen.h"
 
 #ifdef _WIN32
@@ -200,6 +201,10 @@ system::AchievementManager& ReXApp::achievements() const {
 bool ReXApp::OnInitialize() {
   if (!SetupEnvironment())
     return false;
+  // Gears of War 3 recomp: setup, TU6 / DLC offer or repair needed -> hand over to launcher.exe and
+  // end here, before any window, graphics device or (exclusive) fullscreen exists. gow3.toml and the
+  // game folder (OnConfigurePaths) are ready at this point.
+  rex::glue::RunLaunchCheck(game_data_root_);
   if (!SetupPresentation())
     return false;
 

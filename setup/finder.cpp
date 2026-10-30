@@ -1,6 +1,7 @@
 #include "setup/finder.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cwctype>
 #include <set>
 
@@ -174,16 +175,34 @@ bool IsDiscOwnPackage(const fs::path& file) {
 
 namespace {
 
+// Windows file attributes that make reading a file slow or recursive: cloud-only files (OneDrive and
+// similar download them on first read) and reparse points (junctions, links back up the tree).
+constexpr DWORD kCloudOnly = FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN |
+                             FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+
+DWORD Attributes(const fs::path& p) {
+  const DWORD a = GetFileAttributesW(p.c_str());
+  return a == INVALID_FILE_ATTRIBUTES ? 0 : a;
+}
+
 struct PackageScan {
   uint32_t disc_media_id;
+  std::chrono::steady_clock::time_point deadline = (std::chrono::steady_clock::time_point::max)();
   std::vector<FoundPackage> found;
   std::set<fs::path> seen;
   int entries = 0;
+  bool stopped = false;  // the entry limit or the deadline was reached
+
+  bool Stop() {
+    if (!stopped && (++entries > kPackageScanLimit || std::chrono::steady_clock::now() > deadline)) stopped = true;
+    return stopped;
+  }
 
   void File(const fs::path& file, uint64_t size) {
     static const std::set<std::wstring> kSkip = {L".iso", L".zip", L".7z", L".rar", L".exe",
                                                  L".dll", L".txt", L".xex", L".xexp"};
     if (size < 0x1000 || kSkip.count(LowerExt(file)) || IsDiscOwnPackage(file)) return;
+    if (Attributes(file) & kCloudOnly) return;  // never trigger a download just to read a header
     std::error_code ec;
     fs::path key = fs::weakly_canonical(file, ec);
     if (ec) key = file;
@@ -202,10 +221,11 @@ struct PackageScan {
     std::error_code ec;
     for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
          !ec && it != fs::directory_iterator(); it.increment(ec)) {
-      if (++entries > kPackageScanLimit) return;
+      if (Stop()) return;
       std::error_code e2;
       if (it->is_directory(e2)) {
-        if (depth > 0 && !it->is_symlink(e2) && !kSkipDirs.count(Lower(it->path().filename().native()))) {
+        if (depth > 0 && !it->is_symlink(e2) && !(Attributes(it->path()) & (FILE_ATTRIBUTE_REPARSE_POINT | kCloudOnly)) &&
+            !kSkipDirs.count(Lower(it->path().filename().native()))) {
           Folder(it->path(), depth - 1);
         }
       } else if (it->is_regular_file(e2)) {
@@ -218,8 +238,10 @@ struct PackageScan {
 
 }  // namespace
 
-std::vector<FoundPackage> FindPackages(const std::vector<fs::path>& roots, uint32_t disc_media_id) {
+std::vector<FoundPackage> FindPackages(const std::vector<fs::path>& roots, uint32_t disc_media_id,
+                                       std::chrono::milliseconds budget) {
   PackageScan scan{disc_media_id};
+  if (budget.count() > 0) scan.deadline = std::chrono::steady_clock::now() + budget;
   std::set<fs::path> done;
   for (const fs::path& root : roots) {
     std::error_code ec;
@@ -228,6 +250,7 @@ std::vector<FoundPackage> FindPackages(const std::vector<fs::path>& roots, uint3
     if (ec) key = root;
     if (!done.insert(key).second) continue;
     scan.Folder(root, kPackageDepth);
+    if (scan.stopped) break;
   }
   return std::move(scan.found);
 }

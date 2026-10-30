@@ -1,6 +1,8 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <chrono>
+#include <string>
 
 #include "setup/finder.h"
 #include "tests/test_util.h"
@@ -58,6 +60,27 @@ TEST(finder_packages_classify) {
   CHECK(std::ranges::count_if(p, [](auto& x) { return x.is_tu && x.matches_disc; }) == 1);
   CHECK(std::ranges::count_if(p, [](auto& x) { return x.is_tu && !x.matches_disc; }) == 1);
   CHECK(std::ranges::count_if(p, [](auto& x) { return !x.is_tu && x.matches_disc; }) == 1);
+}
+
+TEST(finder_packages_skip_cloud_only_files) {
+  auto root = TempDir("find_cloud");
+  WriteFile(root / "DLC" / "raam", MakeStfsHeader("LIVE", 0x00000002, 0x4D5308AB, 0, u"RAAM's Shadow"));
+  WriteFile(root / "DLC" / "pack", MakeStfsHeader("LIVE", 0x00000002, 0x4D5308AB, 0, u"Booster Map Pack"));
+  // OFFLINE is how cloud-only files (OneDrive placeholders) show up: reading one downloads it.
+  CHECK(SetFileAttributesW((root / "DLC" / "pack").c_str(), FILE_ATTRIBUTE_OFFLINE));
+  auto p = gow3::setup::FindPackages({root}, 0);
+  SetFileAttributesW((root / "DLC" / "pack").c_str(), FILE_ATTRIBUTE_NORMAL);
+  CHECK(p.size() == 1 && p[0].header.display_name == "RAAM's Shadow");
+}
+
+TEST(finder_packages_budget_stops_the_search) {
+  auto root = TempDir("find_budget");
+  for (int i = 0; i < 200; ++i) WriteFile(root / ("d" + std::to_string(i)) / "f.txt", "x");
+  WriteFile(root / "zz" / "raam", MakeStfsHeader("LIVE", 0x00000002, 0x4D5308AB, 0, u"RAAM's Shadow"));
+  const auto t0 = std::chrono::steady_clock::now();
+  gow3::setup::FindPackages({root}, 0, std::chrono::milliseconds(1));
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2));
+  CHECK(gow3::setup::FindPackages({root}, 0).size() == 1);  // no budget: the whole tree
 }
 
 TEST(finder_packages_xbox_layout_and_skips) {
