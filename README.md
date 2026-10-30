@@ -93,8 +93,9 @@ follow `QUICKSTART.txt` inside. It includes everything except the game itself, a
   build it yourself: see [DLSS](#dlss-build-from-source).
 - **Updating:** use the launcher's Update (it keeps `gow3.toml`, `gow3_game_path.txt` and
   `launcher.ini`, and your build). To update by hand instead, extract the new zip over the old
-  folder but don't let Windows replace your `gow3.toml`, then run `launcher.exe` once: it notices
-  that `gow3.exe` is the base-game build again and restores your Title Update 6 build.
+  folder (replace everything: the zip has no `gow3.toml`, so your settings are never overwritten),
+  then run `launcher.exe` once: it notices that `gow3.exe` is the base-game build again and
+  restores your Title Update 6 build.
 
 ## Bring your own game
 
@@ -201,8 +202,8 @@ takes effect:
   System Link multiplayer settings, and the save folder (`user_data_root`). When any restart-only
   setting has been changed, a **Restart Game Now** button appears at the bottom of the menu.
 
-`gow3.toml` next to `gow3.exe` (copied from [config/gow3.toml](config/gow3.toml) on the first
-build; your edits are kept) can also be edited by hand, and every setting works on the command line
+`gow3.toml` next to `gow3.exe` (made from `config\gow3.default.toml`, a copy of
+[config/gow3.toml](config/gow3.toml), on the first start; your edits are kept) can also be edited by hand, and every setting works on the command line
 as `--name=value`.
 
 | Setting | Default | What it does |

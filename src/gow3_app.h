@@ -23,6 +23,7 @@
 #include <rex/ui/flags.h>
 
 #include "setup/finder.h"
+#include "setup/settings_store.h"
 #include "setup/state.h"
 #include "gow3_content_fix.h"
 #include "gow3_crash_log.h"
@@ -157,6 +158,11 @@ class Gow3App : public rex::ReXApp {
   // Saves, profile and shader cache in %LOCALAPPDATA%\GearsOfWar3PC (as the Gears of War 2 port
   // does with GearsOfWar2PC); without a user data root the save devices are never mounted.
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    // A release ships config\gow3.default.toml, not gow3.toml, so extracting a new zip over an
+    // install never replaces the player's settings: the first start makes gow3.toml from it (the
+    // config is loaded right after this).
+    gow3::setup::CopyDefaultSettings(paths.config_path.parent_path() / "config" / "gow3.default.toml",
+                                     paths.config_path);
     paths.game_data_root = ResolveGameFolder(paths.game_data_root);
     paths.update_data_root = paths.game_data_root / "$SystemUpdate";
     // An explicit --user_data_root / --cache_root (test runs, several installs) wins.

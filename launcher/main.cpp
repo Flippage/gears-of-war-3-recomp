@@ -27,6 +27,7 @@
 #include "pages_settings.h"
 #include "setup/finder.h"
 #include "setup/path_util.h"
+#include "setup/settings_store.h"
 #include "setup/state.h"
 #include "theme.h"
 #include "update.h"
@@ -301,6 +302,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     app.game = game;
   }
   if (app.game.empty()) app.page = App::Page::kGameFiles;  // nothing installed: open on setup
+  // A release ships config\gow3.default.toml, not gow3.toml (a zip extracted over an install never
+  // replaces the player's settings): the first start makes gow3.toml from it, as gow3.exe does.
+  gow3::setup::CopyDefaultSettings(app.dir / "config" / "gow3.default.toml", app.dir / "gow3.toml");
 
   WNDCLASSEXW wc{sizeof(wc)};
   wc.style = CS_CLASSDC;

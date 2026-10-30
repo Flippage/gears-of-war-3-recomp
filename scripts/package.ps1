@@ -6,7 +6,8 @@
   Copies the base-game build (builds\gow3-base.exe, and gow3.exe as a copy of it), the Title
   Update 6 build (builds\gow3-tu6.exe), launcher.exe, version.txt, the release runtime DLLs
   (scripts\build-sdk.ps1 -NoDlss), AMD FidelityFX,
-  the Visual C++ runtime, the button prompt glyphs, gow3.toml, the docs and a generated
+  the Visual C++ runtime, the button prompt glyphs, config\gow3.default.toml (no gow3.toml: the
+  first start makes it), the docs and a generated
   QUICKSTART.txt into a staging folder, and compresses it to
   <OutDir>\gow3-recomp-<Version>-win64.zip with a .sha256 file next to it.
 
@@ -213,9 +214,8 @@ function Copy-Content([string]$Root, [string]$StageDir) {
     foreach ($name in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md')) {
         Copy-Item -Force (Join-Path $Root $name) $StageDir
     }
-    Copy-Item -Force (Join-Path $Root 'config\gow3.toml') (Join-Path $StageDir 'gow3.toml')
-    # The launcher starts a deleted gow3.toml from this pristine copy (updates replace it; the
-    # player's gow3.toml is kept).
+    # No gow3.toml in the release: gow3.exe and launcher.exe make it from config\gow3.default.toml on
+    # the first start, so extracting a new zip over an install never replaces the player's settings.
     $config = Join-Path $StageDir 'config'
     New-Item -ItemType Directory -Force -Path $config | Out-Null
     Copy-Item -Force (Join-Path $Root 'config\gow3.toml') (Join-Path $config 'gow3.default.toml')
@@ -289,9 +289,9 @@ function Write-Quickstart([string]$StageDir, [string]$Version) {
         '',
         'UPDATING',
         'Prefer the launcher''s Update: it keeps your settings, game folder and build. To update by',
-        'hand, extract the new zip over this folder but do not let Windows replace your gow3.toml,',
-        'then run launcher.exe once: it restores your Title Update 6 build (the zip''s gow3.exe is',
-        'the base-game build).',
+        'hand, extract the new zip over this folder and replace everything (the zip has no',
+        'gow3.toml, so your settings are kept), then run launcher.exe once: it restores your Title',
+        'Update 6 build (the zip''s gow3.exe is the base-game build).',
         '',
         'CONTROLS',
         'A controller works out of the box. For keyboard and mouse, press F10 (PC Options), Controls,',
